@@ -46,7 +46,7 @@ dependencies = [
     # the in-process OpenAI API server shim and the prompt-logprobs worker
     # patch are validated against this exact release. Before changing the pin,
     # review agentscope-ai/TuFT#131 and rerun its GPU verification checklist.
-    "vllm==0.24.0; sys_platform == 'linux'",
+    "vllm==0.27.0; sys_platform == 'linux'",
 ]
 
 [project.scripts]
