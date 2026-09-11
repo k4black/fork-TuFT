@@ -304,6 +304,13 @@ supported_models:
 
 See [`config/tuft_config.example.yaml`](config/tuft_config.example.yaml) for a complete example configuration with all available options.
 
+## Branching and Development Rules
+
+- **Target branch:** `main` is our working integration branch. All feature work, worktrees, and PRs merge into `main`.
+- **Fork upstream branch:** `upstream` tracks the source repository (`agentscope-ai/TuFT:main`). It is kept clean to sync and pull upstream updates.
+- **Minimal changes:** We use the `/ponytail` philosophy across all fixes and additions—shortest diffs, maximum reuse of existing components, minimal dependencies.
+- **Design & Grilling:** Non-trivial features require a plan and review through `/grill-me` before coding.
+
 ## Use the Pre-built Docker Image
 
 If you face issues with local installation or want to get started quickly,
