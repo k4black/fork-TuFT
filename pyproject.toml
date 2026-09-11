@@ -35,7 +35,7 @@ dependencies = [
     "nvidia-ml-py>=13.0.0",
     # Ray workers install only main dependencies when packing; training and sampling need these.
     # vLLM CUDA extensions are built against this exact PyTorch ABI.
-    "torch==2.11.0",
+    "torch==2.13.0",
     # 0.20 is the first release that supports multiple adapters with
     # target_parameters on one model, which both training backends need for
     # Qwen3.5 MoE routed-expert LoRA (multi-run HF adapters, FSDP slot pool).
