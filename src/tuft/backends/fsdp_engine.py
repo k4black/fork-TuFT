@@ -170,10 +170,25 @@ def _datum_field(
     return value.to_torch().to(device=device, dtype=dtype).reshape(-1)
 
 
-def _copy_row(destination: torch.Tensor, row: int, value: torch.Tensor) -> None:
-    width = min(destination.size(1), value.numel())
-    if width:
-        destination[row, :width] = value[:width]
+def _copy_row(
+    destination: torch.Tensor,
+    row: int,
+    value: torch.Tensor,
+    *,
+    expected_len: int | None = None,
+    field_name: str = "field",
+) -> None:
+    val_len = value.numel()
+    if expected_len is not None and val_len != expected_len:
+        raise ValueError(
+            f"Row {row}: {field_name} length {val_len} does not match expected length {expected_len}"
+        )
+    if val_len > destination.size(1):
+        raise ValueError(
+            f"Row {row}: {field_name} length {val_len} exceeds max row length {destination.size(1)}"
+        )
+    if val_len:
+        destination[row, :val_len] = value[:val_len]
 
 
 def _prepare_loss_fn_inputs(
@@ -226,7 +241,15 @@ def _prepare_loss_fn_inputs(
                 dtype=torch.float32,
             )
             if old_logprobs is not None:
-                _copy_row(sampling_logprobs, row, old_logprobs)
+                _copy_row(
+                    sampling_logprobs,
+                    row,
+                    old_logprobs,
+                    expected_len=len(datum.model_input.to_ints()),
+                    field_name="logprobs",
+                )
+            elif is_rlhf_loss:
+                raise ValueError(f"Row {row}: missing required 'logprobs' input for RLHF loss '{loss_fn_name}'")
         loss_fn_inputs["logprobs"] = sampling_logprobs
 
     if is_rlhf_loss or "advantages" in client_key_set:
@@ -239,7 +262,15 @@ def _prepare_loss_fn_inputs(
                 dtype=torch.float32,
             )
             if advantage is not None:
-                _copy_row(advantages, row, advantage)
+                _copy_row(
+                    advantages,
+                    row,
+                    advantage,
+                    expected_len=len(datum.model_input.to_ints()),
+                    field_name="advantages",
+                )
+            elif is_rlhf_loss:
+                raise ValueError(f"Row {row}: missing required 'advantages' input for RLHF loss '{loss_fn_name}'")
         loss_fn_inputs["advantages"] = advantages
 
     if not is_rlhf_loss or "weights" in client_key_set:
@@ -261,7 +292,13 @@ def _prepare_loss_fn_inputs(
                 # (the HF backend fails fast instead of silently supervising it).
                 if (datum.loss_fn_inputs or {}).get("target_tokens") is None and length > 0:
                     value[length - 1] = 0.0
-            _copy_row(weights, row, value)
+            _copy_row(
+                weights,
+                row,
+                value,
+                expected_len=len(datum.model_input.to_ints()),
+                field_name="weights",
+            )
         loss_fn_inputs["weights"] = weights
 
     # The model-derived values always win over any client-supplied field of the
