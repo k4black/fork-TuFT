@@ -154,7 +154,10 @@ async def run_api_server(
     # Bind the port before serving to avoid race conditions with Ray
     # (https://github.com/vllm-project/vllm/issues/8204).
     sock_addr = (args.host or "", args.port)
-    sock = create_server_socket(sock_addr)
+    try:
+        sock = create_server_socket(sock_addr, reuse_port=False)  # type: ignore[call-arg]
+    except TypeError:
+        sock = create_server_socket(sock_addr)
 
     # Avoid uvicorn dropping requests when many are active concurrently.
     set_ulimit()
