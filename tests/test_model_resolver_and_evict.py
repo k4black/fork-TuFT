@@ -18,7 +18,7 @@ def test_resolve_model_immutable_lora_id(tmp_path: Path):
         model_id="run1",
         name="0001",
         base_model="Qwen/Qwen3-4B",
-        checkpoint_type="sampling",
+        checkpoint_type="sampler",
         created_at="2026-09-12T00:00:00Z",
         session_id="s1",
         tinker_path="tinker://user1/run1/checkpoints/0001",
