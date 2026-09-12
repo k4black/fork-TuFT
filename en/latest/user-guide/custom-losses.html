@@ -200,9 +200,9 @@ only these names, so a client cannot run arbitrary Python on shared infrastructu
 forward pass per step (<a class="reference internal" href="#runtime-cost">details below</a>).</p>
 <div class="note admonition">
 <p class="admonition-title">Requires</p>
-<p><code class="docutils literal notranslate"><span class="pre">tinker</span></code> ≥ 0.25 (the SDK version TuFT pins) and <code class="docutils literal notranslate"><span class="pre">torch</span></code> installed <strong>on the client</strong>. The custom
-callback runs in your process only — the TuFT server never imports or executes client Python,
-and no new server-side loss names are introduced.</p>
+<p><code class="docutils literal notranslate"><span class="pre">tinker</span></code> ≥ 0.25, &lt; 0.29 (the range TuFT is qualified against) and <code class="docutils literal notranslate"><span class="pre">torch</span></code> installed <strong>on the
+client</strong>. The custom callback runs in your process only — the TuFT server never imports or
+executes client Python, and no new server-side loss names are introduced.</p>
 </div>
 </section>
 <hr class="docutils"/>
