@@ -297,8 +297,10 @@ def test_non_numeric_loss_config_v2_is_rejected(arm: str) -> None:
     request = _proto_request(forward_only=False)
     if arm == "text":
         request.loss_fn_config_v2["mode"].text = "token"
-    # Leave the oneof unset for the "unset" case: an empty LossConfigValue entry.
-    request.loss_fn_config_v2["clip"].number = 0.2  # the legacy mirror is ignored
+    else:
+        # Touch the key without setting an arm: an empty LossConfigValue entry.
+        request.loss_fn_config_v2["mode"]
+    request.loss_fn_config_v2["clip"].number = 0.2
 
     with pytest.raises(ValueError, match="mode"):
         decode_forward_backward_request(request.SerializeToString())
