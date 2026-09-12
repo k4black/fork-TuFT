@@ -278,16 +278,11 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
 
         return prompt_logprobs_dict
 
-    if version >= parse_version("0.12.0") and version < parse_version("0.21.0"):
-        model_runner._get_prompt_logprobs_dict = MethodType(
-            _get_prompt_logprobs_dict_v12, model_runner
+    if version < parse_version("0.21.0"):
+        raise ValueError(
+            f"Unsupported vllm version for patching: {vllm.__version__}; expected >=0.21.0."
         )
-    elif version >= parse_version("0.21.0"):
-        model_runner._get_prompt_logprobs_dict = MethodType(
-            _get_prompt_logprobs_dict_v21, model_runner
-        )
-    else:
-        raise ValueError(f"Unsupported vllm version for patching: {vllm.__version__}.")
+    model_runner._get_prompt_logprobs_dict = MethodType(_get_prompt_logprobs_dict_v21, model_runner)
 
 
 class TuFTGPUWorker(VLLMGPUWorker):

@@ -53,52 +53,6 @@ def _get_vllm_version():
         return parse_version("0.19.1")
 
 
-def _patch_reasoning_content_alias(logger: logging.Logger) -> None:
-    """Map ``reasoning_content`` -> ``reasoning`` in assistant chat messages.
-
-    vLLM's reasoning parsers *emit* ``reasoning_content`` but (before 0.22)
-    reject it when it is sent back in a follow-up request. Fixed upstream in
-    vLLM 0.22.0 (#42664); only applied for older versions.
-    """
-    import vllm.entrypoints.chat_utils as chat_utils
-
-    current = getattr(chat_utils, "_parse_chat_message_content", None)
-    if current is None:
-        raise RuntimeError("vLLM patch failed: _parse_chat_message_content not found")
-
-    if getattr(current, "__patched_reasoning_content_alias__", False):
-        return
-
-    @functools.wraps(current)
-    def _patched_parse_chat_message_content(
-        message,
-        mm_tracker,
-        content_format,
-        interleave_strings,
-        mm_processor_kwargs=None,
-    ):
-        if (
-            isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and message.get("reasoning") is None
-            and message.get("reasoning_content") is not None
-        ):
-            message["reasoning"] = message.pop("reasoning_content")
-
-        return current(
-            message,
-            mm_tracker,
-            content_format,
-            interleave_strings,
-            mm_processor_kwargs=mm_processor_kwargs,
-        )
-
-    _patched_parse_chat_message_content.__patched_reasoning_content_alias__ = True  # type: ignore[attr-defined]
-    chat_utils._parse_chat_message_content = _patched_parse_chat_message_content
-
-    logger.info("Patched vLLM chat_utils to map reasoning_content -> reasoning")
-
-
 def _dummy_add_signal_handler(self, *args, **kwargs):
     # uvicorn installs signal handlers on startup; that raises when the event
     # loop is not on the main thread (as in a Ray actor). Do nothing instead.
@@ -168,9 +122,6 @@ async def run_api_server(
     )  # noqa: E501
     listen_address = f"http{'s' if is_ssl else ''}://{host_part}:{sock_addr[1]}"
     logger.info("vLLM API server listening on %s", listen_address)
-
-    if _get_vllm_version() < parse_version("0.22.0"):
-        _patch_reasoning_content_alias(logger)
 
     assert args is not None
     app = build_app(args)
