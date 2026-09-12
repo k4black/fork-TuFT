@@ -35,6 +35,7 @@ else:
         "Please upgrade PyTorch or use training_backend='hf' instead."
     )
 from tuft.backends.base_backend import BaseTrainingBackend
+from tuft.backends.dummy_datum import create_zero_weight_dummy_datum
 from tuft.backends.fsdp_engine import (
     FSDPModelConfig,
     build_base_model,
@@ -53,7 +54,6 @@ from tuft.backends.loss_inputs import (
     FSDP_BACKEND_OWNED_LOSS_INPUTS,
     validate_client_loss_fn_inputs,
 )
-from tuft.backends.dummy_datum import create_zero_weight_dummy_datum
 from tuft.backends.validation import validate_training_batch_inputs
 from tuft.backends.vllm_lora_compat import (
     add_language_model_aliases,
@@ -392,7 +392,9 @@ def _config_to_worker_dict(config: ModelConfig) -> dict:
         "attn_implementation": getattr(config, "attn_implementation", None),
         "slot_config": {
             "rank_slots": rank_slots,
-            "lora_alpha_ratio": float(getattr(config, "lora_alpha_ratio", DEFAULT_LORA_ALPHA_RATIO)),
+            "lora_alpha_ratio": float(
+                getattr(config, "lora_alpha_ratio", DEFAULT_LORA_ALPHA_RATIO)
+            ),
             "lora_alpha": getattr(config, "lora_alpha", None),
             "target_modules": target_modules,
             "target_parameters": target_parameters,
@@ -1206,8 +1208,8 @@ class FSDPTrainingBackend(BaseTrainingBackend):
                     .remote(r, n_gpus, config_dict)
                 )
                 actors.append(actor)
-            # Set _world_size / _actors only after all succeed; else next create_adapter retries init
-            # get_node_ip should return quickly; timeout avoids hang when actor not scheduled (e.g. GPU)
+            # Set _world_size/_actors only after all succeed; else retry init.
+            # get_node_ip should return quickly; timeout avoids hang when actor not scheduled.
             _GET_NODE_IP_TIMEOUT = 120
             self.logger.info("[FSDP] async_init: created %d actors, calling get_node_ip...", n_gpus)
             master_addr = await asyncio.to_thread(
@@ -1215,7 +1217,9 @@ class FSDPTrainingBackend(BaseTrainingBackend):
             )
             self.logger.info("[FSDP] get_node_ip OK: %s, calling init_dist...", master_addr)
             base_port = getattr(self.config, "fsdp_master_port", DEFAULT_MASTER_PORT)
-            master_port = base_port + self._fsdp_index if self._fsdp_index is not None else base_port
+            master_port = (
+                base_port + self._fsdp_index if self._fsdp_index is not None else base_port
+            )
             await asyncio.gather(
                 *[
                     asyncio.to_thread(ray.get, a.init_dist.remote(master_addr, master_port))
@@ -1481,6 +1485,7 @@ class FSDPTrainingBackend(BaseTrainingBackend):
             dummy_counts = []
             if eff_mb and len(data) > 0:
                 import math
+
                 max_micro_batches = max(math.ceil(len(s) / eff_mb) for s in shards if s)
                 padded_shards = []
                 for s in shards:

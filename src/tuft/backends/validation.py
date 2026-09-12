@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 from tinker import types
 
+
 _RLHF_LOSS_FNS = frozenset({"ppo", "grpo", "cispo", "importance_sampling", "dro"})
 
 
@@ -40,7 +41,8 @@ def validate_training_batch_inputs(
             t_len = len(inputs["target_tokens"].to_torch())
             if t_len != seq_len:
                 raise ValueError(
-                    f"Row {idx}: target_tokens length {t_len} does not match model_input length {seq_len}"
+                    f"Row {idx}: target_tokens length {t_len} does not match "
+                    f"model_input length {seq_len}"
                 )
 
         # Validate weights
@@ -48,7 +50,8 @@ def validate_training_batch_inputs(
             w_tensor = inputs["weights"].to_torch()
             if len(w_tensor) != seq_len:
                 raise ValueError(
-                    f"Row {idx}: weights length {len(w_tensor)} does not match model_input length {seq_len}"
+                    f"Row {idx}: weights length {len(w_tensor)} does not match "
+                    f"model_input length {seq_len}"
                 )
             if not torch.isfinite(w_tensor).all():
                 raise ValueError(f"Row {idx}: weights tensor contains NaN or Inf")
@@ -62,7 +65,8 @@ def validate_training_batch_inputs(
             lp_tensor = inputs["logprobs"].to_torch()
             if len(lp_tensor) != seq_len:
                 raise ValueError(
-                    f"Row {idx}: logprobs length {len(lp_tensor)} does not match model_input length {seq_len}"
+                    f"Row {idx}: logprobs length {len(lp_tensor)} does not match "
+                    f"model_input length {seq_len}"
                 )
             if not torch.isfinite(lp_tensor).all():
                 raise ValueError(f"Row {idx}: logprobs contains NaN or Inf")
@@ -75,7 +79,8 @@ def validate_training_batch_inputs(
             adv_tensor = inputs["advantages"].to_torch()
             if len(adv_tensor) != seq_len:
                 raise ValueError(
-                    f"Row {idx}: advantages length {len(adv_tensor)} does not match model_input length {seq_len}"
+                    f"Row {idx}: advantages length {len(adv_tensor)} does not match "
+                    f"model_input length {seq_len}"
                 )
             if not torch.isfinite(adv_tensor).all():
                 raise ValueError(f"Row {idx}: advantages contains NaN or Inf")

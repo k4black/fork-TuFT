@@ -1,8 +1,9 @@
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
+
 import pytest
 
-from tuft.checkpoints import CheckpointMetadata, CheckpointRecord
+from tuft.checkpoints import CheckpointMetadata
 from tuft.config import AppConfig, ModelConfig
 from tuft.oai.model_resolver import resolve_model
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
+
 import pytest
-from unittest.mock import MagicMock
+
 from tuft.backends.validation import validate_training_batch_inputs
 
 

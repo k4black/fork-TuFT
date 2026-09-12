@@ -181,7 +181,8 @@ def _copy_row(
     val_len = value.numel()
     if expected_len is not None and val_len != expected_len:
         raise ValueError(
-            f"Row {row}: {field_name} length {val_len} does not match expected length {expected_len}"
+            f"Row {row}: {field_name} length {val_len} does not match expected length "
+            f"{expected_len}"
         )
     if val_len > destination.size(1):
         raise ValueError(
@@ -249,7 +250,9 @@ def _prepare_loss_fn_inputs(
                     field_name="logprobs",
                 )
             elif is_rlhf_loss:
-                raise ValueError(f"Row {row}: missing required 'logprobs' input for RLHF loss '{loss_fn_name}'")
+                raise ValueError(
+                    f"Row {row}: missing required 'logprobs' input for RLHF loss '{loss_fn_name}'"
+                )
         loss_fn_inputs["logprobs"] = sampling_logprobs
 
     if is_rlhf_loss or "advantages" in client_key_set:
@@ -270,7 +273,9 @@ def _prepare_loss_fn_inputs(
                     field_name="advantages",
                 )
             elif is_rlhf_loss:
-                raise ValueError(f"Row {row}: missing required 'advantages' input for RLHF loss '{loss_fn_name}'")
+                raise ValueError(
+                    f"Row {row}: missing required 'advantages' input for RLHF loss '{loss_fn_name}'"
+                )
         loss_fn_inputs["advantages"] = advantages
 
     if not is_rlhf_loss or "weights" in client_key_set:
