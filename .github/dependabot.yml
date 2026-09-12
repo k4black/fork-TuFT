@@ -25,6 +25,9 @@ updates:
       prefix: "chore"
       prefix-development: "chore"
       include: "scope"
+    ignore:
+      - dependency-name: "torch"
+      - dependency-name: "vllm"
     groups:
       python-minor-patch:
         applies-to: version-updates

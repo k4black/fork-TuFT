@@ -1,27 +1,34 @@
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
+
 import pytest
 
-from tuft.checkpoints import CheckpointMetadata, CheckpointRecord
+from tuft.checkpoints import CheckpointRecord
 from tuft.config import AppConfig, ModelConfig
 from tuft.oai.model_resolver import resolve_model
 
 
-def test_resolve_model_immutable_lora_id(tmp_path):
-    ckpt_dir = tmp_path / "checkpoints"
-    ckpt_path = ckpt_dir / "user1" / "run1" / "checkpoints" / "0001"
-    adapter_path = ckpt_path / "adapter"
-    adapter_path.mkdir(parents=True)
+def test_resolve_model_immutable_lora_id(tmp_path: Path):
+    checkpoint_dir = tmp_path / "user1" / "run1" / "checkpoints" / "0001"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    metadata = CheckpointMetadata(
-        base_model="Qwen/Qwen3-4B",
-        step=1,
-        loss=0.5,
+    record = CheckpointRecord.from_training_run(
+        training_run_id="run1",
+        checkpoint_name="0001",
+        owner_name="user1",
+        checkpoint_type="sampler",
+        checkpoint_root_dir=tmp_path,
     )
-    (ckpt_path / "metadata.json").write_text(metadata.model_dump_json(), encoding="utf-8")
+    record.adapter_path.mkdir(parents=True, exist_ok=True)
+    record.save_metadata(
+        session_id="s1",
+        base_model="Qwen/Qwen3-4B",
+        lora_rank=16,
+        lora_alpha=32,
+    )
 
     app_config = AppConfig(
-        checkpoint_dir=ckpt_dir,
+        checkpoint_dir=tmp_path,
         supported_models=[
             ModelConfig(
                 model_name="Qwen/Qwen3-4B",
@@ -31,7 +38,7 @@ def test_resolve_model_immutable_lora_id(tmp_path):
         ],
     )
 
-    resolved = resolve_model("tinker://user1/run1/checkpoints/0001", app_config)
+    resolved = resolve_model(record.tinker_path, app_config)
     assert resolved.lora_id == "run1:0001"
     assert resolved.backend_model_name == "run1:0001"
 
@@ -60,6 +67,7 @@ async def test_sampling_controller_evict_removes_adapter():
         base_model="Qwen/Qwen3-4B",
         model_id="m1",
         model_path="/tmp/adapter",
+        session_seq_id=0,
     )
     controller.sampling_sessions["session1"] = record
 

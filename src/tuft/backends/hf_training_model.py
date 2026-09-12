@@ -178,7 +178,7 @@ class HFTrainingModel:
                     str(self.config.model_path),
                     lora_config,
                     self.config.lora_alpha_ratio,
-                    self.config.lora_alpha,
+                    getattr(self.config, "lora_alpha", None),
                     qwen_gated_deltanet_full_lora=self.config.qwen_gated_deltanet_full_lora,
                 )
                 span.set_attribute("tuft.lora_alpha", peft_config.lora_alpha)

@@ -1,7 +1,6 @@
-from unittest.mock import MagicMock
-import pytest
 import torch
 from tinker import types
+
 from tuft.backends.dummy_datum import create_zero_weight_dummy_datum
 
 
