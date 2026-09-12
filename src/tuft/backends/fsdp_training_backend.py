@@ -213,7 +213,8 @@ class SlotPoolConfig:
     """Multi-adapter slot pool configuration (rank -> number of slots)."""
 
     rank_slots: Dict[int, int] = field(default_factory=lambda: {8: 16, 16: 8})
-    lora_alpha_ratio: int = DEFAULT_LORA_ALPHA_RATIO
+    lora_alpha_ratio: float = DEFAULT_LORA_ALPHA_RATIO
+    lora_alpha: int | None = None
     target_modules: List[str] = field(default_factory=lambda: list(_DEFAULT_TARGET_MODULES))
     # Fused-parameter targets (peft target_parameters), e.g. MoE routed
     # experts. Homogeneous across slots like target_modules — peft requires
@@ -221,7 +222,7 @@ class SlotPoolConfig:
     target_parameters: List[str] = field(default_factory=list)
 
     def get_lora_alpha(self, rank: int) -> int:
-        return compute_lora_alpha(rank, self.lora_alpha_ratio)
+        return compute_lora_alpha(rank, self.lora_alpha_ratio, self.lora_alpha)
 
 
 @dataclass
@@ -389,7 +390,8 @@ def _config_to_worker_dict(config: ModelConfig) -> dict:
         "attn_implementation": getattr(config, "attn_implementation", None),
         "slot_config": {
             "rank_slots": rank_slots,
-            "lora_alpha_ratio": int(getattr(config, "lora_alpha_ratio", DEFAULT_LORA_ALPHA_RATIO)),
+            "lora_alpha_ratio": float(getattr(config, "lora_alpha_ratio", DEFAULT_LORA_ALPHA_RATIO)),
+            "lora_alpha": getattr(config, "lora_alpha", None),
             "target_modules": target_modules,
             "target_parameters": target_parameters,
         },
@@ -418,7 +420,8 @@ def _worker_dict_to_configs(config_dict: dict) -> tuple[FSDPModelConfig, SlotPoo
     sc = config_dict.get("slot_config") or {}
     slot_config = SlotPoolConfig(
         rank_slots=dict(sc.get("rank_slots", {8: 16})),
-        lora_alpha_ratio=int(sc.get("lora_alpha_ratio", DEFAULT_LORA_ALPHA_RATIO)),
+        lora_alpha_ratio=float(sc.get("lora_alpha_ratio", DEFAULT_LORA_ALPHA_RATIO)),
+        lora_alpha=sc.get("lora_alpha"),
         target_modules=list(sc.get("target_modules", _DEFAULT_TARGET_MODULES)),
         target_parameters=list(sc.get("target_parameters", [])),
     )
