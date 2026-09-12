@@ -29,9 +29,7 @@ import functools
 import logging
 from typing import Optional
 
-import vllm
 import vllm.envs as envs
-from packaging.version import InvalidVersion, parse as parse_version
 from vllm.entrypoints.launcher import serve_http
 from vllm.entrypoints.openai.api_server import (
     build_app,
@@ -44,13 +42,6 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 from vllm.utils.network_utils import is_valid_ipv6_address
 from vllm.utils.system_utils import set_ulimit
 from vllm.version import __version__ as VLLM_VERSION
-
-
-def _get_vllm_version():
-    try:
-        return parse_version(vllm.__version__)
-    except InvalidVersion:
-        return parse_version("0.19.1")
 
 
 def _dummy_add_signal_handler(self, *args, **kwargs):
