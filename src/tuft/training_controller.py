@@ -149,7 +149,7 @@ class TrainingRunRecord(BaseModel):
 class TrainingController:
     """Tracks training runs, enforces request ordering.
 
-    Routes work into ModelBackend instances.
+    Routes work into BaseTrainingBackend instances.
     """
 
     REDIS_KEY_PREFIX = "training_run"

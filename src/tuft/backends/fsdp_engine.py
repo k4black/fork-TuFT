@@ -22,10 +22,8 @@ from tuft.backends.loss_inputs import (
     batch_loss_fn_input,
     validate_client_loss_fn_inputs,
 )
-from tuft.loss_fn import get_loss_fn
-
-
-_RLHF_LOSS_FNS = {"ppo", "grpo", "cispo", "importance_sampling", "dro"}
+from tuft.backends.validation import _RLHF_LOSS_FNS
+from tuft.loss_fn import get_loss_fn, metrics_reduction
 
 
 def _fsdp_world_size() -> int:
@@ -308,20 +306,10 @@ def _prepare_loss_fn_inputs(
 
 def _merge_micro_metrics(metric_list: list[dict[str, Any]]) -> dict[str, float]:
     """Combine numeric micro-batch metrics using their declared reduction."""
-
-    grouped: dict[str, list[float]] = {}
-    for metrics in metric_list:
-        for key, value in metrics.items():
-            if isinstance(value, (int, float)):
-                grouped.setdefault(key, []).append(float(value))
-
-    merged: dict[str, float] = {}
-    for key, values in grouped.items():
-        if key.endswith(":mean"):
-            merged[key] = sum(values) / len(values)
-        else:
-            merged[key] = sum(values)
-    return merged
+    if not metric_list:
+        return {}
+    weights = [1.0] * len(metric_list)
+    return metrics_reduction(metric_list, weights)
 
 
 def forward_backward(
