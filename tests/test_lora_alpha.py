@@ -53,22 +53,45 @@ def test_compute_lora_alpha_scales_rank_by_ratio(rank: int, ratio: int):
 
 
 def test_compute_lora_alpha_defaults_to_shared_ratio():
-    assert compute_lora_alpha(8) == 8 * DEFAULT_LORA_ALPHA_RATIO
+    assert compute_lora_alpha(8) == int(round(8 * DEFAULT_LORA_ALPHA_RATIO))
+
+
+def test_compute_lora_alpha_fractional_ratio():
+    assert compute_lora_alpha(64, lora_alpha_ratio=0.5) == 32
+
+
+def test_compute_lora_alpha_explicit_override():
+    assert compute_lora_alpha(64, lora_alpha_ratio=2.0, lora_alpha=32) == 32
 
 
 def test_model_config_defaults_to_shared_ratio():
     """The default is 2 for every backend, including "hf", which used 1 before."""
-    assert _model_config().lora_alpha_ratio == DEFAULT_LORA_ALPHA_RATIO == 2
+    assert _model_config().lora_alpha_ratio == DEFAULT_LORA_ALPHA_RATIO == 2.0
 
 
 def test_model_config_accepts_ratio_one_for_legacy_hf_deployments():
-    assert _model_config(lora_alpha_ratio=1).lora_alpha_ratio == 1
+    assert _model_config(lora_alpha_ratio=1).lora_alpha_ratio == 1.0
 
 
-@pytest.mark.parametrize("ratio", [0, -1])
-def test_model_config_rejects_ratio_below_one(ratio: int):
-    with pytest.raises(ValueError, match="lora_alpha_ratio must be >= 1"):
+def test_model_config_accepts_fractional_ratio():
+    assert _model_config(lora_alpha_ratio=0.5).lora_alpha_ratio == 0.5
+
+
+def test_model_config_accepts_explicit_alpha():
+    cfg = _model_config(lora_alpha=32)
+    assert cfg.lora_alpha == 32
+
+
+@pytest.mark.parametrize("ratio", [0, -1, -0.5])
+def test_model_config_rejects_non_positive_ratio(ratio: float):
+    with pytest.raises(ValueError, match="lora_alpha_ratio must be > 0"):
         _model_config(lora_alpha_ratio=ratio)
+
+
+@pytest.mark.parametrize("alpha", [0, -1])
+def test_model_config_rejects_non_positive_explicit_alpha(alpha: int):
+    with pytest.raises(ValueError, match="lora_alpha must be >= 1"):
+        _model_config(lora_alpha=alpha)
 
 
 def test_lora_alpha_ratio_round_trips_through_yaml(tmp_path):

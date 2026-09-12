@@ -101,7 +101,8 @@ def _export_vllm_compatible_lora_aliases(adapter_dir: Path, model_path: str) -> 
 def build_peft_lora_config(
     model_path: str,
     lora_config: TinkerLoraConfig,
-    lora_alpha_ratio: int = DEFAULT_LORA_ALPHA_RATIO,
+    lora_alpha_ratio: float = DEFAULT_LORA_ALPHA_RATIO,
+    lora_alpha: int | None = None,
     *,
     qwen_gated_deltanet_full_lora: bool = False,
 ) -> LoraConfig:
@@ -126,7 +127,7 @@ def build_peft_lora_config(
         r=lora_config.rank,
         target_modules=targets.modules,
         target_parameters=targets.parameters or None,
-        lora_alpha=compute_lora_alpha(lora_config.rank, lora_alpha_ratio),
+        lora_alpha=compute_lora_alpha(lora_config.rank, lora_alpha_ratio, lora_alpha),
     )
 
 
@@ -177,6 +178,7 @@ class HFTrainingModel:
                     str(self.config.model_path),
                     lora_config,
                     self.config.lora_alpha_ratio,
+                    self.config.lora_alpha,
                     qwen_gated_deltanet_full_lora=self.config.qwen_gated_deltanet_full_lora,
                 )
                 span.set_attribute("tuft.lora_alpha", peft_config.lora_alpha)

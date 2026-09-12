@@ -189,12 +189,20 @@ class TrainingController:
             # Log the LoRA scaling in effect: the "hf" backend used
             # lora_alpha = rank before lora_alpha_ratio existed, so operators
             # upgrading need to see which scaling their runs now get.
-            logger.info(
-                "Training backend for %s: %s, lora_alpha = rank * %d",
-                config.model_name,
-                getattr(config, "training_backend", "hf"),
-                config.lora_alpha_ratio,
-            )
+            if config.lora_alpha is not None:
+                logger.info(
+                    "Training backend for %s: %s, explicit lora_alpha = %d",
+                    config.model_name,
+                    getattr(config, "training_backend", "hf"),
+                    config.lora_alpha,
+                )
+            else:
+                logger.info(
+                    "Training backend for %s: %s, lora_alpha = rank * %g",
+                    config.model_name,
+                    getattr(config, "training_backend", "hf"),
+                    config.lora_alpha_ratio,
+                )
         return backends
 
     async def shutdown(self) -> None:
@@ -212,6 +220,8 @@ class TrainingController:
         a load, so the two can never disagree.
         """
         model_config = self._model_config_for(training_run.base_model)
+        if model_config and model_config.lora_alpha is not None:
+            return model_config.lora_alpha
         ratio = model_config.lora_alpha_ratio if model_config else DEFAULT_LORA_ALPHA_RATIO
         return compute_lora_alpha(training_run.lora_rank, ratio)
 

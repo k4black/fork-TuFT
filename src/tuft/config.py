@@ -31,17 +31,23 @@ def _default_capabilities() -> list[ModelCapability]:
 # Default multiplier from a LoRA adapter's rank to its ``lora_alpha``. The Tinker
 # ``LoraConfig`` carries only a rank, so the alpha has to come from server config;
 # 2 keeps the "hf" and "fsdp" training backends on the same update scaling.
-DEFAULT_LORA_ALPHA_RATIO = 2
+DEFAULT_LORA_ALPHA_RATIO = 2.0
 FSDP_QV_TARGET_MODULES = ("q_proj", "v_proj")
 
 
-def compute_lora_alpha(rank: int, lora_alpha_ratio: int = DEFAULT_LORA_ALPHA_RATIO) -> int:
+def compute_lora_alpha(
+    rank: int,
+    lora_alpha_ratio: float = DEFAULT_LORA_ALPHA_RATIO,
+    lora_alpha: int | None = None,
+) -> int:
     """Effective peft ``lora_alpha`` for an adapter of the given rank.
 
     Single definition shared by every training backend, so selecting a backend
     can never change LoRA update scaling for the same rank and configuration.
     """
-    return rank * lora_alpha_ratio
+    if lora_alpha is not None:
+        return int(lora_alpha)
+    return int(round(rank * lora_alpha_ratio))
 
 
 class TelemetryConfig(BaseModel):
@@ -106,7 +112,9 @@ class ModelConfig(BaseModel):
     # `lora_alpha_ratio: 1` explicitly. Checkpoints record their effective alpha and
     # a load that disagrees with this setting is rejected instead of silently
     # rescaling the adapter (see CheckpointRecord.validate_lora_alpha).
-    lora_alpha_ratio: int = DEFAULT_LORA_ALPHA_RATIO
+    lora_alpha_ratio: float = DEFAULT_LORA_ALPHA_RATIO
+    # Explicit lora_alpha override. When set, overrides lora_alpha_ratio.
+    lora_alpha: int | None = None
 
     # default training setting
     micro_batch_size: int = 1  # micro-batch size for training
@@ -286,9 +294,12 @@ class ModelConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_lora_alpha_ratio(self) -> "ModelConfig":
-        if self.lora_alpha_ratio < 1:
+        if self.lora_alpha is not None:
+            if self.lora_alpha < 1:
+                raise ValueError(f"lora_alpha must be >= 1, got {self.lora_alpha}")
+        elif self.lora_alpha_ratio <= 0:
             raise ValueError(
-                f"lora_alpha_ratio must be >= 1, got {self.lora_alpha_ratio}. "
+                f"lora_alpha_ratio must be > 0, got {self.lora_alpha_ratio}. "
                 "Use 1 to reproduce the previous 'hf' backend scaling (lora_alpha = rank)."
             )
         return self
