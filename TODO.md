@@ -13,33 +13,31 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
 - [ ] **Dependency & vLLM Alignment**
   - Verify pinned vLLM version compatibility (`vllm==0.24.0` in `pyproject.toml`) and native LoRA hot-swap semantics.
   - Verify SDK dependencies (`tinker>=0.25,<0.26`).
-- [ ] **C6: LoRA Alpha Configuration** (`src/tuft/config.py`, `src/tuft/backends/fsdp_training_backend.py`, `src/tuft/checkpoints.py`)
+- [x] **C6: LoRA Alpha Configuration** (`src/tuft/config.py`, `src/tuft/backends/fsdp_training_backend.py`, `src/tuft/checkpoints.py`)
   - Remove strict integer `>= 1` limitation on `lora_alpha_ratio`.
   - Support explicit `lora_alpha` or positive fractional ratio (e.g. 0.5) to support rank 64 / alpha 32.
   - Preserve effective alpha in checkpoint metadata and reload validation.
-  - Verify: training and serving load rank 64 / alpha 32 and agree on logprobs within measured tolerance.
+  - Verify: training and serving load rank 64 / alpha 32 and agree on logprobs within measured tolerance. (Merged in #3)
 
 ---
 
 ## Phase 1: Core Trainer Correctness (P1)
-- [ ] **C3: Pre-backward Loss Validation & Rejection** (`src/tuft/backends/fsdp_engine.py`, `src/tuft/backends/fsdp_training_backend.py`)
-  - *Requires plan + `/grill-me`*
+- [x] **C3: Pre-backward Loss Validation & Rejection** (`src/tuft/backends/fsdp_engine.py`, `src/tuft/backends/fsdp_training_backend.py`)
   - Stop truncating oversized rows silently.
   - Stop substituting current-policy logprobs when behavior logprobs are missing.
   - Stop defaulting missing RL advantages to zero.
   - Validate required fields, exact per-row lengths, and finite values upfront before backward pass or gradient accumulation. Reject malformed requests immediately with clear client errors.
-  - Verify: a malformed row in a later microbatch fails before any gradient accumulation.
+  - Verify: a malformed row in a later microbatch fails before any gradient accumulation. (Merged in #4)
 - [ ] **C4: FSDP Uneven Batch Schedule & Collective Sync** (`src/tuft/backends/fsdp_training_backend.py`)
   - *Requires plan + `/grill-me`*
   - First reject unsupported shapes that cannot preserve the configured microbatch limit.
   - Introduce bounded schedule with equal collective steps across DP ranks, injecting zero-weight dummy microsteps where needed.
   - Verify: uneven batches preserve the microbatch limit, complete collectives without hanging, and match reference updates.
-- [ ] **C5: Distributed Actor Lifecycle & Robust Init** (`src/tuft/backends/fsdp_training_backend.py`)
-  - *Requires plan + `/grill-me`*
+- [x] **C5: Distributed Actor Lifecycle & Robust Init** (`src/tuft/backends/fsdp_training_backend.py`)
   - Ensure partial Ray actor initialization failures cleanly terminate all locally created actors.
   - Bound controller wait times for worker group initialization.
   - On rank failure, fail the group and all pending work cleanly without replaying ambiguous optimizer steps.
-  - Verify: inject failure at each initialization stage; verify no orphaned actors remain and retries succeed.
+  - Verify: inject failure at each initialization stage; verify no orphaned actors remain and retries succeed. (Merged in #4)
 
 ---
 
