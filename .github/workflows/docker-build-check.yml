@@ -1,0 +1,58 @@
+name: Docker Build Check
+
+on:
+  pull_request:
+    paths:
+      - 'docker/**'
+      - 'scripts/install.sh'
+      - 'pyproject.toml'
+      - '.github/workflows/docker-build-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-check:
+    name: Build Docker (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cu12
+            dockerfile: docker/Dockerfile.cu12
+          - variant: cu13
+            dockerfile: docker/Dockerfile
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # GitHub Actions runners only have ~14GB available by default.
+      # Clean preinstalled packages (Android, .NET, Haskell, swap) to free ~35GB.
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image (${{ matrix.variant }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          load: true
+          tags: tuft-test:${{ matrix.variant }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+
+      - name: Verify Built Image Smoke Test
+        run: |
+          docker run --rm tuft-test:${{ matrix.variant }} python -c "import torch, tuft; print('Container smoke OK: torch', torch.__version__)"
