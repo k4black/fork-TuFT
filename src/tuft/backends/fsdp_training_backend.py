@@ -53,6 +53,7 @@ from tuft.backends.loss_inputs import (
     FSDP_BACKEND_OWNED_LOSS_INPUTS,
     validate_client_loss_fn_inputs,
 )
+from tuft.backends.validation import validate_training_batch_inputs
 from tuft.backends.vllm_lora_compat import (
     add_language_model_aliases,
     vllm_nests_language_model,
@@ -1193,51 +1194,51 @@ class FSDPTrainingBackend(BaseTrainingBackend):
             }
 
         actors = []
-        for r in range(n_gpus):
-            actor = (
-                ray.remote(FSDPWorkerActor)
-                .options(
-                    num_gpus=1,
-                    runtime_env=_runtime_env,
-                )
-                .remote(r, n_gpus, config_dict)
-            )
-            actors.append(actor)
-        # Set _world_size / _actors only after all succeed; else next create_adapter retries init
-        # get_node_ip should return quickly; timeout avoids hang when actor not scheduled (e.g. GPU)
-        _GET_NODE_IP_TIMEOUT = 120
-        self.logger.info("[FSDP] async_init: created %d actors, calling get_node_ip...", n_gpus)
         try:
+            for r in range(n_gpus):
+                actor = (
+                    ray.remote(FSDPWorkerActor)
+                    .options(
+                        num_gpus=1,
+                        runtime_env=_runtime_env,
+                    )
+                    .remote(r, n_gpus, config_dict)
+                )
+                actors.append(actor)
+            # Set _world_size / _actors only after all succeed; else next create_adapter retries init
+            # get_node_ip should return quickly; timeout avoids hang when actor not scheduled (e.g. GPU)
+            _GET_NODE_IP_TIMEOUT = 120
+            self.logger.info("[FSDP] async_init: created %d actors, calling get_node_ip...", n_gpus)
             master_addr = await asyncio.to_thread(
                 ray.get, actors[0].get_node_ip.remote(), timeout=_GET_NODE_IP_TIMEOUT
             )
-        except Exception as e:
-            self.logger.error("[FSDP] get_node_ip FAILED: %s", e)
-            raise
-        self.logger.info("[FSDP] get_node_ip OK: %s, calling init_dist...", master_addr)
-        base_port = getattr(self.config, "fsdp_master_port", DEFAULT_MASTER_PORT)
-        master_port = base_port + self._fsdp_index if self._fsdp_index is not None else base_port
-        try:
+            self.logger.info("[FSDP] get_node_ip OK: %s, calling init_dist...", master_addr)
+            base_port = getattr(self.config, "fsdp_master_port", DEFAULT_MASTER_PORT)
+            master_port = base_port + self._fsdp_index if self._fsdp_index is not None else base_port
             await asyncio.gather(
                 *[
                     asyncio.to_thread(ray.get, a.init_dist.remote(master_addr, master_port))
                     for a in actors
                 ]
             )
-        except Exception as e:
-            self.logger.error("[FSDP] init_dist FAILED: %s", e)
-            raise
-        self.logger.info("[FSDP] init_dist OK, calling build_worker...")
-        try:
+            self.logger.info("[FSDP] init_dist OK, calling build_worker...")
             await asyncio.gather(
                 *[asyncio.to_thread(ray.get, a.build_worker.remote()) for a in actors]
             )
+            self.logger.info("[FSDP] build_worker OK, FSDP backend ready")
+            self._actors = actors
+            self._world_size = n_gpus
         except Exception as e:
-            self.logger.error("[FSDP] build_worker FAILED: %s", e)
+            self.logger.error("[FSDP] async_init failed, tearing down spawned actors: %s", e)
+            for a in actors:
+                try:
+                    ray.kill(a, no_restart=True)
+                except Exception:
+                    pass
+            actors.clear()
+            self._actors = []
+            self._world_size = 0
             raise
-        self.logger.info("[FSDP] build_worker OK, FSDP backend ready")
-        self._actors = actors
-        self._world_size = n_gpus
 
     def _get_adapter_name(self, lora_id: str) -> str:
         if lora_id not in self._lora_id_to_adapter_name:
@@ -1398,6 +1399,7 @@ class FSDPTrainingBackend(BaseTrainingBackend):
         loss_fn_name = (
             loss_fn if isinstance(loss_fn, str) else getattr(loss_fn, "__name__", "cross_entropy")
         )
+        validate_training_batch_inputs(data, loss_fn_name, self.config.max_model_len)
         client_keys = validate_client_loss_fn_inputs(
             data,
             ignored_keys=FSDP_BACKEND_OWNED_LOSS_INPUTS,
