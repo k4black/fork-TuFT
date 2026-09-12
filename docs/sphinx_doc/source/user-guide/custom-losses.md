@@ -61,9 +61,9 @@ forward pass per step ([details below](#runtime-cost)).
 ```{admonition} Requires
 :class: note
 
-`tinker` ≥ 0.25 (the SDK version TuFT pins) and `torch` installed **on the client**. The custom
-callback runs in your process only — the TuFT server never imports or executes client Python,
-and no new server-side loss names are introduced.
+`tinker` ≥ 0.25, < 0.29 (the range TuFT is qualified against) and `torch` installed **on the
+client**. The custom callback runs in your process only — the TuFT server never imports or
+executes client Python, and no new server-side loss names are introduced.
 ```
 
 ---

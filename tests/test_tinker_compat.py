@@ -23,6 +23,7 @@ from tuft.compat import (
     decode_forward_backward_request,
     decode_stored_payload,
     encode_payload_for_storage,
+    sampled_sequence,
     serialize_forward_backward_output_proto,
 )
 from tuft.config import AppConfig, ModelConfig
@@ -286,6 +287,37 @@ async def test_unknown_loss_fn_is_rejected(compatibility_app) -> None:
     assert "not_a_loss_fn" in response.json()["detail"]
 
 
+@pytest.mark.skipif(
+    not hasattr(public_pb.ForwardBackwardRequest(), "loss_fn_config_v2"),
+    reason="loss_fn_config_v2 only exists from tinker 0.26.2",
+)
+@pytest.mark.parametrize("arm", ["text", "unset"])
+def test_non_numeric_loss_config_v2_is_rejected(arm: str) -> None:
+    """v2 wins over the legacy float map, so an unusable arm cannot be silently dropped."""
+    request = _proto_request(forward_only=False)
+    if arm == "text":
+        request.loss_fn_config_v2["mode"].text = "token"
+    else:
+        # Touch the key without setting an arm: an empty LossConfigValue entry.
+        request.loss_fn_config_v2["mode"]
+    request.loss_fn_config_v2["clip"].number = 0.2
+
+    with pytest.raises(ValueError, match="mode"):
+        decode_forward_backward_request(request.SerializeToString())
+
+
+def test_numeric_loss_config_v2_is_preferred_over_the_legacy_map() -> None:
+    request = _proto_request(forward_only=False)
+    if not hasattr(request, "loss_fn_config_v2"):
+        pytest.skip("loss_fn_config_v2 only exists from tinker 0.26.2")
+    # A deliberately stale legacy mirror must not win.
+    request.loss_fn_config["scale"] = 99.0
+    request.loss_fn_config_v2["scale"].number = 0.25
+
+    decoded = decode_forward_backward_request(request.SerializeToString())
+    assert decoded.loss_fn_config == {"scale": pytest.approx(0.25)}
+
+
 @pytest.mark.asyncio
 async def test_queued_future_is_persistable(compatibility_app) -> None:
     """operation_args is stored as JSON, so nothing in it may be a numpy holder."""
@@ -338,7 +370,7 @@ async def test_sample_response_uses_protobuf_when_requested(compatibility_app) -
     app, state = compatibility_app
     state.future_store.payload = types.SampleResponse(
         sequences=[
-            types.SampledSequence(
+            sampled_sequence(
                 stop_reason="stop",
                 tokens_np=np.asarray([7, 8], dtype=np.int32),
                 logprobs_np=np.asarray([-0.4, -0.5], dtype=np.float32),
@@ -420,7 +452,7 @@ def test_mismatched_loss_output_fields_are_rejected() -> None:
         ),
         types.SampleResponse(
             sequences=[
-                types.SampledSequence(
+                sampled_sequence(
                     stop_reason="length",
                     tokens_np=np.asarray([1, 2, 3], dtype=np.int32),
                     logprobs_np=np.asarray([-0.1, -0.2, -0.3], dtype=np.float32),
@@ -460,7 +492,7 @@ def test_non_proto_payloads_are_left_alone() -> None:
         ),
         types.SampleResponse(
             sequences=[
-                types.SampledSequence(
+                sampled_sequence(
                     stop_reason="stop",
                     tokens_np=np.asarray([4, 5], dtype=np.int32),
                     logprobs_np=np.asarray([-0.1, -0.2], dtype=np.float32),

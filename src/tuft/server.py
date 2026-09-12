@@ -293,6 +293,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         model_id: str | None = None,
         operation_type: str | None = None,
         operation_args: dict[str, Any] | None = None,
+        sample_sequence_ids: list[str] | None = None,
     ) -> types.UntypedAPIFuture:
         return await state.future_store.enqueue(
             operation,
@@ -300,6 +301,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
             user_id=user_id,
             operation_type=operation_type,  # type: ignore[arg-type]
             operation_args=operation_args,
+            sample_sequence_ids=sample_sequence_ids,
         )
 
     @app.post(
@@ -568,6 +570,12 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> types.UntypedAPIFuture:
+        # tinker >= 0.26.2 requires one sequence id per requested sample on the
+        # promise; the ids are session-scoped and stable per (session, seq, i).
+        sample_sequence_ids = [
+            f"{request.sampling_session_id}:{request.seq_id}:{index}"
+            for index in range(request.num_samples)
+        ]
         return await _queue_future(
             partial(state.run_sample, request=request, user_id=user.user_id),
             state=state,
@@ -577,6 +585,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
                 "request": request,
                 "user_id": user.user_id,
             },
+            sample_sequence_ids=sample_sequence_ids,
         )
 
     @app.post("/api/v1/retrieve_future")

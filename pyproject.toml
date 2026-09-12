@@ -14,12 +14,15 @@ dependencies = [
     "fastapi>=0.133.0,<0.137.0",
     "httpx>=0.28.1",
     "numpy>=2.0.0",
-    # Pinned to 0.25.x at both ends. TuFT speaks 0.25's protocol directly:
-    # /forward_backward is protobuf-only and decodes into 0.25 dataclass types.
-    # Older SDKs are not just untested, they break -- forward_only and
-    # prompt_cache_hit_tokens, which this server reads and writes, only exist
-    # from 0.23.
-    "tinker>=0.25,<0.26",
+    # Range-pinned across the wire generations TuFT is qualified against
+    # (tests/test_tinker_sdk_e2e.py exercises both 0.25.0 and 0.28.1 in CI):
+    # /forward_backward is protobuf-only and decodes into tinker dataclass types.
+    # 0.25 is the floor -- forward_only and prompt_cache_hit_tokens, which this
+    # server reads and writes, only exist from 0.23 and stabilized by 0.25.
+    # src/tuft/compat.py absorbs the drift within the range: 0.26.2 required
+    # sample sequence identity and added loss_fn_config_v2, and 0.28.0 renamed
+    # the top-k prompt-logprobs field. Bumping past 0.28 needs a fresh pass.
+    "tinker>=0.25,<0.29",
     "protobuf>=4.21.0",
     "typer>=0.20.1",
     "uvicorn[standard]>=0.38.0",
