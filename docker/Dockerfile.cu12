@@ -30,7 +30,7 @@ COPY ./src ./src
 COPY ./scripts ./scripts
 
 # Install TuFT with explicit CUDA 12 backend
-RUN bash ./scripts/install.sh --local-source /workspace --torch-backend cu128 --skip-gpu-checks \
+RUN bash ./scripts/install.sh --local-source /workspace --torch-backend cu129 --skip-gpu-checks \
     && . $HOME/.local/bin/env \
     && . /root/.tuft/venv/bin/activate \
     && uv pip install .[dev]
