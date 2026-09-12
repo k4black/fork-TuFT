@@ -159,7 +159,7 @@ supported_models:
 
 authorized_users:
   # Example: my-secret-api-key: admin-user
-  local-dev-key: local-user
+  tml-devkey: local-user
 
 # =============================================================================
 # Persistence Configuration

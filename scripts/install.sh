@@ -131,10 +131,9 @@ parse_args() {
 # stay self-contained: no colors, no print_* helpers, diagnostics to stderr.
 
 tuft_supported_cuda_backends() {
-    # TuFT's pinned upstream torch/vLLM stack is built against the CUDA 13.0
-    # wheel ABI (see docker/Dockerfile). Other cuNNN values remain available
-    # as explicit, unvalidated overrides for custom wheel/index deployments.
-    echo "cu130"
+    # Supported and validated CUDA backends: cu130 (default) as well as cu128 and cu129
+    # for environments running NVIDIA driver 550+ (e.g. CUDA 12 clusters).
+    echo "cu130 cu129 cu128"
 }
 
 tuft_backend_cuda_version() {

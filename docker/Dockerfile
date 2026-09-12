@@ -45,6 +45,7 @@ RUN bash ./scripts/install.sh --local-source /workspace \
     && . $HOME/.local/bin/env \
     && . /root/.tuft/venv/bin/activate \
     && uv pip install .[dev] \
+    && uv pip install "fla-core>=0.5.0" "flash-linear-attention>=0.4.2" || true \
     && python scripts/verify_runtime_versions.py
 
 ENTRYPOINT ["/bin/bash", "-c", "source ${VIRTUAL_ENV}/bin/activate && exec \"$@\"", "--"]
