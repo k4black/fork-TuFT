@@ -39,7 +39,7 @@ PINNED_PACKAGES = ("torch", "vllm")
 # version. Keep this explicit and version-specific so an untagged wheel is not
 # accidentally treated as backend-agnostic. vLLM 0.24.0's default Linux wheel
 # is the CUDA 13 build used by TuFT's validated cu130 stack.
-KNOWN_UNTAGGED_BACKENDS = {("vllm", "0.24.0"): "cu130"}
+KNOWN_UNTAGGED_BACKENDS = {("vllm", "0.27.0"): "cu130"}
 
 
 class Pin(NamedTuple):
