@@ -29,15 +29,15 @@ COPY ./README.md .
 COPY ./src ./src
 COPY ./scripts ./scripts
 
-# Install TuFT with explicit CUDA 12 backend
+# Install TuFT with explicit CUDA 12 backend:
+# 1. Install torch 2.13.0+cu129 from PyTorch index
+# 2. Install vllm 0.27.0+cu129 explicit release wheel
+# 3. Install TuFT with --no-deps / dependencies satisfied from cu129
 RUN bash ./scripts/install.sh --local-source /workspace --torch-backend cu129 --skip-gpu-checks \
     && . $HOME/.local/bin/env \
     && . /root/.tuft/venv/bin/activate \
-    && uv pip install .[dev]
-
-# Pre-install Flash Linear Attention and kernels for Qwen architectures
-RUN . /root/.tuft/venv/bin/activate \
-    && uv pip install "fla-core>=0.5.0" "flash-linear-attention>=0.4.2" || true
+    && uv pip install --upgrade "https://github.com/vllm-project/vllm/releases/download/v0.27.0/vllm-0.27.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" \
+    && uv pip install .[dev] "fla-core>=0.5.0" "flash-linear-attention>=0.4.2" || true
 
 # Verification Gate: Ensure no extensions mistakenly link libcudart.so.13
 RUN set -eu; \
