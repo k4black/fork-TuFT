@@ -435,6 +435,11 @@ class SamplingController:
         for sampling_id, record in list(self.sampling_sessions.items()):
             if record.model_id == model_id and record.user_id == user_id:
                 base_model = record.base_model
+                if record.model_path and base_model in self._base_backends:
+                    try:
+                        await self._base_backends[base_model].remove_adapter(record.sampling_session_id)
+                    except Exception:
+                        logger.exception("Failed to remove adapter for evicted session %s", sampling_id)
                 del self.sampling_sessions[sampling_id]
                 self._delete_session(sampling_id)
                 # Update metrics

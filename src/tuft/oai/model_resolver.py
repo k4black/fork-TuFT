@@ -76,7 +76,7 @@ def resolve_model(
             )
 
         adapter_path = parsed_checkpoint.adapter_path
-        lora_id = parsed_checkpoint.training_run_id
+        lora_id = f"{parsed_checkpoint.training_run_id}:{parsed_checkpoint.checkpoint_id}"
 
         if adapter_path.exists():
             # vLLM expects the lora_name (lora_id) as the model field,
