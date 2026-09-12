@@ -10,9 +10,14 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
 ---
 
 ## Phase 0: Quick Wins, Versions & Small Fixes
-- [ ] **Dependency & vLLM Alignment**
-  - Verify pinned vLLM version compatibility (`vllm==0.24.0` in `pyproject.toml`) and native LoRA hot-swap semantics.
-  - Verify SDK dependencies (`tinker>=0.25,<0.26`).
+- [x] **Dependency & vLLM Alignment**
+  - Upgraded coordinated `torch==2.13.0` and `vllm==0.27.0` in `pyproject.toml`.
+  - Pinned `KNOWN_UNTAGGED_BACKENDS` for vLLM 0.27.0 in `scripts/verify_runtime_versions.py` and updated runtime tests.
+  - Adapted `create_server_socket(addr, reuse_port=False)` with backwards-compatible fallback in `src/tuft/backends/vllm_api_server.py`.
+  - CI Checks (3.11, 3.12, 3.13) passing green. (Merged in #8)
+- [x] **CI Lint & Formatting Fixes**
+  - Cleaned all import formatting, line-length warnings, and Pyright type issues.
+  - Added dependabot rules to ignore isolated single-package bumps of `torch` and `vllm`. (Merged in #7)
 - [x] **C6: LoRA Alpha Configuration** (`src/tuft/config.py`, `src/tuft/backends/fsdp_training_backend.py`, `src/tuft/checkpoints.py`)
   - Remove strict integer `>= 1` limitation on `lora_alpha_ratio`.
   - Support explicit `lora_alpha` or positive fractional ratio (e.g. 0.5) to support rank 64 / alpha 32.
