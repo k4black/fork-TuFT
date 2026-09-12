@@ -9,10 +9,13 @@ from tuft.oai.model_resolver import resolve_model
 
 
 def test_resolve_model_immutable_lora_id(tmp_path: Path):
-    record = CheckpointRecord.create_new(
-        checkpoint_id="0001",
-        owner_name="user1",
+    checkpoint_dir = tmp_path / "user1" / "run1" / "checkpoints" / "0001"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    record = CheckpointRecord.from_training_run(
         training_run_id="run1",
+        checkpoint_name="0001",
+        owner_name="user1",
         checkpoint_type="sampler",
         checkpoint_root_dir=tmp_path,
     )
