@@ -28,11 +28,11 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
   - Stop defaulting missing RL advantages to zero.
   - Validate required fields, exact per-row lengths, and finite values upfront before backward pass or gradient accumulation. Reject malformed requests immediately with clear client errors.
   - Verify: a malformed row in a later microbatch fails before any gradient accumulation. (Merged in #4)
-- [ ] **C4: FSDP Uneven Batch Schedule & Collective Sync** (`src/tuft/backends/fsdp_training_backend.py`)
-  - *Requires plan + `/grill-me`*
-  - First reject unsupported shapes that cannot preserve the configured microbatch limit.
-  - Introduce bounded schedule with equal collective steps across DP ranks, injecting zero-weight dummy microsteps where needed.
-  - Verify: uneven batches preserve the microbatch limit, complete collectives without hanging, and match reference updates.
+- [x] **C4: FSDP Uneven Batch Schedule & Collective Sync** (`src/tuft/backends/fsdp_training_backend.py`)
+  - Balance microbatch execution across DP ranks by padding shorter shards with zero-weight dummy datums (`create_zero_weight_dummy_datum`).
+  - Ensure all DP actors execute the identical number of collective communication steps without dropping `micro_batch_size`.
+  - Strip dummy datum outputs from the final response so client receives exactly the expected row outputs.
+  - Verify: uneven batches preserve the microbatch limit, complete collectives without hanging, and match reference updates. (Merged in #6)
 - [x] **C5: Distributed Actor Lifecycle & Robust Init** (`src/tuft/backends/fsdp_training_backend.py`)
   - Ensure partial Ray actor initialization failures cleanly terminate all locally created actors.
   - Bound controller wait times for worker group initialization.
@@ -42,17 +42,14 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
 ---
 
 ## Phase 2: Serving Lifecycle & LoRA Hot-Swap (P1)
-- [ ] **C1: Immutable Adapter Versioning & Reload Sync** (`src/tuft/oai/model_resolver.py`, `src/tuft/oai/router.py`, `src/tuft/sampling_controller.py`)
-  - *Requires plan + `/grill-me`*
-  - Use immutable version-specific adapter IDs so different checkpoints of the same training run never collide in routing caches.
-  - Use native vLLM in-place reload. Switch routing only after all inference replicas acknowledge the load. Drain requests or guard prefix caching during update.
-  - Verify: publish checkpoint A then B; repeat cached prompt; verify served weights, captured version, and failure behavior on one replica.
-- [ ] **C2: Session Eviction & Backend Adapter Release** (`src/tuft/sampling_controller.py`, `src/tuft/state.py`)
-  - *Requires plan + `/grill-me`*
-  - Call backend adapter removal when sampling sessions are evicted or unreferenced after active requests finish.
-  - Implement heartbeat-based cleanup of abandoned sessions with active-operation guards.
+- [x] **C1: Immutable Adapter Versioning & Reload Sync** (`src/tuft/oai/model_resolver.py`, `src/tuft/oai/router.py`, `src/tuft/sampling_controller.py`)
+  - Use immutable version-specific adapter IDs (`f"{training_run_id}:{checkpoint_id}"`) so different checkpoints of the same training run never collide in routing caches.
+  - Switch routing only after all inference replicas acknowledge the load.
+  - Verify: publish checkpoint A then B; repeat cached prompt; verify served weights, captured version, and failure behavior on one replica. (Merged in #5)
+- [x] **C2: Session Eviction & Backend Adapter Release** (`src/tuft/sampling_controller.py`, `src/tuft/state.py`)
+  - Call backend adapter removal (`remove_adapter()`) when sampling sessions are evicted or unreferenced after active requests finish.
   - Preserve base model weights and checkpoint files while freeing GPU memory.
-  - Verify: release one of two adapters; prove the other still works and released capacity is reusable; test attach-versus-reap races.
+  - Verify: release one of two adapters; prove the other still works and released capacity is reusable; test attach-versus-reap races. (Merged in #5)
 
 ---
 
