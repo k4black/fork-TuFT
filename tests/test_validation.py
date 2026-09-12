@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from tinker import types
 
@@ -9,11 +11,14 @@ from tuft.backends.validation import validate_training_batch_inputs
 def make_datum(tokens: list[int], inputs: dict[str, types.TensorData] | None = None) -> types.Datum:
     return types.Datum(
         model_input=types.ModelInput.from_ints(tokens),
-        loss_fn_inputs=inputs,
+        loss_fn_inputs=inputs or {},
     )
 
 
-def td(data: list[float] | list[int], dtype: str = "float32") -> types.TensorData:
+def td(
+    data: list[float] | list[int],
+    dtype: Literal["float32", "int64"] = "float32",
+) -> types.TensorData:
     return types.TensorData(data=list(data), dtype=dtype)
 
 
