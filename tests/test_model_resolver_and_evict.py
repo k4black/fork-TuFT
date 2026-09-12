@@ -21,7 +21,7 @@ def test_resolve_model_immutable_lora_id(tmp_path: Path):
         checkpoint_type="sampler",
         created_at="2026-09-12T00:00:00Z",
         session_id="s1",
-        tinker_path="tinker://user1/run1/checkpoints/0001",
+        tinker_path="tinker://run1/weights/0001",
         owner_name="user1",
     )
     (ckpt_path / "metadata.json").write_text(metadata.model_dump_json(), encoding="utf-8")
@@ -37,7 +37,7 @@ def test_resolve_model_immutable_lora_id(tmp_path: Path):
         ],
     )
 
-    resolved = resolve_model("tinker://user1/run1/checkpoints/0001", app_config)
+    resolved = resolve_model("tinker://run1/weights/0001", app_config)
     assert resolved.lora_id == "run1:0001"
     assert resolved.backend_model_name == "run1:0001"
 

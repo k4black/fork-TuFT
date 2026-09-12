@@ -249,10 +249,7 @@ def _prepare_loss_fn_inputs(
                     expected_len=len(datum.model_input.to_ints()),
                     field_name="logprobs",
                 )
-            elif is_rlhf_loss:
-                raise ValueError(
-                    f"Row {row}: missing required 'logprobs' input for RLHF loss '{loss_fn_name}'"
-                )
+
         loss_fn_inputs["logprobs"] = sampling_logprobs
 
     if is_rlhf_loss or "advantages" in client_key_set:
@@ -272,10 +269,7 @@ def _prepare_loss_fn_inputs(
                     expected_len=len(datum.model_input.to_ints()),
                     field_name="advantages",
                 )
-            elif is_rlhf_loss:
-                raise ValueError(
-                    f"Row {row}: missing required 'advantages' input for RLHF loss '{loss_fn_name}'"
-                )
+
         loss_fn_inputs["advantages"] = advantages
 
     if not is_rlhf_loss or "weights" in client_key_set:
