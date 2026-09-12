@@ -157,7 +157,7 @@ async def run_api_server(
     try:
         sock = create_server_socket(sock_addr, reuse_port=False)  # type: ignore[call-arg]
     except TypeError:
-        sock = create_server_socket(sock_addr)
+        sock = create_server_socket(sock_addr)  # pyright: ignore[reportCallIssue]
 
     # Avoid uvicorn dropping requests when many are active concurrently.
     set_ulimit()
