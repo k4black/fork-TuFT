@@ -1,21 +1,32 @@
 """Serialization helpers for the Tinker wire formats.
 
-TuFT targets tinker >= 0.25, where ``/forward_backward`` is protobuf-only in both
-directions. The response side is not merely an optimization: since tinker 0.22
-``SampleResponse`` and ``ForwardBackwardOutput`` are plain dataclasses, and the
-SDK's ``deserialize_json_response`` only revives pydantic models, so a JSON body
-reaches the caller as a bare dict. Everything the SDK can decode as protobuf must
-therefore go back as protobuf.
+TuFT targets tinker >= 0.25, < 0.29, where ``/forward_backward`` is protobuf-only
+in both directions. The response side is not merely an optimization: since tinker
+0.22 ``SampleResponse`` and ``ForwardBackwardOutput`` are plain dataclasses, and
+the SDK's ``deserialize_json_response`` only revives pydantic models, so a JSON
+body reaches the caller as a bare dict. Everything the SDK can decode as protobuf
+must therefore go back as protobuf.
 
 JSON serialization is still needed for the payload types FastAPI cannot handle on
 its own (the same dataclasses hold numpy arrays that pydantic will not encode).
+
+The wire protocol drifted across the supported range, so a few constructs are
+version-adaptive (see the module-level capability probes below):
+
+- 0.26.2 made ``SampledSequence.sequence_id`` and ``UntypedAPIFuture``'s
+  ``sample_sequence_ids`` mandatory for sampling (the SDK asserts every sample
+  promise carries one id per requested sample); neither exists on 0.25.
+- 0.26.2 added ``ForwardBackwardRequest.loss_fn_config_v2`` (number|text) and
+  only mirrors numeric kwargs into the legacy float map.
+- 0.28.0 renamed the top-k prompt-logprobs message and its ``prompt_length``
+  field to ``length`` (same field number, so the wire bytes are unchanged).
 """
 
 from __future__ import annotations
 
 import base64
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, cast, get_args
 
 import numpy as np
@@ -35,6 +46,85 @@ from tinker.types.sample_response import SampleResponse
 PROTO_PAYLOAD_TYPES: tuple[type, ...] = (SampleResponse, ForwardBackwardOutput)
 
 _LOSS_FN_NAMES = frozenset(get_args(types.LossFnType))
+
+# tinker >= 0.26.2 made these sampling-identity fields required; 0.25 has neither.
+_SAMPLED_SEQUENCE_HAS_SEQUENCE_ID = any(
+    field.name == "sequence_id" for field in fields(types.SampledSequence)
+)
+_UNTYPED_FUTURE_HAS_SAMPLE_SEQUENCE_IDS = (
+    "sample_sequence_ids" in types.UntypedAPIFuture.model_fields
+)
+
+# tinker 0.28.0 renamed the top-k prompt-logprobs ``prompt_length`` field (number
+# 4) to ``length``; probe the field so the writer works on both spellings.
+_TOPK_LENGTH_FIELD = (
+    "length"
+    if hasattr(public_pb.SampleResponse().topk_prompt_logprobs, "length")
+    else "prompt_length"
+)
+
+
+def sampled_sequence(**kwargs: Any) -> types.SampledSequence:
+    """Build a ``SampledSequence`` across the supported tinker range.
+
+    The server never assigns sequence identity -- the SDK stamps the
+    submission-time ids onto the response -- so pass ``None`` where the field
+    exists (0.26.2+) and omit it on 0.25 where it does not.
+    """
+    if _SAMPLED_SEQUENCE_HAS_SEQUENCE_ID:
+        kwargs.setdefault("sequence_id", None)
+    return types.SampledSequence(**kwargs)
+
+
+def untyped_api_future(
+    *,
+    request_id: str,
+    model_id: str | None = None,
+    sample_sequence_ids: list[str] | None = None,
+) -> types.UntypedAPIFuture:
+    """Build an ``UntypedAPIFuture`` across the supported tinker range.
+
+    tinker >= 0.26.2's ``SamplingClient`` asserts a sample promise carries one
+    ``sample_sequence_id`` per requested sample; the field is absent on 0.25.
+    """
+    kwargs: dict[str, Any] = {"request_id": request_id, "model_id": model_id}
+    if sample_sequence_ids is not None and _UNTYPED_FUTURE_HAS_SAMPLE_SEQUENCE_IDS:
+        kwargs["sample_sequence_ids"] = sample_sequence_ids
+    return types.UntypedAPIFuture(**kwargs)
+
+
+def _decode_loss_fn_config(
+    proto: public_pb.ForwardBackwardRequest,
+) -> dict[str, float] | None:
+    """Read loss-config kwargs, preferring the v2 map when the SDK sets it.
+
+    tinker >= 0.26.2 sends ``loss_fn_config_v2`` (number|text) and mirrors only
+    numeric values into the legacy float map. TuFT loss functions take numeric
+    kwargs only, so a text value is a bad request rather than something to drop,
+    and so is an entry with no arm set -- v2 wins over the legacy map, so
+    ignoring a key here would silently change the loss kwargs.
+    A 0.25 client (no v2 field) or a numeric-only newer client both fall back to
+    the legacy float map.
+    """
+    config_v2 = getattr(proto, "loss_fn_config_v2", None)
+    if config_v2:
+        config: dict[str, float] = {}
+        for key, value in config_v2.items():
+            arm = value.WhichOneof("value")
+            if arm == "number":
+                config[key] = value.number
+            elif arm == "text":
+                raise ValueError(
+                    f"loss_fn_config[{key!r}] is a string; "
+                    "TuFT loss functions take numeric kwargs only"
+                )
+            else:
+                raise ValueError(
+                    f"loss_fn_config[{key!r}] carries no value; expected a number or a string"
+                )
+        return config or None
+    return dict(proto.loss_fn_config) or None
+
 
 # zstd reaches roughly 32,000x on repetitive input, so 32 KB on the wire expands
 # to 1 GB. The SDK chunks fwd/bwd requests at fwdbwd_max_chunk_bytes_count (5 MB
@@ -305,7 +395,7 @@ def decode_forward_backward_request(
         seq_id=proto.seq_id,
         data=[_datum_from_proto(datum) for datum in proto.data],
         loss_fn=cast(types.LossFnType, proto.loss_fn),
-        loss_fn_config=dict(proto.loss_fn_config) or None,
+        loss_fn_config=_decode_loss_fn_config(proto),
         forward_only=proto.forward_only,
     )
 
@@ -441,7 +531,7 @@ def serialize_sample_response_proto(response: SampleResponse) -> bytes:
             topk_msg.token_ids = token_ids.tobytes()
             topk_msg.logprobs = logprobs_matrix.tobytes()
             topk_msg.k = k
-            topk_msg.prompt_length = n
+            setattr(topk_msg, _TOPK_LENGTH_FIELD, n)
 
     return proto.SerializeToString()
 
@@ -496,8 +586,10 @@ __all__ = [
     "decode_stored_payload",
     "encode_payload_for_storage",
     "maybe_serialize_payload",
+    "sampled_sequence",
     "serialize_forward_backward_output_proto",
     "serialize_payload_proto",
     "serialize_sample_response",
     "serialize_sample_response_proto",
+    "untyped_api_future",
 ]

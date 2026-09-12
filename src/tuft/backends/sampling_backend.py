@@ -13,6 +13,7 @@ from typing import Any, Optional
 from opentelemetry.trace import StatusCode
 from tinker import types
 
+from ..compat import sampled_sequence
 from ..config import ModelConfig
 from ..telemetry.tracing import get_tracer
 from .base_backend import BaseSamplingBackend
@@ -55,7 +56,7 @@ def _build_sample_response(
 
     # collect response sequences
     for seq_output in req_output.outputs:
-        seq = types.SampledSequence(
+        seq = sampled_sequence(
             stop_reason="length" if seq_output.finish_reason == "length" else "stop",
             _tokens_list=seq_output.token_ids,
             _logprobs_list=[
@@ -784,7 +785,7 @@ class DummySamplingBackend(BaseSamplingBackend):
         sequences: list[types.SampledSequence] = []
         for _ in range(num_samples):
             generated = self._generate_tokens(prompt_tokens, max_tokens)
-            seq = types.SampledSequence(
+            seq = sampled_sequence(
                 stop_reason="length",
                 _tokens_list=generated,
                 _logprobs_list=[-0.3 for _ in generated],

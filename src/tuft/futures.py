@@ -20,7 +20,7 @@ from pydantic import (
 from tinker import types
 from tinker.types.try_again_response import TryAgainResponse
 
-from .compat import decode_stored_payload, encode_payload_for_storage
+from .compat import decode_stored_payload, encode_payload_for_storage, untyped_api_future
 from .exceptions import (
     FutureCancelledException,
     FutureNotFoundException,
@@ -278,6 +278,7 @@ class FutureStore:
         queue_state: QueueState = "active",
         operation_type: OperationType | None = None,
         operation_args: dict[str, Any] | None = None,
+        sample_sequence_ids: list[str] | None = None,
     ) -> types.UntypedAPIFuture:
         """Enqueue a task (sync or async) and return a future immediately.
 
@@ -288,6 +289,9 @@ class FutureStore:
             queue_state: State of the queue.
             operation_type: Type of operation for recovery purposes.
             operation_args: Serializable arguments for recovery.
+            sample_sequence_ids: One id per requested sample, returned on the
+                sampling promise so tinker >= 0.26.2 clients can stamp sequence
+                identity onto the response.
         """
         async with self._lock:
             future_id = self._allocate_future_id()
@@ -374,7 +378,11 @@ class FutureStore:
         # Create and track the task
         task = asyncio.create_task(_runner())
         self._tasks.add(task)
-        return types.UntypedAPIFuture(request_id=record.request_id, model_id=model_id)
+        return untyped_api_future(
+            request_id=record.request_id,
+            model_id=model_id,
+            sample_sequence_ids=sample_sequence_ids,
+        )
 
     async def create_ready_future(
         self,
@@ -396,7 +404,7 @@ class FutureStore:
             record.event.set()
             self._store_record(record)
 
-        return types.UntypedAPIFuture(request_id=record.request_id, model_id=model_id)
+        return untyped_api_future(request_id=record.request_id, model_id=model_id)
 
     async def _mark_ready(
         self, request_id: str, payload: Any, operation_type: str | None = None

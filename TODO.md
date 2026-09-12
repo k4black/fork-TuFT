@@ -59,10 +59,22 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
 ---
 
 ## Phase 3: Compatibility & Deployment Topology (P1)
-- [ ] **D2: Tinker Protobuf SDK & Cookbook Qualification**
-  - Pin and test against stock Tinker SDK client (`tinker>=0.25`).
-  - Wire conversion stays at API boundary.
-  - Verify: end-to-end client sequence: create adapter → forward/backward → optimizer step → save → create sampler → sample (including pipelining, duplicates, errors, reordered seq IDs).
+- [x] **D2: Tinker Protobuf SDK & Cookbook Qualification**
+  - Range-pinned `tinker>=0.25,<0.29` and qualified against both wire generations
+    (0.25.0 and 0.28.1) in CI (`.github/workflows/checks.yml::tinker-compat`).
+  - Wire conversion stays at the API boundary in `src/tuft/compat.py`, which now
+    absorbs the drift found across the range:
+    - 0.26.2 made sample sequence identity mandatory (`SampledSequence.sequence_id`
+      and `UntypedAPIFuture.sample_sequence_ids`); `/api/v1/asample` now mints one
+      id per requested sample so `SamplingClient.sample()` stops asserting.
+    - 0.26.2 added `loss_fn_config_v2` (number|text); decoding prefers it and keeps
+      the numeric-only contract (a string kwarg is a 422).
+    - 0.28.0 renamed the top-k prompt-logprobs `prompt_length` field to `length`.
+  - Verified end to end over the real SDK (`tests/test_tinker_sdk_e2e.py`, CPU/dummy
+    backends): create adapter → forward/backward → optim_step → save → create sampler
+    → sample, plus JSON-vs-protobuf retrieve wire formats, top-k round trip,
+    server-minted sample sequence ids, pipelined out-of-order retrieval, duplicate /
+    gapped seq_id rejection, and terminal-failure surfacing without hangs.
 - [ ] **D3: OpenAI Proxy & AGL Rollout Capture** (`src/tuft/oai/proxy.py`)
   - Verify chosen token logprobs, token IDs, routing, and served-version capture match AGL requirements.
   - Verify: run AGL capture checks before and after publication, including in-flight requests.

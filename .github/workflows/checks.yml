@@ -66,3 +66,51 @@ jobs:
       # - name: Check uv lockfile is up to date
       #   run: |
       #     uv lock --check
+
+  # Qualify the tinker SDK wire protocol (D2) against both wire generations in the
+  # supported range: 0.25.0 (floor) and 0.28.1 (latest), from one server binary.
+  tinker-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tinker-version: ['0.25.0', '0.28.1']
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_REDIS_URL: redis://localhost:6379/15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.9.21'
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Pin tinker ${{ matrix.tinker-version }}
+        run: uv pip install 'tinker==${{ matrix.tinker-version }}'
+
+      - name: Run tinker SDK end-to-end qualification
+        # --no-sync: uv run would otherwise re-resolve tinker from pyproject and
+        # undo the explicit pin, collapsing both matrix legs onto one version.
+        run: uv run --no-sync pytest tests/test_tinker_sdk_e2e.py
