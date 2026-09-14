@@ -161,9 +161,10 @@ class ModelConfig(BaseModel):
     # If None, no quantization is applied (model runs in dtype as-is).
     quantization: str | None = None
 
-    # Ray custom resources that keep training and inference on separate GPUs or
-    # nodes: training actors request `train_gpu_resource` and vLLM sampling
-    # actors `infer_gpu_resource`, one unit per GPU the actor occupies. Start
+    # Ray custom resources that route training and inference actors to eligible
+    # nodes (per-node capacity quotas, not GPU-ID pins): training actors request
+    # `train_gpu_resource` and vLLM sampling actors `infer_gpu_resource`, one
+    # unit per GPU the actor occupies. Start
     # each node with the matching resource, e.g.
     #   ray start --resources '{"train_gpu": 6}'   # training node
     #   ray start --resources '{"infer_gpu": 2}'   # inference node

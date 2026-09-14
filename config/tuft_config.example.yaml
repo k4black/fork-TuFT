@@ -85,11 +85,14 @@ model_owner: local-user
 #       scaling have to set `lora_alpha_ratio: 1` explicitly. Checkpoints record
 #       their effective lora_alpha, and loading one whose alpha disagrees with
 #       this setting is rejected rather than silently rescaling updates.
-#   - train_gpu_resource / infer_gpu_resource: Ray custom resources that keep
-#       training actors and vLLM sampling actors on separate GPUs or nodes
-#       (default: none, i.e. Ray uses any node with free GPUs, as before).
+#   - train_gpu_resource / infer_gpu_resource: Ray custom resources that route
+#       training actors and vLLM sampling actors to eligible nodes and cap how
+#       many of each run there (default: none, i.e. Ray uses any node with free
+#       GPUs, as before). They are per-node capacity quotas, not GPU-ID pins:
+#       distinct GPUs per actor still come from Ray's own num_gpus accounting,
+#       and with colocate=true both roles share a GPU by design.
 #       Label the Ray nodes with matching resources, one unit per GPU:
-#         # 6 training GPUs + 2 inference GPUs on a single node
+#         # capacity for 6 training + 2 inference whole-GPU actors on one node
 #         ray start --head --num-gpus 8 --resources '{"train_gpu": 6, "infer_gpu": 2}'
 #         # or dedicated nodes
 #         ray start --head --num-gpus 8 --resources '{"train_gpu": 8}'
