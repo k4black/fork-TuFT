@@ -6,6 +6,7 @@ import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_serializer
 from tinker import types
@@ -35,7 +36,9 @@ def read_adapter_files(adapter_path: Path) -> dict[str, bytes]:
     return {
         child.name: child.read_bytes()
         for child in sorted(adapter_path.iterdir())
-        if child.is_file() and child.name not in TRAINER_ONLY_ADAPTER_FILES
+        if child.is_file()
+        and child.name not in TRAINER_ONLY_ADAPTER_FILES
+        and not child.name.endswith(".tmp")
     }
 
 
@@ -44,11 +47,14 @@ def write_adapter_files(adapter_path: Path, files: dict[str, bytes]) -> None:
 
     Each file lands through ``os.replace`` (same discipline as
     ``hf_training_model._export_vllm_compatible_lora_aliases``) so a reader can
-    never observe a truncated ``adapter_model.safetensors``.
+    never observe a truncated ``adapter_model.safetensors``. The tmp name is
+    unique per writer: concurrent stagings of the same adapter write identical
+    bytes, so whichever rename lands last is harmless, while a shared tmp name
+    would let one writer rename the other's half-written file.
     """
     adapter_path.mkdir(parents=True, exist_ok=True)
     for name, data in files.items():
-        tmp_path = adapter_path / f"{name}.tmp"
+        tmp_path = adapter_path / f"{name}.{uuid4().hex}.tmp"
         tmp_path.write_bytes(data)
         os.replace(tmp_path, adapter_path / name)
 

@@ -372,11 +372,17 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     # registry after success. Otherwise a failure (missing path, or the
                     # engine raising) would leave a stale entry that sample() would later
                     # pass to vLLM even though it was never registered.
-                    added = await self.engine.add_lora.remote(request)  # type: ignore[attr-defined]
-                    if added is False:
-                        raise RuntimeError(
-                            f"vLLM did not register LoRA adapter {lora_id} from {adapter_path}."
-                        )
+                    try:
+                        added = await self.engine.add_lora.remote(request)  # type: ignore[attr-defined]
+                        if added is False:
+                            raise RuntimeError(
+                                f"vLLM did not register LoRA adapter {lora_id} from {adapter_path}."
+                            )
+                    except Exception:
+                        # Registration failed, so remove_adapter will never run for
+                        # this id; drop the staged copy instead of leaking tmpfs.
+                        await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
+                        raise
                     self.lora_adapters[lora_id] = request
             except Exception as e:
                 span.record_exception(e)
