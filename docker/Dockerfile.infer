@@ -19,7 +19,7 @@ COPY ./scripts /opt/tuft/scripts
 
 # verify_runtime_versions.py is the ABI gate here: it fails the build if the
 # install moved torch or vLLM off the pins the base image was built with.
-RUN pip install --no-cache-dir "/opt/tuft[backend,persistence]" \
-    && python /opt/tuft/scripts/verify_runtime_versions.py
+RUN pip3 install --no-cache-dir "/opt/tuft[backend,persistence]" \
+    && python3 /opt/tuft/scripts/verify_runtime_versions.py
 
 # The base image's entrypoint (the vLLM OpenAI API server) is kept as is.

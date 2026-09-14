@@ -69,5 +69,5 @@ jobs:
       # because the venv is first on PATH.
       - name: Verify Built Image Smoke Test
         run: |
-          docker run --rm --entrypoint python tuft-test:${{ matrix.variant }} \
+          docker run --rm --entrypoint python3 tuft-test:${{ matrix.variant }} \
             -c "${{ matrix.smoke }}"
