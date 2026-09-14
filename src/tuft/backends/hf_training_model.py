@@ -661,11 +661,13 @@ class HFTrainingModel:
 
     @classmethod
     def get_actor(cls, config: ModelConfig) -> "ActorProxy":
+        num_gpus = 1 if not config.colocate else 1 - config.sampling_memory_fraction
         return (
             ray.remote(cls)
             .options(
                 name="training_model_" + config.model_name,
-                num_gpus=(1 if not config.colocate else 1 - config.sampling_memory_fraction),
+                num_gpus=num_gpus,
+                resources=config.actor_resources("training", num_gpus),
             )
             .remote(config)
         )

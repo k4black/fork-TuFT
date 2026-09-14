@@ -161,6 +161,18 @@ class ModelConfig(BaseModel):
     # If None, no quantization is applied (model runs in dtype as-is).
     quantization: str | None = None
 
+    # Ray custom resources that route training and inference actors to eligible
+    # nodes (per-node capacity quotas, not GPU-ID pins): training actors request
+    # `train_gpu_resource` and vLLM sampling actors `infer_gpu_resource`, one
+    # unit per GPU the actor occupies. Start
+    # each node with the matching resource, e.g.
+    #   ray start --resources '{"train_gpu": 6}'   # training node
+    #   ray start --resources '{"infer_gpu": 2}'   # inference node
+    # Unset (the default) requests no custom resource, so Ray schedules actors
+    # on any node with free GPUs exactly as before.
+    train_gpu_resource: str | None = None
+    infer_gpu_resource: str | None = None
+
     # whether to colocate sampling and training on the same device
     # only for local testing purposes
     colocate: bool = False
@@ -184,6 +196,11 @@ class ModelConfig(BaseModel):
     @property
     def sampling_enabled(self) -> bool:
         return SAMPLING_CAPABILITY in self.capabilities
+
+    def actor_resources(self, role: ModelCapability, num_gpus: float) -> dict[str, float]:
+        """Ray ``resources=`` for one actor of this role; empty when unconfigured."""
+        name = self.train_gpu_resource if role == TRAINING_CAPABILITY else self.infer_gpu_resource
+        return {name: num_gpus} if name else {}
 
     @model_validator(mode="after")
     def validate_capabilities(self) -> "ModelConfig":

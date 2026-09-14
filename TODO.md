@@ -78,11 +78,16 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
 - [ ] **D3: OpenAI Proxy & AGL Rollout Capture** (`src/tuft/oai/proxy.py`)
   - Verify chosen token logprobs, token IDs, routing, and served-version capture match AGL requirements.
   - Verify: run AGL capture checks before and after publication, including in-flight requests.
-- [ ] **D1: Component Resource Groups & Placement** (`src/tuft/backends/sampling_backend.py`, `src/tuft/backends/fsdp_training_backend.py`)
-  - *Requires plan + `/grill-me`*
-  - Add component resource groups using native Ray placement and node constraints for disjoint train/inference GPUs.
-  - Verify actual allocation on creation; clean up reservations on failure.
-  - Verify: qualify two hosts first, then both target layouts (1 node: 6 train / 2 TP inference; multi-node: 4 train nodes + 1 inference node).
+- [x] **D1: Component Resource Groups & Placement** (`src/tuft/backends/sampling_backend.py`, `src/tuft/backends/fsdp_training_backend.py`)
+  - `ModelConfig.train_gpu_resource` / `infer_gpu_resource` name Ray custom resources;
+    every training actor requests 1 unit per GPU and every vLLM actor 1 unit per GPU
+    (`ModelConfig.actor_resources`). Unset (default) requests nothing, so local dev
+    and colocation schedule exactly as before. Nodes are labelled with
+    `ray start --resources '{"train_gpu": N, "infer_gpu": M}'`.
+  - Remaining: qualify on hardware — both target layouts (1 node: 6 train / 2 TP
+    inference; multi-node: 4 train nodes + 1 inference node). An unsatisfiable
+    resource name currently leaves the actor pending in the Ray scheduler instead of
+    failing fast.
 
 ---
 

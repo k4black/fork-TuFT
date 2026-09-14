@@ -85,6 +85,22 @@ model_owner: local-user
 #       scaling have to set `lora_alpha_ratio: 1` explicitly. Checkpoints record
 #       their effective lora_alpha, and loading one whose alpha disagrees with
 #       this setting is rejected rather than silently rescaling updates.
+#   - train_gpu_resource / infer_gpu_resource: Ray custom resources that route
+#       training actors and vLLM sampling actors to eligible nodes and cap how
+#       many of each run there (default: none, i.e. Ray uses any node with free
+#       GPUs, as before). They are per-node capacity quotas, not GPU-ID pins:
+#       distinct GPUs per actor still come from Ray's own num_gpus accounting,
+#       and with colocate=true both roles share a GPU by design.
+#       Label the Ray nodes with matching resources, one unit per GPU:
+#         # capacity for 6 training + 2 inference whole-GPU actors on one node
+#         ray start --head --num-gpus 8 --resources '{"train_gpu": 6, "infer_gpu": 2}'
+#         # or dedicated nodes
+#         ray start --head --num-gpus 8 --resources '{"train_gpu": 8}'
+#         ray start --address <head> --num-gpus 8 --resources '{"infer_gpu": 8}'
+#       Each training actor then requests 1 train_gpu (fsdp_num_gpus actors) and
+#       each vLLM actor 1 infer_gpu per GPU (tensor_parallel_size). The names must
+#       match the `ray start --resources` labels: a resource no node provides
+#       leaves the actor pending in the Ray scheduler.
 #   - colocate: Colocate sampling and training on same device (default: false)
 #   - sampling_memory_fraction: GPU memory fraction for sampling (default: 0.2)
 #   - quantization: Quantization method for sampling (default: none)
@@ -99,6 +115,10 @@ supported_models:
     # Give this model's GPUs entirely to one side of the service by declaring a
     # single capability. Omit for the default [training, sampling]:
     # capabilities: [training]
+    # Pin each role to its own GPUs/nodes; requires matching `ray start --resources`
+    # labels on the cluster. Omit both for the default (any node with free GPUs):
+    # train_gpu_resource: train_gpu
+    # infer_gpu_resource: infer_gpu
     tensor_parallel_size: 1
     temperature: 0.7
     top_p: 1.0

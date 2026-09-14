@@ -1203,6 +1203,7 @@ class FSDPTrainingBackend(BaseTrainingBackend):
                     ray.remote(FSDPWorkerActor)
                     .options(
                         num_gpus=1,
+                        resources=self.config.actor_resources("training", 1),
                         runtime_env=_runtime_env,
                     )
                     .remote(r, n_gpus, config_dict)
