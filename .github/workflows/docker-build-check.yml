@@ -5,6 +5,8 @@ on:
     paths:
       - 'docker/**'
       - 'scripts/install.sh'
+      - 'scripts/install_flash_attn.py'
+      - 'scripts/verify_runtime_versions.py'
       - 'pyproject.toml'
       - '.github/workflows/docker-build-check.yml'
   workflow_dispatch:
