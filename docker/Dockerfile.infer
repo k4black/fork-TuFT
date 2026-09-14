@@ -1,0 +1,25 @@
+# TuFT inference image: the official vLLM server image plus TuFT, so that vLLM
+# worker processes can import TuFT's prompt-logprobs patch
+# (tuft.backends.vllm_worker.TuFTGPUWorker, wired in through the `worker_cls`
+# engine argument set by src/tuft/backends/vllm_engine.py).
+#
+# CUDA, PyTorch and vLLM all come from the base image and are never reinstalled:
+# TuFT pins exactly the versions it ships (vllm 0.27.0, torch 2.13.0), so the
+# install below only adds TuFT's pure-Python dependencies. Training runs in a
+# separate image, docker/Dockerfile.train.
+#
+# Build:
+#   docker build -f docker/Dockerfile.infer -t tuft-infer:latest .
+
+FROM vllm/vllm-openai:v0.27.0
+
+COPY ./pyproject.toml ./LICENSE ./README.md /opt/tuft/
+COPY ./src /opt/tuft/src
+COPY ./scripts /opt/tuft/scripts
+
+# verify_runtime_versions.py is the ABI gate here: it fails the build if the
+# install moved torch or vLLM off the pins the base image was built with.
+RUN pip3 install --no-cache-dir "/opt/tuft[backend,persistence]" \
+    && python3 /opt/tuft/scripts/verify_runtime_versions.py
+
+# The base image's entrypoint (the vLLM OpenAI API server) is kept as is.

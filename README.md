@@ -359,6 +359,26 @@ you can use the pre-built Docker image.
         tensor_parallel_size: 1
     ```
 
+### Fork images: split training and inference
+
+This fork also builds two single-purpose images instead of one all-in-one image.
+vLLM requires `nvidia-cudnn-frontend` and `nvidia-cutlass-dsl[cu13]`, which ship
+CUDA 13 binaries only, so an image holding both the training stack and vLLM
+cannot target CUDA 12 (driver 550 hosts).
+
+| Image | Dockerfile | Contents |
+|---|---|---|
+| `tuft-train` | [`docker/Dockerfile.train`](docker/Dockerfile.train) | PyTorch, FSDP2, PEFT, Transformers, Ray and the TuFT server. No vLLM. Builds for CUDA 12 and CUDA 13. |
+| `tuft-infer` | [`docker/Dockerfile.infer`](docker/Dockerfile.infer) | The official `vllm/vllm-openai` image plus TuFT, so vLLM workers can import the prompt-logprobs patch. |
+
+```bash
+docker build -f docker/Dockerfile.train -t tuft-train:cu13 .
+docker build -f docker/Dockerfile.train -t tuft-train:cu12 \
+    --build-arg CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04 \
+    --build-arg TORCH_BACKEND=cu129 .
+docker build -f docker/Dockerfile.infer -t tuft-infer:latest .
+```
+
 ## Deployment
 
 Don't have a GPU? Run TuFT on **pay-as-you-go cloud compute** — rent a GPU on demand and fine-tune from your laptop (no local GPU). The [`deploy/`](deploy/) helpers wrap the standard `tuft launch` server for popular cloud backends and walk you through configuring the deployment, running an end-to-end "talk like Yoda" training example on `Qwen/Qwen3-0.6B`, and downloading the trained adapter.

@@ -1,0 +1,75 @@
+name: Docker Build Check
+
+on:
+  pull_request:
+    paths:
+      - 'docker/**'
+      - 'scripts/install.sh'
+      - 'scripts/install_flash_attn.py'
+      - 'scripts/verify_runtime_versions.py'
+      - 'pyproject.toml'
+      - '.github/workflows/docker-build-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-check:
+    name: Build Docker (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: train-cu12
+            dockerfile: docker/Dockerfile.train
+            build-args: |
+              CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
+              TORCH_BACKEND=cu129
+            smoke: "import torch, tuft; print('smoke OK', torch.__version__)"
+          - variant: train-cu13
+            dockerfile: docker/Dockerfile.train
+            build-args: ''
+            smoke: "import torch, tuft; print('smoke OK', torch.__version__)"
+          - variant: infer
+            dockerfile: docker/Dockerfile.infer
+            build-args: ''
+            smoke: "from tuft.backends.vllm_worker import TuFTGPUWorker; print('smoke OK', TuFTGPUWorker)"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # GitHub Actions runners only have ~14GB available by default.
+      # Clean preinstalled packages (Android, .NET, Haskell, swap) to free ~35GB.
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image (${{ matrix.variant }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build-args }}
+          push: false
+          load: true
+          tags: tuft-test:${{ matrix.variant }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+
+      # --entrypoint is needed for the infer image, whose base entrypoint is the
+      # vLLM API server; on the train image it resolves to the venv python
+      # because the venv is first on PATH.
+      - name: Verify Built Image Smoke Test
+        run: |
+          docker run --rm --entrypoint python3 tuft-test:${{ matrix.variant }} \
+            -c "${{ matrix.smoke }}"
