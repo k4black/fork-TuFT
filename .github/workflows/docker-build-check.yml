@@ -20,10 +20,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - variant: cu12
-            dockerfile: docker/Dockerfile.cu12
-          - variant: cu13
-            dockerfile: docker/Dockerfile
+          - variant: train-cu12
+            dockerfile: docker/Dockerfile.train
+            build-args: |
+              CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
+              TORCH_BACKEND=cu129
+            smoke: "import torch, tuft; print('smoke OK', torch.__version__)"
+          - variant: train-cu13
+            dockerfile: docker/Dockerfile.train
+            build-args: ''
+            smoke: "import torch, tuft; print('smoke OK', torch.__version__)"
+          - variant: infer
+            dockerfile: docker/Dockerfile.infer
+            build-args: ''
+            smoke: "from tuft.backends.vllm_worker import TuFTGPUWorker; print('smoke OK', TuFTGPUWorker)"
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -47,12 +57,17 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build-args }}
           push: false
           load: true
           tags: tuft-test:${{ matrix.variant }}
           cache-from: type=gha,scope=${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
 
+      # --entrypoint is needed for the infer image, whose base entrypoint is the
+      # vLLM API server; on the train image it resolves to the venv python
+      # because the venv is first on PATH.
       - name: Verify Built Image Smoke Test
         run: |
-          docker run --rm tuft-test:${{ matrix.variant }} python -c "import torch, tuft; print('Container smoke OK: torch', torch.__version__)"
+          docker run --rm --entrypoint python tuft-test:${{ matrix.variant }} \
+            -c "${{ matrix.smoke }}"

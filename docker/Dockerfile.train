@@ -1,0 +1,87 @@
+# TuFT training image: PyTorch, FSDP2, PEFT, Transformers, Ray and the TuFT
+# controller server. vLLM is deliberately absent -- it requires
+# nvidia-cudnn-frontend and nvidia-cutlass-dsl[cu13], which ship CUDA 13 only
+# binaries and make a CUDA 12 build impossible. Sampling runs in a separate
+# image, docker/Dockerfile.infer.
+#
+# Build (CUDA 13, default):
+#   docker build -f docker/Dockerfile.train -t tuft-train:cu13 .
+#
+# Build (CUDA 12, for driver 550 hosts):
+#   docker build -f docker/Dockerfile.train -t tuft-train:cu12 \
+#     --build-arg CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04 \
+#     --build-arg TORCH_BACKEND=cu129 .
+#
+# The uv virtual environment is created at `/root/.tuft/venv`; the entrypoint
+# activates it. Use `uv pip` to install further packages into it.
+
+ARG CUDA_IMAGE=nvcr.io/nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04
+FROM ${CUDA_IMAGE}
+
+# Torch/vLLM wheel variant, see scripts/install.sh. Must match CUDA_IMAGE.
+ARG TORCH_BACKEND=cu130
+
+WORKDIR /workspace
+
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+
+RUN chmod 1777 /tmp && apt update && apt install -y --no-install-recommends \
+    build-essential \
+    curl git wget vim tmux net-tools \
+    python3 python3-pip python3-dev python3-packaging python3-venv \
+    libomp-dev infiniband-diags libibverbs-dev librdmacm-dev rdma-core perftest \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && ln -sf /usr/bin/pip3 /usr/bin/pip
+
+ENV VIRTUAL_ENV=/root/.tuft/venv
+ENV PATH=/root/.tuft/venv/bin:/root/.local/bin:$PATH
+
+# Copy the TuFT repository
+COPY ./pyproject.toml .
+COPY ./LICENSE .
+COPY ./README.md .
+COPY ./src ./src
+COPY ./scripts ./scripts
+
+#  Uncomment the following line if you want to use AliCloud Mirror to speed up pip install
+# ENV UV_DEFAULT_INDEX=http://mirrors.cloud.aliyuncs.com/pypi/simple/
+
+# Uncomment the following line to use a Hugging Face mirror if you have network connection problem with Hugging Face
+# ENV HF_ENDPOINT=https://hf-mirror.com
+
+# scripts/install.sh is not used here: its post-install check imports vLLM,
+# which this image does not ship. The override file drops the vLLM requirement
+# -- uv applies overrides unconditionally, and a marker that is never true
+# removes the requirement from the resolution.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && . $HOME/.local/bin/env \
+    && uv venv --python 3.12 "$VIRTUAL_ENV" \
+    && printf 'vllm; sys_platform == "never"\n' > /tmp/no-vllm.txt \
+    && uv pip install --overrides /tmp/no-vllm.txt --torch-backend "$TORCH_BACKEND" \
+        ".[backend,persistence]"
+
+# Optional accelerators: no wheel exists for every torch/CUDA combination.
+RUN . $HOME/.local/bin/env \
+    && uv pip install "fla-core>=0.5.0" "flash-linear-attention>=0.4.2" \
+    && python scripts/install_flash_attn.py || true
+
+# Gate: every compiled extension must link the CUDA runtime major that
+# TORCH_BACKEND asks for (cu129 -> 12, cu130 -> 13). A foreign major loads at
+# build time but fails on the GPU host.
+RUN set -eu; \
+    major="${TORCH_BACKEND#cu}"; major="${major%?}"; \
+    echo "=== Checking compiled extensions against CUDA ${major} ==="; \
+    if find "$VIRTUAL_ENV" -name '*.so' -print0 \
+        | xargs -0 grep -aoH 'libcudart\.so\.[0-9][0-9]*' \
+        | grep -v "libcudart\.so\.${major}" | sort -u | grep .; then \
+      echo "FATAL: the extensions above link a CUDA runtime other than ${major}"; \
+      exit 1; \
+    fi; \
+    echo "CUDA ${major} ABI check passed"
+
+ENV TUFT_HOST=0.0.0.0 TUFT_PORT=10610
+EXPOSE 10610
+
+ENTRYPOINT ["/bin/bash", "-c", "source ${VIRTUAL_ENV}/bin/activate && exec \"$@\"", "--"]
+CMD ["bash"]
