@@ -59,7 +59,7 @@ from tuft.backends.vllm_lora_compat import (
     add_language_model_aliases,
     vllm_nests_language_model,
 )
-from tuft.checkpoints import CheckpointRecord
+from tuft.checkpoints import CheckpointRecord, read_adapter_files
 from tuft.config import (
     DEFAULT_LORA_ALPHA_RATIO,
     FSDP_QV_TARGET_MODULES,
@@ -703,8 +703,14 @@ class MultiAdapterFSDPWorker:
         info.step_count += 1
         return {"step_count": info.step_count, "adapter": adapter_name}
 
-    def save_checkpoint(self, adapter_name: str, path: str | Path, optimizer: bool = True) -> None:
-        """Save adapter.pt (training load_state) + PEFT format (sampling); optional optimizer."""
+    def save_checkpoint(
+        self, adapter_name: str, path: str | Path, optimizer: bool = True
+    ) -> dict[str, bytes]:
+        """Save adapter.pt (training load_state) + PEFT format (sampling); optional optimizer.
+
+        Returns the peft files rank 0 wrote (empty on every other rank), so the
+        server can materialize them without sharing this node's filesystem.
+        """
         self._activate_adapter(adapter_name)
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
@@ -820,6 +826,8 @@ class MultiAdapterFSDPWorker:
                 peft_state = add_language_model_aliases(peft_state)
 
             _write_adapter_weights_file(self.logger, adapter_name, path, peft_state)
+
+        return read_adapter_files(path) if is_rank_0 else {}
 
     def load_checkpoint(
         self,
@@ -1050,11 +1058,13 @@ class FSDPWorkerActor:
             adapter_name, learning_rate, weight_decay, grad_clip_norm, betas, eps
         )
 
-    def save_checkpoint(self, adapter_name: str, path: str, optimizer: bool = True) -> None:
+    def save_checkpoint(
+        self, adapter_name: str, path: str, optimizer: bool = True
+    ) -> dict[str, bytes]:
         # FSDP v2: all ranks must participate in full_tensor() collective operation
         if self._worker is None:
-            return
-        self._worker.save_checkpoint(adapter_name, Path(path), optimizer)
+            return {}
+        return self._worker.save_checkpoint(adapter_name, Path(path), optimizer)
 
     def load_checkpoint(
         self,
@@ -1594,19 +1604,23 @@ class FSDPTrainingBackend(BaseTrainingBackend):
         lora_id: str,
         checkpoint_record: CheckpointRecord,
         optimizer: bool,
-    ) -> None:
+    ) -> dict[str, bytes]:
         adapter_name = self._get_adapter_name(lora_id)
         path = checkpoint_record.adapter_path
         if self._worker is not None:
             async with self._lock:
-                await asyncio.to_thread(self._worker.save_checkpoint, adapter_name, path, optimizer)
+                return await asyncio.to_thread(
+                    self._worker.save_checkpoint, adapter_name, path, optimizer
+                )
         else:
             import ray
 
             refs = [
                 a.save_checkpoint.remote(adapter_name, str(path), optimizer) for a in self._actors
             ]
-            await asyncio.to_thread(ray.get, refs)
+            results = await asyncio.to_thread(ray.get, refs)
+            # Only rank 0 writes the peft files; every other rank returns {}.
+            return next((files for files in results if files), {})
 
     async def load_state(
         self,

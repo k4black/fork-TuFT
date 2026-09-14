@@ -52,6 +52,14 @@ class BaseSamplingBackend(BaseBackend):
     async def remove_adapter(self, lora_id: str) -> None:
         """Remove LoRA adapter from the backend."""
 
+    async def stage_adapter(self, lora_id: str, adapter_path: Path) -> str:
+        """Make the adapter readable by this backend, and return that path.
+
+        The default assumes the backend reads the server's own filesystem, so
+        the server-side path is already usable.
+        """
+        return str(adapter_path)
+
     def get_openai_api_url(self) -> Optional[str]:
         """Return the vLLM OpenAI API base URL, or None if not available."""
         return None
@@ -112,8 +120,12 @@ class BaseTrainingBackend(BaseBackend):
     @abstractmethod
     async def save_state(
         self, lora_id: str, checkpoint_record: "CheckpointRecord", optimizer: bool
-    ) -> None:
-        """Abstract method for saving model state."""
+    ) -> dict[str, bytes]:
+        """Save model state; return the written peft files as bytes.
+
+        The training actor may run on a node the server cannot read, so the
+        adapter travels back as bytes (see ``checkpoints.read_adapter_files``).
+        """
 
     @abstractmethod
     async def load_state(

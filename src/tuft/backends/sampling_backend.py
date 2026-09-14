@@ -13,6 +13,7 @@ from typing import Any, Optional
 from opentelemetry.trace import StatusCode
 from tinker import types
 
+from ..checkpoints import read_adapter_files
 from ..compat import sampled_sequence
 from ..config import ModelConfig
 from ..telemetry.tracing import get_tracer
@@ -342,6 +343,15 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 span.set_status(StatusCode.ERROR)
                 raise
 
+    async def stage_adapter(self, lora_id: str, adapter_path: Path) -> str:
+        """Copy the adapter onto the engine actor's node; return the local path.
+
+        The bytes travel as a plain Ray argument, which Ray promotes into its
+        object store, so the server node and the vLLM node share no filesystem.
+        """
+        files = read_adapter_files(adapter_path)
+        return await self.engine.stage_adapter.remote(lora_id, files)  # type: ignore[attr-defined]
+
     async def add_adapter(self, lora_id: str, adapter_path: Path) -> None:
         from vllm.lora.request import LoRARequest
 
@@ -351,11 +361,12 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 async with self._lock:
                     if not adapter_path.exists():
                         raise ValueError(f"LoRA adapter path {adapter_path} does not exist.")
+                    staged_path = await self.stage_adapter(lora_id, adapter_path)
                     self._counter += 1
                     request = LoRARequest(
                         lora_int_id=self._counter + 1,
                         lora_name=lora_id,
-                        lora_path=str(adapter_path),
+                        lora_path=staged_path,
                     )
                     # Register with vLLM first; only record the adapter in the local
                     # registry after success. Otherwise a failure (missing path, or the
@@ -380,6 +391,9 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     # vLLM removes adapters by their integer id, not name.
                     lora_request = self.lora_adapters.pop(lora_id)
                     await self.engine.remove_lora.remote(lora_request.lora_int_id)  # type: ignore[attr-defined]
+                    # Safe only now: vLLM re-reads the path after an LRU eviction
+                    # for as long as the adapter stays registered.
+                    await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
 
     async def shutdown(self) -> None:
         """Shut down the vLLM engine Ray actor and release GPU resources."""

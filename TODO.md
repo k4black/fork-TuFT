@@ -88,6 +88,25 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     inference; multi-node: 4 train nodes + 1 inference node). An unsatisfiable
     resource name currently leaves the actor pending in the Ray scheduler instead of
     failing fast.
+- [x] **D4: LoRA Adapter Streaming (no shared FS)** (`src/tuft/checkpoints.py`,
+  `src/tuft/backends/vllm_engine.py`, `src/tuft/backends/sampling_backend.py`,
+  `src/tuft/oai/router.py`, `src/tuft/training_controller.py`)
+  - Design: `../llmqa-team-junk/docs/research/2026-09-14-lora-weight-streaming.md`.
+  - Adapters move as `dict[str, bytes]` in plain Ray arguments (Ray promotes them
+    into the object store). `read_adapter_files` / `write_adapter_files` in
+    `checkpoints.py` are the only primitive.
+  - Trainer → server: `save_state` returns the peft files; `save_checkpoint` writes
+    them on the server node. Server → vLLM: `VLLMEngine.stage_adapter` materializes
+    them under `/dev/shm/tuft-adapters-{uuid}` (falls back to `tempfile.gettempdir()`)
+    and hands vLLM that node-local path; `remove_adapter` unstages.
+  - Remaining: staged dirs on the OAI path are freed only at engine shutdown (vLLM's
+    unload endpoint never reaches the engine, so there is no hook); add an LRU sweep
+    if shm pressure shows up.
+  - Still needs shared storage: multi-node **FSDP training**. `load_state` runs on
+    every FSDP actor and each rank reads `adapter.pt` from the same checkpoint path
+    (`fsdp_training_backend.load_checkpoint`), so an FSDP group spread over several
+    nodes still requires a shared `checkpoint_dir`. Trainer↔server and server↔vLLM
+    no longer do.
 
 ---
 

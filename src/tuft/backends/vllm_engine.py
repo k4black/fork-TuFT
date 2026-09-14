@@ -21,10 +21,17 @@ imported on CPU-only machines (unit tests, config validation).
 import asyncio
 import itertools
 import os
+import shutil
 import socket
+import tempfile
 from dataclasses import dataclass
 from logging import getLogger
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
+from uuid import uuid4
+
+from ..checkpoints import write_adapter_files
 
 
 logger = getLogger(__name__)
@@ -121,6 +128,15 @@ class VLLMEngine:
             top_p=config.top_p,
             top_k=config.top_k,
         )
+
+        # Adapters arrive here as bytes and are staged on the node vLLM reads
+        # from, so no filesystem is shared with the server or the trainer. tmpfs
+        # keeps the (engine-blocking) add_lora read off disk; the per-actor uuid
+        # keeps DP replicas on one node out of each other's directory.
+        shm = Path("/dev/shm")
+        self._adapter_root = (
+            shm if shm.is_dir() else Path(tempfile.gettempdir())
+        ) / f"tuft-adapters-{uuid4().hex[:8]}"
 
         self.async_llm: Any = None
         self.api_server_host: Optional[str] = None
@@ -258,6 +274,34 @@ class VLLMEngine:
                 setattr(params, k, v)
         return params
 
+    def _staged_adapter_dir(self, lora_id: str) -> Path:
+        # lora_id is "{training_run_id}:{checkpoint_id}", so it carries both ':'
+        # and '/'; quoting it keeps one adapter in one flat directory.
+        return self._adapter_root / quote(lora_id, safe="")
+
+    async def stage_adapter(self, lora_id: str, files: dict[str, bytes]) -> str:
+        """Write adapter bytes to node-local storage; return the path for vLLM.
+
+        The staged directory must outlive the ``add_lora`` call: vLLM silently
+        re-reads it from disk when its worker-side LRU evicts the adapter, so it
+        is removed only by ``unstage_adapter`` or ``shutdown``.
+        """
+        adapter_dir = self._staged_adapter_dir(lora_id)
+        await asyncio.to_thread(write_adapter_files, adapter_dir, files)
+        if not (adapter_dir / "adapter_config.json").is_file():
+            # Fail here rather than hand vLLM a path it cannot read: a missing
+            # lora_path is not an error to vLLM, it is a Hugging Face Hub repo
+            # id it will try to snapshot_download (vllm/lora/utils.py).
+            raise RuntimeError(
+                f"Staging LoRA adapter {lora_id} into {adapter_dir} wrote no "
+                f"adapter_config.json (received files: {sorted(files)})."
+            )
+        return str(adapter_dir)
+
+    async def unstage_adapter(self, lora_id: str) -> None:
+        """Drop a staged adapter directory, once vLLM can no longer read it."""
+        shutil.rmtree(self._staged_adapter_dir(lora_id), ignore_errors=True)
+
     async def add_lora(self, lora_request: Any) -> int:
         """Register a LoRA adapter with the engine (direct generate path)."""
         return await self.async_llm.add_lora(lora_request)
@@ -275,6 +319,7 @@ class VLLMEngine:
             except asyncio.CancelledError:
                 pass
             self._api_server_task = None
+        shutil.rmtree(self._adapter_root, ignore_errors=True)
         if self.async_llm is not None:
             logger.info("Shutting down vLLM engine")
             self.async_llm.shutdown()
