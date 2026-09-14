@@ -163,6 +163,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             .options(
                 name="sampling_model_" + self.base_model,
                 num_gpus=config.sampling_memory_fraction,
+                resources=config.actor_resources("sampling", config.sampling_memory_fraction),
                 runtime_env=_runtime_env,
             )
             .remote(
@@ -212,6 +213,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             .options(
                 name=actor_name,
                 num_gpus=num_gpus,
+                resources=config.actor_resources("sampling", num_gpus),
                 runtime_env=_runtime_env,
             )
             .remote(
