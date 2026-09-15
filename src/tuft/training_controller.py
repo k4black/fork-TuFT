@@ -14,12 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from tinker import types
 
 from .backends import BaseTrainingBackend
-from .checkpoints import (
-    CheckpointMetadata,
-    CheckpointRecord,
-    compute_tree_size,
-    write_adapter_files,
-)
+from .checkpoints import CheckpointMetadata, CheckpointRecord, compute_tree_size
 from .config import (
     DEFAULT_LORA_ALPHA_RATIO,
     FSDP_QV_TARGET_MODULES,
@@ -694,17 +689,11 @@ class TrainingController:
                     else training_run.sampler_checkpoints
                 )
                 if training_run.backend is not None:
-                    adapter_files = await training_run.backend.save_state(
+                    await training_run.backend.save_state(
                         lora_id=training_run.training_run_id,
                         checkpoint_record=checkpoint,
                         optimizer=(checkpoint_type == "training"),
                     )
-                    # The training actor may hold train_gpu resources on another
-                    # node, so write the adapter here too: this process reads it
-                    # back (metadata, tree size, adapter_config.json) and is the
-                    # source the sampling path stages from.
-                    if adapter_files:
-                        write_adapter_files(checkpoint.adapter_path, adapter_files)
 
                 lora_alpha = self._effective_lora_alpha(training_run)
 

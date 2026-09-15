@@ -32,7 +32,7 @@ from tuft.backends.vllm_lora_compat import (
     resolve_model_series,
     vllm_nests_language_model,
 )
-from tuft.checkpoints import CheckpointRecord, read_adapter_files
+from tuft.checkpoints import CheckpointRecord
 from tuft.config import DEFAULT_LORA_ALPHA_RATIO, ModelConfig, compute_lora_alpha
 from tuft.loss_fn import get_loss_fn, metrics_reduction
 from tuft.telemetry.tracing import extract_context, get_tracer
@@ -225,7 +225,7 @@ class HFTrainingModel:
         checkpoint_record: CheckpointRecord,
         optimizer: bool,
         trace_context: dict[str, str] | None = None,
-    ) -> dict[str, bytes]:
+    ):
         """
         Save LoRA adapter and optimizer state.
         Args:
@@ -233,11 +233,6 @@ class HFTrainingModel:
             checkpoint_record: The CheckpointRecord containing paths to save to.
             optimizer: Whether to save the optimizer state.
             trace_context: Optional trace context for distributed tracing.
-        Returns:
-            The written peft files as bytes, so the server can materialize the
-            checkpoint on its own node without sharing a filesystem with this
-            actor. Reading them back costs one page-cache hit and guarantees
-            they are byte-identical to what was just written.
         """
         ctx = extract_context(trace_context or {})
         with _get_tracer().start_as_current_span("hf_model.save_state", context=ctx) as span:
@@ -280,8 +275,6 @@ class HFTrainingModel:
                     # backend. Keying it on lora_id made optimizer=True a silent
                     # no-op for cross-run restores.
                     torch.save(opt_state, opt_dir / OPTIMIZER_STATE_FILENAME)
-
-                return read_adapter_files(adapter_dir)
             except Exception as e:
                 span.record_exception(e)
                 span.set_status(StatusCode.ERROR)

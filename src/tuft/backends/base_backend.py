@@ -120,12 +120,8 @@ class BaseTrainingBackend(BaseBackend):
     @abstractmethod
     async def save_state(
         self, lora_id: str, checkpoint_record: "CheckpointRecord", optimizer: bool
-    ) -> dict[str, bytes]:
-        """Save model state; return the written peft files as bytes.
-
-        The training actor may run on a node the server cannot read, so the
-        adapter travels back as bytes (see ``checkpoints.read_adapter_files``).
-        """
+    ) -> None:
+        """Abstract method for saving model state."""
 
     @abstractmethod
     async def load_state(

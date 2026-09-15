@@ -103,15 +103,15 @@ class HFTrainingBackend(BaseTrainingBackend):
 
     async def save_state(
         self, lora_id: str, checkpoint_record: "CheckpointRecord", optimizer: bool
-    ) -> dict[str, bytes]:
-        """Save the state of the specified LoRA adapter; return its peft files."""
+    ) -> None:
+        """Save the state of the specified LoRA adapter."""
         with _get_tracer().start_as_current_span("training_backend.save_state") as span:
             span.set_attribute("tuft.lora_id", lora_id)
             span.set_attribute("tuft.optimizer", optimizer)
             # Inject trace context for Ray actor
             trace_context: dict[str, str] = {}
             inject_context(trace_context)
-            return await self.model.save_state.remote(
+            await self.model.save_state.remote(
                 lora_id=lora_id,
                 checkpoint_record=checkpoint_record,
                 optimizer=optimizer,
@@ -287,11 +287,10 @@ class DummyTrainingBackend(BaseTrainingBackend):
 
     async def save_state(
         self, lora_id: str, checkpoint_record: "CheckpointRecord", optimizer: bool
-    ) -> dict[str, bytes]:
+    ) -> None:
         if lora_id not in self._adapters:
             raise ValueError(f"Adapter {lora_id} does not exist.")
         # dummy save
-        return {}
 
     async def load_state(
         self, lora_id: str, checkpoint_record: "CheckpointRecord", optimizer: bool

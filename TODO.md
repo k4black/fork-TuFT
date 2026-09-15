@@ -88,25 +88,28 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     inference; multi-node: 4 train nodes + 1 inference node). An unsatisfiable
     resource name currently leaves the actor pending in the Ray scheduler instead of
     failing fast.
-- [x] **D4: LoRA Adapter Streaming (no shared FS)** (`src/tuft/checkpoints.py`,
+- [x] **D4: LoRA Adapter Staging on Inference Nodes** (`src/tuft/checkpoints.py`,
   `src/tuft/backends/vllm_engine.py`, `src/tuft/backends/sampling_backend.py`,
-  `src/tuft/oai/router.py`, `src/tuft/training_controller.py`)
+  `src/tuft/oai/router.py`)
   - Design: `../llmqa-team-junk/docs/research/2026-09-14-lora-weight-streaming.md`.
-  - Adapters move as `dict[str, bytes]` in plain Ray arguments (Ray promotes them
-    into the object store). `read_adapter_files` / `write_adapter_files` in
-    `checkpoints.py` are the only primitive.
-  - Trainer → server: `save_state` returns the peft files; `save_checkpoint` writes
-    them on the server node. Server → vLLM: `VLLMEngine.stage_adapter` materializes
-    them under `/dev/shm/tuft-adapters-{uuid}` (falls back to `tempfile.gettempdir()`)
-    and hands vLLM that node-local path; `remove_adapter` unstages.
+  - **vLLM nodes need no shared filesystem.** The adapter streams server → engine
+    actor as `dict[str, bytes]` in a plain Ray argument (Ray promotes it into the
+    object store on its own) and `VLLMEngine.stage_adapter` writes it under
+    `/dev/shm/tuft-adapters-{uuid}` (falling back to `tempfile.gettempdir()`), then
+    hands vLLM that node-local path. `remove_adapter` unstages; `shutdown` sweeps the
+    root. `read_adapter_files` / `write_adapter_files` in `checkpoints.py` are the
+    only primitive. Both serving paths use it: tinker `add_adapter` and the OAI
+    router's `/v1/load_lora_adapter`.
   - Remaining: staged dirs on the OAI path are freed only at engine shutdown (vLLM's
     unload endpoint never reaches the engine, so there is no hook); add an LRU sweep
     if shm pressure shows up.
-  - Still needs shared storage: multi-node **FSDP training**. `load_state` runs on
-    every FSDP actor and each rank reads `adapter.pt` from the same checkpoint path
-    (`fsdp_training_backend.load_checkpoint`), so an FSDP group spread over several
-    nodes still requires a shared `checkpoint_dir`. Trainer↔server and server↔vLLM
-    no longer do.
+  - **Trainer ↔ server `checkpoint_dir` stays shared, deliberately.** Shipping the
+    adapter back from `save_state` was tried and dropped: `load_state` still reads the
+    checkpoint from the training actor's own node in both backends, and multi-node
+    FSDP needs a shared path across its ranks anyway (`load_checkpoint` reads
+    `adapter.pt` on every rank), so a save-only hop frees no real deployment while
+    costing ~40% of the diff. Revisit save and load together if a trainer deployment
+    without shared storage becomes real.
 
 ---
 
