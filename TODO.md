@@ -88,6 +88,41 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     inference; multi-node: 4 train nodes + 1 inference node). An unsatisfiable
     resource name currently leaves the actor pending in the Ray scheduler instead of
     failing fast.
+- [x] **D4: LoRA Adapter Staging on Inference Nodes** (`src/tuft/checkpoints.py`,
+  `src/tuft/backends/vllm_engine.py`, `src/tuft/backends/sampling_backend.py`,
+  `src/tuft/oai/router.py`)
+  - Design: `../llmqa-team-junk/docs/research/2026-09-14-lora-weight-streaming.md`.
+  - **vLLM nodes need no shared filesystem.** The adapter streams server → engine
+    actor as `dict[str, bytes]` in a plain Ray argument (Ray promotes it into the
+    object store on its own) and `VLLMEngine.stage_adapter` writes it under
+    `/dev/shm/tuft-adapters-{uuid}` (falling back to `tempfile.gettempdir()`), then
+    hands vLLM that node-local path. `remove_adapter` unstages; `shutdown` sweeps the
+    root. `read_adapter_files` / `write_adapter_files` in `checkpoints.py` are the
+    only primitive. Both serving paths use it: tinker `add_adapter` and the OAI
+    router's `/v1/load_lora_adapter`.
+  - `VLLMSamplingBackend` owns the whole adapter lifecycle, including which names each
+    instance loaded into its own vLLM OpenAI serving layer (`ensure_oai_lora_loaded`;
+    the oai router keeps no cache of its own). `remove_adapter` removes from the
+    engine, unloads the serving-layer name, and only then unstages — deleting the
+    files first would leave vLLM re-reading a missing path after a worker-side LRU
+    eviction.
+  - **Idle TTL** (`ModelConfig.adapter_idle_ttl_minutes`, default 30, 0 disables):
+    one sweep task per `VLLMSamplingBackend` unloads and unstages adapters that have
+    served no request for the TTL, in both namespaces (sampling-session ids and the
+    OAI `{training_run_id}:{checkpoint_id}` names). The next request re-stages and
+    re-registers transparently — `sample()` via `_readd_if_swept`, the OAI path via
+    its existing lazy load — so a client sees latency, never an error. `max_loras`
+    default raised 1 → 8 to match.
+  - Deferred: trainer-side no-shared-FS save/resume (see below), and disk GC of
+    `checkpoint_dir` itself — the TTL frees vLLM slots and `/dev/shm`, never the
+    checkpoints on the server.
+  - **Trainer ↔ server `checkpoint_dir` stays shared, deliberately.** Shipping the
+    adapter back from `save_state` was tried and dropped: `load_state` still reads the
+    checkpoint from the training actor's own node in both backends, and multi-node
+    FSDP needs a shared path across its ranks anyway (`load_checkpoint` reads
+    `adapter.pt` on every rank), so a save-only hop frees no real deployment while
+    costing ~40% of the diff. Revisit save and load together if a trainer deployment
+    without shared storage becomes real.
 
 ---
 
