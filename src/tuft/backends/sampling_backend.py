@@ -109,7 +109,9 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         self.lora_adapters: dict[str, LoRARequest] = {}
         # Adapter names this instance registered with its own vLLM OpenAI server.
         # Held here, not in the oai router, so removal can unload them before the
-        # staged files they point at are deleted.
+        # staged files they point at are deleted. Fast path only -- a lost
+        # response can leave it disagreeing with the server, so correctness rests
+        # on _confirm_oai_unloaded, which always asks.
         self._oai_loaded: set[str] = set()
         self._counter = 1
         self._lock = asyncio.Lock()
@@ -395,7 +397,9 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             # A 400 "already loaded" is a success: the adapter name is immutable,
             # so whatever is registered under it is the same weights.
             if resp.status_code != 200 and "already" not in _response_message(resp).lower():
-                await self.engine.unstage_adapter.remote(lora_name)  # type: ignore[attr-defined]
+                # Deliberately leave the staged files: a timed-out load may have
+                # registered the name anyway, and the staged path is
+                # deterministic, so a retry rewrites exactly this directory.
                 raise RuntimeError(
                     f"Failed to load LoRA adapter '{lora_name}': {resp.status_code} {resp.text}"
                 )
@@ -404,25 +408,44 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 "Loaded LoRA '%s' via vLLM OpenAI API at %s", lora_name, self._openai_api_url
             )
 
-    async def _unload_oai_lora(self, lora_name: str) -> None:
-        """Drop the adapter from this instance's OpenAI serving layer, if loaded."""
+    async def _confirm_oai_unloaded(self, lora_name: str) -> bool:
+        """Return True once the OpenAI serving layer is known not to hold the name.
+
+        Always asks the server, whatever ``_oai_loaded`` says: a load whose
+        response was lost may still have registered the name. Any answer is a
+        confirmation -- 2xx unloaded it, 4xx means the server has no such name --
+        while a transport error, a timeout or a 5xx leaves it unknown, and
+        unknown must be treated as still registered.
+        """
         import httpx
 
-        if lora_name not in self._oai_loaded or self._openai_api_url is None:
-            return
+        if self._openai_api_url is None:
+            return True
         try:
             async with httpx.AsyncClient() as client:
-                await client.post(
+                resp = await client.post(
                     f"{self._openai_api_url}/v1/unload_lora_adapter",
                     json={"lora_name": lora_name},
                     headers={"Authorization": "Bearer EMPTY"},
                     timeout=30.0,
                 )
         except Exception:
-            # Best effort: this only drops a server-side name mapping, and a
-            # stuck unload must not block eviction.
-            logger.warning("Failed to unload LoRA '%s' from %s", lora_name, self._openai_api_url)
+            logger.warning(
+                "Could not reach %s to unload LoRA '%s'; leaving it staged.",
+                self._openai_api_url,
+                lora_name,
+            )
+            return False
+        if resp.status_code >= 500:
+            logger.warning(
+                "vLLM at %s failed to unload LoRA '%s' (%s); leaving it staged.",
+                self._openai_api_url,
+                lora_name,
+                resp.status_code,
+            )
+            return False
         self._oai_loaded.discard(lora_name)
+        return True
 
     async def add_adapter(self, lora_id: str, adapter_path: Path) -> None:
         from vllm.lora.request import LoRARequest
@@ -452,8 +475,11 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                             )
                     except Exception:
                         # Registration failed, so remove_adapter will never run for
-                        # this id; drop the staged copy instead of leaking tmpfs.
-                        await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
+                        # this id; drop the staged copy instead of leaking tmpfs --
+                        # unless the OpenAI serving layer registered the same name
+                        # against the same directory and may still read it.
+                        if lora_id not in self._oai_loaded:
+                            await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
                         raise
                     self.lora_adapters[lora_id] = request
             except Exception as e:
@@ -469,10 +495,13 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     # vLLM removes adapters by their integer id, not name.
                     lora_request = self.lora_adapters.pop(lora_id)
                     await self.engine.remove_lora.remote(lora_request.lora_int_id)  # type: ignore[attr-defined]
-                await self._unload_oai_lora(lora_id)
-                # Safe only now: while the name is registered anywhere, vLLM
-                # re-reads the staged path after a worker-side LRU eviction.
-                await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
+                # Unstage only against a confirmed unload: while the name is
+                # registered anywhere, vLLM re-reads the staged path after a
+                # worker-side LRU eviction. An unconfirmed unload leaks one
+                # staged directory until the next eviction or engine shutdown,
+                # which is the safe direction to fail in.
+                if await self._confirm_oai_unloaded(lora_id):
+                    await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
 
     async def shutdown(self) -> None:
         """Shut down the vLLM engine Ray actor and release GPU resources."""

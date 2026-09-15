@@ -110,17 +110,19 @@ async def test_add_adapter_registers_the_staged_path(tmp_path, monkeypatch):
     assert recorded["request"].lora_path == "/dev/shm/tuft-adapters-0123/staged"
 
 
-async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeypatch):
+STAGED = "/dev/shm/tuft-adapters-0123/staged"
+OAI_URL = "http://vllm-node:8000"
+
+
+def _oai_backend(monkeypatch, calls: list, statuses: dict[str, int]) -> VLLMSamplingBackend:
+    """A backend whose engine and vLLM OpenAI server are both recorders.
+
+    ``statuses`` maps an endpoint name to the status it answers with; 0 stands
+    for a transport failure.
+    """
     import httpx
 
-    adapter_dir = _adapter_dir(tmp_path)
-    staged = "/dev/shm/tuft-adapters-0123/staged"
-    url = "http://vllm-node:8000"
-    calls: list[tuple] = []
-
     class _FakeClient:
-        """httpx.AsyncClient stand-in that records POSTs and always succeeds."""
-
         async def __aenter__(self):
             return self
 
@@ -129,21 +131,32 @@ async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeyp
 
         async def post(self, post_url: str, json: dict, **_kwargs):
             calls.append(("post", post_url, json))
-            return SimpleNamespace(status_code=200)
+            status = statuses.get(post_url.rsplit("/", 1)[-1], 200)
+            if status == 0:
+                raise httpx.ConnectError("engine unreachable")
+            return SimpleNamespace(
+                status_code=status, json=lambda: {"message": "nope"}, text="nope"
+            )
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda *_a, **_kw: _FakeClient())
 
     backend = VLLMSamplingBackend.__new__(VLLMSamplingBackend)
     backend.engine = SimpleNamespace(  # type: ignore[assignment]
-        stage_adapter=_remote(lambda lora_id, files: staged),
+        stage_adapter=_remote(lambda lora_id, files: STAGED),
         unstage_adapter=_remote(lambda lora_id: calls.append(("unstage", lora_id))),
     )
     backend.lora_adapters = {}
     backend._oai_loaded = set()
     backend._lock = asyncio.Lock()
-    backend._openai_api_url = url
+    backend._openai_api_url = OAI_URL
+    return backend
 
-    await backend.ensure_oai_lora_loaded(LORA_ID, adapter_dir)
+
+async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeypatch):
+    calls: list[tuple] = []
+    backend = _oai_backend(monkeypatch, calls, {})
+
+    await backend.ensure_oai_lora_loaded(LORA_ID, _adapter_dir(tmp_path))
     assert backend._oai_loaded == {LORA_ID}
 
     await backend.remove_adapter(LORA_ID)
@@ -151,8 +164,43 @@ async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeyp
     # The serving layer drops the name BEFORE the staged files go: vLLM re-reads
     # that path whenever its worker-side LRU evicts the adapter.
     assert calls == [
-        ("post", f"{url}/v1/load_lora_adapter", {"lora_name": LORA_ID, "lora_path": staged}),
-        ("post", f"{url}/v1/unload_lora_adapter", {"lora_name": LORA_ID}),
+        ("post", f"{OAI_URL}/v1/load_lora_adapter", {"lora_name": LORA_ID, "lora_path": STAGED}),
+        ("post", f"{OAI_URL}/v1/unload_lora_adapter", {"lora_name": LORA_ID}),
         ("unstage", LORA_ID),
     ]
     assert backend._oai_loaded == set()
+
+
+@pytest.mark.parametrize(
+    "unload_status, confirmed",
+    [
+        (404, True),  # the server answered: it holds no such name
+        (400, True),
+        (503, False),  # it may still hold the name
+        (0, False),  # transport failure: unknown
+    ],
+)
+async def test_unstaging_waits_for_a_confirmed_unload(
+    tmp_path, monkeypatch, unload_status, confirmed
+):
+    calls: list[tuple] = []
+    backend = _oai_backend(monkeypatch, calls, {"unload_lora_adapter": unload_status})
+    await backend.ensure_oai_lora_loaded(LORA_ID, _adapter_dir(tmp_path))
+
+    await backend.remove_adapter(LORA_ID)
+
+    assert (("unstage", LORA_ID) in calls) is confirmed
+    # An unconfirmed unload keeps the name so a later removal retries it.
+    assert (LORA_ID in backend._oai_loaded) is not confirmed
+
+
+async def test_failed_oai_load_keeps_the_staged_copy(tmp_path, monkeypatch):
+    # The load may have registered the name despite the error response, and the
+    # staged path is deterministic, so a retry rewrites this same directory.
+    calls: list[tuple] = []
+    backend = _oai_backend(monkeypatch, calls, {"load_lora_adapter": 500})
+
+    with pytest.raises(RuntimeError, match="Failed to load LoRA adapter"):
+        await backend.ensure_oai_lora_loaded(LORA_ID, _adapter_dir(tmp_path))
+
+    assert ("unstage", LORA_ID) not in calls
