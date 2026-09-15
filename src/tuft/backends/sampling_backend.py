@@ -77,6 +77,15 @@ def _build_sample_response(
     )
 
 
+def _response_message(resp: Any) -> str:
+    """Best-effort message out of a vLLM OpenAI error body."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return resp.text
+    return body.get("message", "") if isinstance(body, dict) else str(body)
+
+
 class VLLMSamplingBackend(BaseSamplingBackend):
     """A sampling backend using vLLM.
 
@@ -98,6 +107,10 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         self._instance_index = instance_index
         self.engine = self._create_engine(config)
         self.lora_adapters: dict[str, LoRARequest] = {}
+        # Adapter names this instance registered with its own vLLM OpenAI server.
+        # Held here, not in the oai router, so removal can unload them before the
+        # staged files they point at are deleted.
+        self._oai_loaded: set[str] = set()
         self._counter = 1
         self._lock = asyncio.Lock()
         self._openai_api_url: Optional[str] = None
@@ -352,6 +365,65 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         files = read_adapter_files(adapter_path)
         return await self.engine.stage_adapter.remote(lora_id, files)  # type: ignore[attr-defined]
 
+    async def ensure_oai_lora_loaded(self, lora_name: str, adapter_path: Path) -> None:
+        """Stage the adapter and register it with this instance's OpenAI server.
+
+        vLLM's serving layer keeps its own name to adapter mapping, separate from
+        the engine registry ``add_adapter`` fills, and reads the adapter from the
+        path given here for as long as the name stays registered.
+        """
+        import httpx
+
+        # ponytail: an adapter served over OAI stays loaded and staged until
+        # remove_adapter runs for its name or the engine shuts down. Tinker
+        # sessions evict under their own random session id, so in practice only
+        # shutdown frees these; give the OAI names an eviction hook of their own
+        # if shm pressure shows up.
+        if self._openai_api_url is None:
+            return
+        async with self._lock:
+            if lora_name in self._oai_loaded:
+                return
+            lora_path = await self.stage_adapter(lora_name, adapter_path)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self._openai_api_url}/v1/load_lora_adapter",
+                    json={"lora_name": lora_name, "lora_path": lora_path},
+                    headers={"Authorization": "Bearer EMPTY"},
+                    timeout=60.0,
+                )
+            # A 400 "already loaded" is a success: the adapter name is immutable,
+            # so whatever is registered under it is the same weights.
+            if resp.status_code != 200 and "already" not in _response_message(resp).lower():
+                await self.engine.unstage_adapter.remote(lora_name)  # type: ignore[attr-defined]
+                raise RuntimeError(
+                    f"Failed to load LoRA adapter '{lora_name}': {resp.status_code} {resp.text}"
+                )
+            self._oai_loaded.add(lora_name)
+            logger.info(
+                "Loaded LoRA '%s' via vLLM OpenAI API at %s", lora_name, self._openai_api_url
+            )
+
+    async def _unload_oai_lora(self, lora_name: str) -> None:
+        """Drop the adapter from this instance's OpenAI serving layer, if loaded."""
+        import httpx
+
+        if lora_name not in self._oai_loaded or self._openai_api_url is None:
+            return
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{self._openai_api_url}/v1/unload_lora_adapter",
+                    json={"lora_name": lora_name},
+                    headers={"Authorization": "Bearer EMPTY"},
+                    timeout=30.0,
+                )
+        except Exception:
+            # Best effort: this only drops a server-side name mapping, and a
+            # stuck unload must not block eviction.
+            logger.warning("Failed to unload LoRA '%s' from %s", lora_name, self._openai_api_url)
+        self._oai_loaded.discard(lora_name)
+
     async def add_adapter(self, lora_id: str, adapter_path: Path) -> None:
         from vllm.lora.request import LoRARequest
 
@@ -397,9 +469,10 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     # vLLM removes adapters by their integer id, not name.
                     lora_request = self.lora_adapters.pop(lora_id)
                     await self.engine.remove_lora.remote(lora_request.lora_int_id)  # type: ignore[attr-defined]
-                    # Safe only now: vLLM re-reads the path after an LRU eviction
-                    # for as long as the adapter stays registered.
-                    await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
+                await self._unload_oai_lora(lora_id)
+                # Safe only now: while the name is registered anywhere, vLLM
+                # re-reads the staged path after a worker-side LRU eviction.
+                await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
 
     async def shutdown(self) -> None:
         """Shut down the vLLM engine Ray actor and release GPU resources."""
@@ -526,8 +599,14 @@ class DPSamplingBackend(BaseSamplingBackend):
             if isinstance(first_error, BaseException):
                 raise first_error
 
+    async def ensure_oai_lora_loaded(self, lora_name: str, adapter_path: Path) -> None:
+        """Load the adapter on every DP instance; each stages its own copy."""
+        await asyncio.gather(
+            *[inst.ensure_oai_lora_loaded(lora_name, adapter_path) for inst in self._instances]
+        )
+
     async def remove_adapter(self, lora_id: str) -> None:
-        """Remove LoRA adapter from ALL DP instances."""
+        """Remove LoRA adapter from ALL DP instances (unloading and unstaging it)."""
         await asyncio.gather(*[inst.remove_adapter(lora_id) for inst in self._instances])
 
     async def shutdown(self) -> None:

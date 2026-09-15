@@ -100,9 +100,17 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     root. `read_adapter_files` / `write_adapter_files` in `checkpoints.py` are the
     only primitive. Both serving paths use it: tinker `add_adapter` and the OAI
     router's `/v1/load_lora_adapter`.
-  - Remaining: staged dirs on the OAI path are freed only at engine shutdown (vLLM's
-    unload endpoint never reaches the engine, so there is no hook); add an LRU sweep
-    if shm pressure shows up.
+  - `VLLMSamplingBackend` owns the whole adapter lifecycle, including which names each
+    instance loaded into its own vLLM OpenAI serving layer (`ensure_oai_lora_loaded`;
+    the oai router keeps no cache of its own). `remove_adapter` removes from the
+    engine, unloads the serving-layer name, and only then unstages — deleting the
+    files first would leave vLLM re-reading a missing path after a worker-side LRU
+    eviction.
+  - Remaining: an adapter served over OAI has no eviction trigger of its own. Tinker
+    sessions evict under their random session id while OAI registers
+    `{training_run_id}:{checkpoint_id}`, so OAI-served adapters stay loaded and staged
+    until engine shutdown. Give those names an eviction hook if shm pressure or the
+    vLLM adapter registry becomes a problem.
   - **Trainer ↔ server `checkpoint_dir` stays shared, deliberately.** Shipping the
     adapter back from `save_state` was tried and dropped: `load_state` still reads the
     checkpoint from the training actor's own node in both backends, and multi-node

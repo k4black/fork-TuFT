@@ -8,10 +8,8 @@ Endpoints:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -19,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..auth import User
-from ..backends.sampling_backend import BaseSamplingBackend, DPSamplingBackend
+from ..backends.sampling_backend import DPSamplingBackend
 from ..exceptions import (
     InvalidRequestException,
     ServerException,
@@ -164,68 +162,6 @@ def create_oai_router() -> APIRouter:
             }
         )
 
-    # Track which LoRA adapters have been loaded via the OpenAI API.
-    # For DP mode, we track per (lora_name, backend_url) to ensure all instances are loaded.
-    _loaded_loras: set[str] = set()
-
-    async def _ensure_lora_loaded(
-        client: httpx.AsyncClient,
-        backend: BaseSamplingBackend,
-        lora_name: str,
-        adapter_path: Path,
-    ) -> None:
-        """Load a LoRA adapter into vLLM's OpenAI serving layer if not already loaded."""
-        backend_url = backend.get_openai_api_url()
-        if backend_url is None:
-            return
-        # Use (lora_name, backend_url) as the cache key so DP instances are tracked individually
-        cache_key = f"{lora_name}@{backend_url}"
-        if cache_key in _loaded_loras:
-            return
-
-        # ponytail: staged adapters on this path are freed only at engine
-        # shutdown -- vLLM's unload endpoint never reaches the engine, so there
-        # is no hook to unstage on. Add an LRU sweep if shm pressure shows up.
-        lora_path = await backend.stage_adapter(lora_name, adapter_path)
-        url = f"{backend_url}/v1/load_lora_adapter"
-        resp = await client.post(
-            url,
-            json={"lora_name": lora_name, "lora_path": lora_path},
-            headers={"Authorization": "Bearer EMPTY"},
-            timeout=60.0,
-        )
-        if resp.status_code == 200:
-            _loaded_loras.add(cache_key)
-            logger.info("Loaded LoRA '%s' via vLLM OpenAI API at %s", lora_name, backend_url)
-        else:
-            # If 400 "already exists", that's fine
-            body = resp.json() if resp.status_code < 500 else {}
-            msg = body.get("message", "") if isinstance(body, dict) else str(body)
-            if "already" in msg.lower():
-                _loaded_loras.add(cache_key)
-                return
-            raise RuntimeError(
-                f"Failed to load LoRA adapter '{lora_name}': {resp.status_code} {resp.text}"
-            )
-
-    async def _ensure_lora_loaded_all_dp(
-        client: httpx.AsyncClient,
-        backend: "BaseSamplingBackend",
-        lora_name: str,
-        adapter_path: Path,
-    ) -> None:
-        """Load LoRA on ALL DP instances (for DPSamplingBackend), or single instance otherwise.
-
-        Staging is per instance: each engine actor owns its own staging root, so
-        the path the adapter ends up at differs between DP replicas.
-        """
-        instances: list[BaseSamplingBackend] = (
-            list(backend._instances) if isinstance(backend, DPSamplingBackend) else [backend]
-        )
-        await asyncio.gather(
-            *[_ensure_lora_loaded(client, inst, lora_name, adapter_path) for inst in instances]
-        )
-
     async def _proxy_inference(
         request: Request,
         user: User,
@@ -279,11 +215,8 @@ def create_oai_router() -> APIRouter:
                 # Ensure LoRA is loaded on ALL DP instances via the vLLM OpenAI API
                 if resolved.lora_adapter_path and resolved.lora_id:
                     try:
-                        await _ensure_lora_loaded_all_dp(
-                            client=client,
-                            backend=backend,
-                            lora_name=resolved.lora_id,
-                            adapter_path=resolved.lora_adapter_path,
+                        await backend.ensure_oai_lora_loaded(
+                            resolved.lora_id, resolved.lora_adapter_path
                         )
                     except Exception as exc:
                         raise ServerException(f"Failed to load LoRA adapter: {exc}") from exc

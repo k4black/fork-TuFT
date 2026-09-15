@@ -108,3 +108,51 @@ async def test_add_adapter_registers_the_staged_path(tmp_path, monkeypatch):
     # The engine got the bytes, and vLLM got the engine's own node-local path.
     assert recorded["files"] == read_adapter_files(adapter_dir)
     assert recorded["request"].lora_path == "/dev/shm/tuft-adapters-0123/staged"
+
+
+async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeypatch):
+    import httpx
+
+    adapter_dir = _adapter_dir(tmp_path)
+    staged = "/dev/shm/tuft-adapters-0123/staged"
+    url = "http://vllm-node:8000"
+    calls: list[tuple] = []
+
+    class _FakeClient:
+        """httpx.AsyncClient stand-in that records POSTs and always succeeds."""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def post(self, post_url: str, json: dict, **_kwargs):
+            calls.append(("post", post_url, json))
+            return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *_a, **_kw: _FakeClient())
+
+    backend = VLLMSamplingBackend.__new__(VLLMSamplingBackend)
+    backend.engine = SimpleNamespace(  # type: ignore[assignment]
+        stage_adapter=_remote(lambda lora_id, files: staged),
+        unstage_adapter=_remote(lambda lora_id: calls.append(("unstage", lora_id))),
+    )
+    backend.lora_adapters = {}
+    backend._oai_loaded = set()
+    backend._lock = asyncio.Lock()
+    backend._openai_api_url = url
+
+    await backend.ensure_oai_lora_loaded(LORA_ID, adapter_dir)
+    assert backend._oai_loaded == {LORA_ID}
+
+    await backend.remove_adapter(LORA_ID)
+
+    # The serving layer drops the name BEFORE the staged files go: vLLM re-reads
+    # that path whenever its worker-side LRU evicts the adapter.
+    assert calls == [
+        ("post", f"{url}/v1/load_lora_adapter", {"lora_name": LORA_ID, "lora_path": staged}),
+        ("post", f"{url}/v1/unload_lora_adapter", {"lora_name": LORA_ID}),
+        ("unstage", LORA_ID),
+    ]
+    assert backend._oai_loaded == set()
