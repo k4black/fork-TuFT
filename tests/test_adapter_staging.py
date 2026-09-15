@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -268,6 +269,30 @@ async def test_sample_transparently_readds_a_swept_adapter(tmp_path, monkeypatch
     # The client sees a normal response; the adapter was re-staged underneath.
     assert response.sequences[0].tokens == [7]
     assert backend.lora_adapters[SESSION_ID].lora_path == STAGED
+    # Re-add and stamp happened under one lock hold, so a sweep waiting on the
+    # lock now sees a fresh adapter rather than the one it snapshotted.
+    assert backend._last_used[SESSION_ID] > time.monotonic() - 60
+
+
+async def test_sweep_skips_an_adapter_refreshed_while_it_runs(tmp_path, monkeypatch):
+    adapter_dir = _adapter_dir(tmp_path)
+    calls: list[tuple] = []
+    backend = _backend(monkeypatch, calls, idle_ttl=60.0)
+    await backend.add_adapter(SESSION_ID, adapter_dir)
+    await backend.ensure_oai_lora_loaded(OAI_NAME, adapter_dir)
+    backend._last_used[SESSION_ID] -= 61
+    backend._last_used[OAI_NAME] -= 61  # both look idle when the sweep starts
+
+    # Holding the lock the way a request does: the sweep snapshots, then blocks.
+    async with backend._lock:
+        sweep = asyncio.create_task(backend._sweep_idle_adapters())
+        await asyncio.sleep(0)
+        backend._last_used[OAI_NAME] = time.monotonic()  # a request lands meanwhile
+    await sweep
+
+    assert ("unstage", SESSION_ID) in calls  # still idle
+    assert ("unstage", OAI_NAME) not in calls  # refreshed after the snapshot
+    assert backend._oai_loaded == {OAI_NAME}
 
 
 async def test_swept_oai_name_reloads_on_the_next_request(tmp_path, monkeypatch):
