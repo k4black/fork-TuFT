@@ -52,14 +52,6 @@ class BaseSamplingBackend(BaseBackend):
     async def remove_adapter(self, lora_id: str) -> None:
         """Remove LoRA adapter from the backend."""
 
-    async def stage_adapter(self, lora_id: str, adapter_path: Path) -> str:
-        """Make the adapter readable by this backend, and return that path.
-
-        The default assumes the backend reads the server's own filesystem, so
-        the server-side path is already usable.
-        """
-        return str(adapter_path)
-
     async def ensure_oai_lora_loaded(self, lora_name: str, adapter_path: Path) -> None:  # noqa: B027
         """Register the adapter with this backend's OpenAI serving layer.
 

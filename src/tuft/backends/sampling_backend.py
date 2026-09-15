@@ -321,11 +321,10 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                             # re-staging latency instead of seeing an error.
                             logger.info("Re-registering idle-unloaded LoRA adapter %s", lora_id)
                             await self._add_adapter_locked(lora_id, adapter_path)
-                        # ponytail: stamped at request start, so a generation
-                        # still running when the TTL expires could have its
-                        # adapter unloaded under it. At the 30-minute default
-                        # that cannot happen; track in-flight requests if the
-                        # TTL is ever configured near a generation's length.
+                        # ponytail: stamped at request start and again at
+                        # completion, so only a single generation longer than the
+                        # whole TTL can still be swept mid-flight. Track in-flight
+                        # requests if the TTL is ever set that low.
                         self._last_used[lora_id] = time.monotonic()
                         lora_request = self.lora_adapters[lora_id]
 
@@ -384,6 +383,15 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 span.record_exception(e)
                 span.set_status(StatusCode.ERROR)
                 raise
+            finally:
+                # Stamp again on the way out: a long generation must not look
+                # idle to a sweep that runs while it is still streaming. Only
+                # refresh an existing entry -- an unknown id must not gain one,
+                # and a swept one must not be resurrected without its adapter.
+                if lora_id is not None:
+                    async with self._lock:
+                        if lora_id in self._last_used:
+                            self._last_used[lora_id] = time.monotonic()
 
     async def stage_adapter(self, lora_id: str, adapter_path: Path) -> str:
         """Copy the adapter onto the engine actor's node; return the local path.
@@ -403,11 +411,6 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         """
         import httpx
 
-        # ponytail: an adapter served over OAI stays loaded and staged until
-        # remove_adapter runs for its name or the engine shuts down. Tinker
-        # sessions evict under their own random session id, so in practice only
-        # shutdown frees these; give the OAI names an eviction hook of their own
-        # if shm pressure shows up.
         if self._openai_api_url is None:
             return
         async with self._lock:
@@ -442,10 +445,10 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         """Return True once the OpenAI serving layer is known not to hold the name.
 
         Always asks the server, whatever ``_oai_loaded`` says: a load whose
-        response was lost may still have registered the name. Any answer is a
-        confirmation -- 2xx unloaded it, 4xx means the server has no such name --
-        while a transport error, a timeout or a 5xx leaves it unknown, and
-        unknown must be treated as still registered.
+        response was lost may still have registered the name. Only two answers
+        confirm the name is gone -- 2xx (unloaded it) and 404 (it has no such
+        adapter). Anything else, a transport error included, leaves the state
+        unknown, and unknown must be treated as still registered.
         """
         import httpx
 
@@ -466,9 +469,9 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 lora_name,
             )
             return False
-        if resp.status_code >= 500:
+        if not (200 <= resp.status_code < 300 or resp.status_code == 404):
             logger.warning(
-                "vLLM at %s failed to unload LoRA '%s' (%s); leaving it staged.",
+                "vLLM at %s did not unload LoRA '%s' (%s); leaving it staged.",
                 self._openai_api_url,
                 lora_name,
                 resp.status_code,
@@ -553,13 +556,21 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             span.set_attribute("tuft.lora_id", lora_id)
             async with self._lock:
                 await self._remove_adapter_locked(lora_id)
+                # Explicit removal is final: drop the source path so a later
+                # sample() cannot resurrect an evicted session. The idle sweep
+                # calls the locked helper directly and keeps it, which is what
+                # makes its unload transparent.
+                self._adapter_paths.pop(lora_id, None)
 
     async def _remove_adapter_locked(self, lora_id: str) -> None:
         """Unregister, unload and unstage the adapter. Caller holds ``_lock``."""
-        if lora_id in self.lora_adapters:
-            # vLLM removes adapters by their integer id, not name.
-            lora_request = self.lora_adapters.pop(lora_id)
+        lora_request = self.lora_adapters.get(lora_id)
+        if lora_request is not None:
+            # vLLM removes adapters by their integer id, not name. Drop the
+            # registry entry only once the engine call succeeded, so a raise
+            # leaves a later removal something to retry.
             await self.engine.remove_lora.remote(lora_request.lora_int_id)  # type: ignore[attr-defined]
+            del self.lora_adapters[lora_id]
         # Unstage only against a confirmed unload: while the name is registered
         # anywhere, vLLM re-reads the staged path after a worker-side LRU
         # eviction. An unconfirmed unload leaks one staged directory until the

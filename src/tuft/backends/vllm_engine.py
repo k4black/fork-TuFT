@@ -291,7 +291,10 @@ class VLLMEngine:
         if not (adapter_dir / "adapter_config.json").is_file():
             # Fail here rather than hand vLLM a path it cannot read: a missing
             # lora_path is not an error to vLLM, it is a Hugging Face Hub repo
-            # id it will try to snapshot_download (vllm/lora/utils.py).
+            # id it will try to snapshot_download (vllm/lora/utils.py). Nothing
+            # is registered against this directory, and no unload will come
+            # round to clean it up, so drop whatever landed.
+            shutil.rmtree(adapter_dir, ignore_errors=True)
             raise RuntimeError(
                 f"Staging LoRA adapter {lora_id} into {adapter_dir} wrote no "
                 f"adapter_config.json (received files: {sorted(files)})."

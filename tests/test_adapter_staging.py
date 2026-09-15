@@ -64,8 +64,11 @@ async def test_stage_adapter_round_trip(tmp_path):
 async def test_stage_adapter_fails_loudly_without_config(tmp_path):
     # vLLM reads a lora_path it cannot find as a Hugging Face repo id and
     # downloads it, so staging must never return a path it did not write to.
+    engine = _engine(tmp_path)
     with pytest.raises(RuntimeError, match="adapter_config.json"):
-        await _engine(tmp_path).stage_adapter(LORA_ID, {"adapter_model.safetensors": b"x"})
+        await engine.stage_adapter(LORA_ID, {"adapter_model.safetensors": b"x"})
+    # Nothing will unload this id, so the half-written directory goes now.
+    assert not engine._staged_adapter_dir(LORA_ID).exists()
 
 
 STAGED = "/dev/shm/tuft-adapters-0123/staged"
@@ -93,18 +96,14 @@ def _backend(
 
     statuses = statuses or {}
 
-    class _LoRARequest:
-        def __init__(self, lora_int_id: int, lora_name: str, lora_path: str) -> None:
-            self.lora_int_id = lora_int_id
-            self.lora_name = lora_name
-            self.lora_path = lora_path
-
     vllm = ModuleType("vllm")
     vllm_lora = ModuleType("vllm.lora")
     vllm_lora_request = ModuleType("vllm.lora.request")
-    vllm_lora_request.LoRARequest = _LoRARequest  # type: ignore[attr-defined]
+    vllm_lora_request.LoRARequest = SimpleNamespace  # type: ignore[attr-defined]
     vllm_lora.request = vllm_lora_request  # type: ignore[attr-defined]
     vllm.lora = vllm_lora  # type: ignore[attr-defined]
+    # Every parent package is imported before the leaf, so all three entries
+    # must be present for `from vllm.lora.request import ...` to resolve.
     for name, module in [
         ("vllm", vllm),
         ("vllm.lora", vllm_lora),
@@ -157,18 +156,6 @@ def _backend(
     return backend
 
 
-async def test_add_adapter_registers_the_staged_path(tmp_path, monkeypatch):
-    adapter_dir = _adapter_dir(tmp_path)
-    calls: list[tuple] = []
-    backend = _backend(monkeypatch, calls)
-
-    await backend.add_adapter(SESSION_ID, adapter_dir)
-
-    # The engine got the bytes, and vLLM got the engine's own node-local path.
-    assert ("stage", SESSION_ID, read_adapter_files(adapter_dir)) in calls
-    assert backend.lora_adapters[SESSION_ID].lora_path == STAGED
-
-
 async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeypatch):
     calls: list[tuple] = []
     backend = _backend(monkeypatch, calls)
@@ -191,10 +178,10 @@ async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeyp
 @pytest.mark.parametrize(
     "unload_status, confirmed",
     [
-        (404, True),  # the server answered: it holds no such name
-        (400, True),
-        (503, False),  # it may still hold the name
-        (0, False),  # transport failure: unknown
+        pytest.param(404, True, id="404-no-such-adapter"),
+        pytest.param(400, False, id="400-rejected-not-an-answer"),
+        pytest.param(503, False, id="503-may-still-hold-it"),
+        pytest.param(0, False, id="transport-failure"),
     ],
 )
 async def test_unstaging_waits_for_a_confirmed_unload(
@@ -223,22 +210,6 @@ async def test_failed_oai_load_keeps_the_staged_copy(tmp_path, monkeypatch):
     assert ("unstage", OAI_NAME) not in calls
 
 
-async def test_sweep_unloads_idle_adapters_only(tmp_path, monkeypatch):
-    adapter_dir = _adapter_dir(tmp_path)
-    calls: list[tuple] = []
-    backend = _backend(monkeypatch, calls, idle_ttl=60.0)
-    await backend.add_adapter(SESSION_ID, adapter_dir)
-    await backend.ensure_oai_lora_loaded(OAI_NAME, adapter_dir)
-
-    backend._last_used[SESSION_ID] -= 61  # idle past the ttl; the OAI name is fresh
-    await backend._sweep_idle_adapters()
-
-    assert ("unstage", SESSION_ID) in calls
-    assert SESSION_ID not in backend.lora_adapters
-    assert ("unstage", OAI_NAME) not in calls
-    assert backend._oai_loaded == {OAI_NAME}
-
-
 async def test_sample_transparently_readds_a_swept_adapter(tmp_path, monkeypatch):
     adapter_dir = _adapter_dir(tmp_path)
     calls: list[tuple] = []
@@ -255,6 +226,10 @@ async def test_sample_transparently_readds_a_swept_adapter(tmp_path, monkeypatch
         )
     )
     await backend.add_adapter(SESSION_ID, adapter_dir)
+    # The engine got the bytes, and vLLM got the engine's own node-local path.
+    assert ("stage", SESSION_ID, read_adapter_files(adapter_dir)) in calls
+    assert backend.lora_adapters[SESSION_ID].lora_path == STAGED
+
     backend._last_used[SESSION_ID] -= 61
     await backend._sweep_idle_adapters()
     assert SESSION_ID not in backend.lora_adapters
@@ -291,6 +266,7 @@ async def test_sweep_skips_an_adapter_refreshed_while_it_runs(tmp_path, monkeypa
     await sweep
 
     assert ("unstage", SESSION_ID) in calls  # still idle
+    assert SESSION_ID not in backend.lora_adapters
     assert ("unstage", OAI_NAME) not in calls  # refreshed after the snapshot
     assert backend._oai_loaded == {OAI_NAME}
 
