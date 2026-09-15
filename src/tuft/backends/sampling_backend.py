@@ -113,6 +113,14 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         # response can leave it disagreeing with the server, so correctness rests
         # on _confirm_oai_unloaded, which always asks.
         self._oai_loaded: set[str] = set()
+        # Source adapter directory per id, kept after an idle unload so the next
+        # request can re-stage it. A Path costs nothing next to the staged copy
+        # it lets us drop.
+        self._adapter_paths: dict[str, Path] = {}
+        # Request-start time per adapter id; the idle sweep reads it.
+        self._last_used: dict[str, float] = {}
+        self._idle_ttl = config.adapter_idle_ttl_minutes * 60
+        self._sweep_task: Optional[asyncio.Task] = None
         self._counter = 1
         self._lock = asyncio.Lock()
         self._openai_api_url: Optional[str] = None
@@ -254,6 +262,8 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         # Wait for the OpenAI API server to be ready to accept connections
         if self._openai_api_url:
             await self._wait_for_openai_server(self._openai_api_url)
+        if self._idle_ttl > 0 and self._sweep_task is None:
+            self._sweep_task = asyncio.create_task(self._sweep_loop())
 
     async def _wait_for_openai_server(self, url: str, timeout: float = 120.0) -> None:
         """Poll the vLLM OpenAI server until it accepts connections."""
@@ -297,10 +307,19 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             span.set_attribute("tuft.num_samples", num_samples)
             span.set_attribute("tuft.has_lora", lora_id is not None)
             try:
+                if lora_id is not None:
+                    await self._readd_if_swept(lora_id)
                 async with self._lock:
                     if lora_id is not None and lora_id not in self.lora_adapters:
                         raise ValueError(f"LoRA adapter {lora_id} not found in backend.")
                     lora_request = self.lora_adapters[lora_id] if lora_id is not None else None
+                    if lora_id is not None:
+                        # ponytail: stamped at request start, so a generation
+                        # still running when the TTL expires could have its
+                        # adapter unloaded under it. At the 30-minute default
+                        # that cannot happen; track in-flight requests if the
+                        # TTL is ever configured near a generation's length.
+                        self._last_used[lora_id] = time.monotonic()
 
                 prompt_token_ids = prompt.to_ints()
                 params = {
@@ -384,6 +403,9 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         if self._openai_api_url is None:
             return
         async with self._lock:
+            # A cache hit is a use: stamp before the early return, or the sweep
+            # would unload an adapter that OpenAI-API traffic keeps busy.
+            self._last_used[lora_name] = time.monotonic()
             if lora_name in self._oai_loaded:
                 return
             lora_path = await self.stage_adapter(lora_name, adapter_path)
@@ -454,6 +476,10 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             span.set_attribute("tuft.lora_id", lora_id)
             try:
                 async with self._lock:
+                    if lora_id in self.lora_adapters:
+                        # Already registered: two samples can race the re-add of
+                        # a swept adapter, and the id names immutable weights.
+                        return
                     if not adapter_path.exists():
                         raise ValueError(f"LoRA adapter path {adapter_path} does not exist.")
                     staged_path = await self.stage_adapter(lora_id, adapter_path)
@@ -482,10 +508,41 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                             await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
                         raise
                     self.lora_adapters[lora_id] = request
+                    self._adapter_paths[lora_id] = adapter_path
+                    self._last_used[lora_id] = time.monotonic()
             except Exception as e:
                 span.record_exception(e)
                 span.set_status(StatusCode.ERROR)
                 raise
+
+    async def _readd_if_swept(self, lora_id: str) -> None:
+        """Re-register an adapter the idle sweep unloaded, before sampling it.
+
+        The caller sees the re-staging latency instead of an error. Left to
+        ``add_adapter`` (which takes ``_lock``), so it must run outside it.
+        """
+        if lora_id in self.lora_adapters:
+            return
+        adapter_path = self._adapter_paths.get(lora_id)
+        if adapter_path is not None:
+            logger.info("Re-registering idle-unloaded LoRA adapter %s", lora_id)
+            await self.add_adapter(lora_id, adapter_path)
+
+    async def _sweep_loop(self) -> None:
+        """Unload adapters that have served nothing for ``adapter_idle_ttl``."""
+        while True:
+            await asyncio.sleep(max(1.0, self._idle_ttl / 10))
+            try:
+                await self._sweep_idle_adapters()
+            except Exception:
+                logger.exception("Idle adapter sweep failed")
+
+    async def _sweep_idle_adapters(self) -> None:
+        cutoff = time.monotonic() - self._idle_ttl
+        for lora_id, last_used in list(self._last_used.items()):
+            if last_used < cutoff:
+                logger.info("Unloading LoRA adapter %s, idle for %.0fs", lora_id, self._idle_ttl)
+                await self.remove_adapter(lora_id)
 
     async def remove_adapter(self, lora_id: str) -> None:
         with _get_tracer().start_as_current_span("sampling_backend.remove_adapter") as span:
@@ -502,11 +559,17 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 # which is the safe direction to fail in.
                 if await self._confirm_oai_unloaded(lora_id):
                     await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
+                    # Keeping it on an unconfirmed unload leaves the next sweep
+                    # to retry the whole removal.
+                    self._last_used.pop(lora_id, None)
 
     async def shutdown(self) -> None:
         """Shut down the vLLM engine Ray actor and release GPU resources."""
         import ray
 
+        if self._sweep_task is not None:
+            self._sweep_task.cancel()
+            self._sweep_task = None
         try:
             await self.engine.shutdown.remote()  # type: ignore[attr-defined]
         except Exception:

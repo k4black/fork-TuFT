@@ -8,6 +8,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from tinker import types
 
 from tuft.backends.sampling_backend import VLLMSamplingBackend
 from tuft.backends.vllm_engine import VLLMEngine
@@ -66,12 +67,35 @@ async def test_stage_adapter_fails_loudly_without_config(tmp_path):
         await _engine(tmp_path).stage_adapter(LORA_ID, {"adapter_model.safetensors": b"x"})
 
 
-async def test_add_adapter_registers_the_staged_path(tmp_path, monkeypatch):
-    adapter_dir = _adapter_dir(tmp_path)
-    recorded: dict = {}
+STAGED = "/dev/shm/tuft-adapters-0123/staged"
+OAI_URL = "http://vllm-node:8000"
+# The OpenAI API registers "{training_run_id}:{checkpoint_id}"; sampling
+# sessions register their own random id. Both live in one backend.
+OAI_NAME = "run-1:checkpoint-0001"
+SESSION_ID = "6f1c0b64-session"
+
+
+def _backend(
+    monkeypatch,
+    calls: list,
+    statuses: dict[str, int] | None = None,
+    *,
+    idle_ttl: float = 0.0,
+) -> VLLMSamplingBackend:
+    """A backend whose engine, vLLM OpenAI server and vllm import are all stubs.
+
+    Every interesting call lands in ``calls``. ``statuses`` maps an OpenAI
+    endpoint name to the status it answers with; 0 stands for a transport
+    failure.
+    """
+    import httpx
+
+    statuses = statuses or {}
 
     class _LoRARequest:
         def __init__(self, lora_int_id: int, lora_name: str, lora_path: str) -> None:
+            self.lora_int_id = lora_int_id
+            self.lora_name = lora_name
             self.lora_path = lora_path
 
     vllm = ModuleType("vllm")
@@ -86,41 +110,6 @@ async def test_add_adapter_registers_the_staged_path(tmp_path, monkeypatch):
         ("vllm.lora.request", vllm_lora_request),
     ]:
         monkeypatch.setitem(sys.modules, name, module)
-
-    def _stage(lora_id: str, files: dict[str, bytes]) -> str:
-        recorded["files"] = files
-        return "/dev/shm/tuft-adapters-0123/staged"
-
-    def _add_lora(request) -> bool:
-        recorded["request"] = request
-        return True
-
-    backend = VLLMSamplingBackend.__new__(VLLMSamplingBackend)
-    backend.engine = SimpleNamespace(  # type: ignore[assignment]
-        stage_adapter=_remote(_stage), add_lora=_remote(_add_lora)
-    )
-    backend.lora_adapters = {}
-    backend._counter = 1
-    backend._lock = asyncio.Lock()
-
-    await backend.add_adapter(LORA_ID, adapter_dir)
-
-    # The engine got the bytes, and vLLM got the engine's own node-local path.
-    assert recorded["files"] == read_adapter_files(adapter_dir)
-    assert recorded["request"].lora_path == "/dev/shm/tuft-adapters-0123/staged"
-
-
-STAGED = "/dev/shm/tuft-adapters-0123/staged"
-OAI_URL = "http://vllm-node:8000"
-
-
-def _oai_backend(monkeypatch, calls: list, statuses: dict[str, int]) -> VLLMSamplingBackend:
-    """A backend whose engine and vLLM OpenAI server are both recorders.
-
-    ``statuses`` maps an endpoint name to the status it answers with; 0 stands
-    for a transport failure.
-    """
-    import httpx
 
     class _FakeClient:
         async def __aenter__(self):
@@ -140,33 +129,60 @@ def _oai_backend(monkeypatch, calls: list, statuses: dict[str, int]) -> VLLMSamp
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda *_a, **_kw: _FakeClient())
 
+    def _stage(lora_id: str, files: dict[str, bytes]) -> str:
+        calls.append(("stage", lora_id, files))
+        return STAGED
+
+    def _add_lora(request) -> bool:
+        calls.append(("add_lora", request))
+        return True
+
     backend = VLLMSamplingBackend.__new__(VLLMSamplingBackend)
     backend.engine = SimpleNamespace(  # type: ignore[assignment]
-        stage_adapter=_remote(lambda lora_id, files: STAGED),
+        stage_adapter=_remote(_stage),
         unstage_adapter=_remote(lambda lora_id: calls.append(("unstage", lora_id))),
+        add_lora=_remote(_add_lora),
+        remove_lora=_remote(lambda int_id: calls.append(("remove_lora", int_id))),
     )
     backend.lora_adapters = {}
     backend._oai_loaded = set()
+    backend._adapter_paths = {}
+    backend._last_used = {}
+    backend._idle_ttl = idle_ttl
+    backend._sweep_task = None
+    backend._counter = 1
     backend._lock = asyncio.Lock()
     backend._openai_api_url = OAI_URL
     return backend
 
 
+async def test_add_adapter_registers_the_staged_path(tmp_path, monkeypatch):
+    adapter_dir = _adapter_dir(tmp_path)
+    calls: list[tuple] = []
+    backend = _backend(monkeypatch, calls)
+
+    await backend.add_adapter(SESSION_ID, adapter_dir)
+
+    # The engine got the bytes, and vLLM got the engine's own node-local path.
+    assert ("stage", SESSION_ID, read_adapter_files(adapter_dir)) in calls
+    assert backend.lora_adapters[SESSION_ID].lora_path == STAGED
+
+
 async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeypatch):
     calls: list[tuple] = []
-    backend = _oai_backend(monkeypatch, calls, {})
+    backend = _backend(monkeypatch, calls)
 
-    await backend.ensure_oai_lora_loaded(LORA_ID, _adapter_dir(tmp_path))
-    assert backend._oai_loaded == {LORA_ID}
+    await backend.ensure_oai_lora_loaded(OAI_NAME, _adapter_dir(tmp_path))
+    assert backend._oai_loaded == {OAI_NAME}
 
-    await backend.remove_adapter(LORA_ID)
+    await backend.remove_adapter(OAI_NAME)
 
     # The serving layer drops the name BEFORE the staged files go: vLLM re-reads
     # that path whenever its worker-side LRU evicts the adapter.
-    assert calls == [
-        ("post", f"{OAI_URL}/v1/load_lora_adapter", {"lora_name": LORA_ID, "lora_path": STAGED}),
-        ("post", f"{OAI_URL}/v1/unload_lora_adapter", {"lora_name": LORA_ID}),
-        ("unstage", LORA_ID),
+    assert [call for call in calls if call[0] != "stage"] == [
+        ("post", f"{OAI_URL}/v1/load_lora_adapter", {"lora_name": OAI_NAME, "lora_path": STAGED}),
+        ("post", f"{OAI_URL}/v1/unload_lora_adapter", {"lora_name": OAI_NAME}),
+        ("unstage", OAI_NAME),
     ]
     assert backend._oai_loaded == set()
 
@@ -184,23 +200,88 @@ async def test_unstaging_waits_for_a_confirmed_unload(
     tmp_path, monkeypatch, unload_status, confirmed
 ):
     calls: list[tuple] = []
-    backend = _oai_backend(monkeypatch, calls, {"unload_lora_adapter": unload_status})
-    await backend.ensure_oai_lora_loaded(LORA_ID, _adapter_dir(tmp_path))
+    backend = _backend(monkeypatch, calls, {"unload_lora_adapter": unload_status})
+    await backend.ensure_oai_lora_loaded(OAI_NAME, _adapter_dir(tmp_path))
 
-    await backend.remove_adapter(LORA_ID)
+    await backend.remove_adapter(OAI_NAME)
 
-    assert (("unstage", LORA_ID) in calls) is confirmed
+    assert (("unstage", OAI_NAME) in calls) is confirmed
     # An unconfirmed unload keeps the name so a later removal retries it.
-    assert (LORA_ID in backend._oai_loaded) is not confirmed
+    assert (OAI_NAME in backend._oai_loaded) is not confirmed
 
 
 async def test_failed_oai_load_keeps_the_staged_copy(tmp_path, monkeypatch):
     # The load may have registered the name despite the error response, and the
     # staged path is deterministic, so a retry rewrites this same directory.
     calls: list[tuple] = []
-    backend = _oai_backend(monkeypatch, calls, {"load_lora_adapter": 500})
+    backend = _backend(monkeypatch, calls, {"load_lora_adapter": 500})
 
     with pytest.raises(RuntimeError, match="Failed to load LoRA adapter"):
-        await backend.ensure_oai_lora_loaded(LORA_ID, _adapter_dir(tmp_path))
+        await backend.ensure_oai_lora_loaded(OAI_NAME, _adapter_dir(tmp_path))
 
-    assert ("unstage", LORA_ID) not in calls
+    assert ("unstage", OAI_NAME) not in calls
+
+
+async def test_sweep_unloads_idle_adapters_only(tmp_path, monkeypatch):
+    adapter_dir = _adapter_dir(tmp_path)
+    calls: list[tuple] = []
+    backend = _backend(monkeypatch, calls, idle_ttl=60.0)
+    await backend.add_adapter(SESSION_ID, adapter_dir)
+    await backend.ensure_oai_lora_loaded(OAI_NAME, adapter_dir)
+
+    backend._last_used[SESSION_ID] -= 61  # idle past the ttl; the OAI name is fresh
+    await backend._sweep_idle_adapters()
+
+    assert ("unstage", SESSION_ID) in calls
+    assert SESSION_ID not in backend.lora_adapters
+    assert ("unstage", OAI_NAME) not in calls
+    assert backend._oai_loaded == {OAI_NAME}
+
+
+async def test_sample_transparently_readds_a_swept_adapter(tmp_path, monkeypatch):
+    adapter_dir = _adapter_dir(tmp_path)
+    calls: list[tuple] = []
+    backend = _backend(monkeypatch, calls, idle_ttl=60.0)
+    backend.engine.generate = _remote(  # type: ignore[attr-defined]
+        lambda **_kwargs: SimpleNamespace(
+            outputs=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    token_ids=[7],
+                    logprobs=[{7: SimpleNamespace(logprob=-0.1)}],
+                )
+            ]
+        )
+    )
+    await backend.add_adapter(SESSION_ID, adapter_dir)
+    backend._last_used[SESSION_ID] -= 61
+    await backend._sweep_idle_adapters()
+    assert SESSION_ID not in backend.lora_adapters
+
+    response = await backend.sample(
+        prompt=types.ModelInput.from_ints([1, 2, 3]),
+        num_samples=1,
+        sampling_params=types.SamplingParams(max_tokens=1),
+        lora_id=SESSION_ID,
+    )
+
+    # The client sees a normal response; the adapter was re-staged underneath.
+    assert response.sequences[0].tokens == [7]
+    assert backend.lora_adapters[SESSION_ID].lora_path == STAGED
+
+
+async def test_swept_oai_name_reloads_on_the_next_request(tmp_path, monkeypatch):
+    adapter_dir = _adapter_dir(tmp_path)
+    calls: list[tuple] = []
+    backend = _backend(monkeypatch, calls, idle_ttl=60.0)
+    await backend.ensure_oai_lora_loaded(OAI_NAME, adapter_dir)
+
+    backend._last_used[OAI_NAME] -= 61
+    await backend._sweep_idle_adapters()
+    assert backend._oai_loaded == set()
+
+    await backend.ensure_oai_lora_loaded(OAI_NAME, adapter_dir)
+
+    loads = [c for c in calls if c[0] == "post" and c[1].endswith("/v1/load_lora_adapter")]
+    assert len(loads) == 2
+    assert backend._oai_loaded == {OAI_NAME}

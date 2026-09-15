@@ -106,11 +106,16 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     engine, unloads the serving-layer name, and only then unstages — deleting the
     files first would leave vLLM re-reading a missing path after a worker-side LRU
     eviction.
-  - Remaining: an adapter served over OAI has no eviction trigger of its own. Tinker
-    sessions evict under their random session id while OAI registers
-    `{training_run_id}:{checkpoint_id}`, so OAI-served adapters stay loaded and staged
-    until engine shutdown. Give those names an eviction hook if shm pressure or the
-    vLLM adapter registry becomes a problem.
+  - **Idle TTL** (`ModelConfig.adapter_idle_ttl_minutes`, default 30, 0 disables):
+    one sweep task per `VLLMSamplingBackend` unloads and unstages adapters that have
+    served no request for the TTL, in both namespaces (sampling-session ids and the
+    OAI `{training_run_id}:{checkpoint_id}` names). The next request re-stages and
+    re-registers transparently — `sample()` via `_readd_if_swept`, the OAI path via
+    its existing lazy load — so a client sees latency, never an error. `max_loras`
+    default raised 1 → 8 to match.
+  - Deferred: trainer-side no-shared-FS save/resume (see below), and disk GC of
+    `checkpoint_dir` itself — the TTL frees vLLM slots and `/dev/shm`, never the
+    checkpoints on the server.
   - **Trainer ↔ server `checkpoint_dir` stays shared, deliberately.** Shipping the
     adapter back from `save_state` was tried and dropped: `load_state` still reads the
     checkpoint from the training actor's own node in both backends, and multi-node
