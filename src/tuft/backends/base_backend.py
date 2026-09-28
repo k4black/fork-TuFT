@@ -52,6 +52,9 @@ class BaseSamplingBackend(BaseBackend):
     async def remove_adapter(self, lora_id: str) -> None:
         """Remove LoRA adapter from the backend."""
 
+    async def ensure_oai_lora_loaded(self, lora_name: str, adapter_path: Path) -> None:  # noqa: B027
+        """Load the adapter into the OpenAI serving layer; no-op without one."""
+
     def get_openai_api_url(self) -> Optional[str]:
         """Return the vLLM OpenAI API base URL, or None if not available."""
         return None

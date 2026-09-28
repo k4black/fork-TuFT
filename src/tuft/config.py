@@ -101,7 +101,9 @@ class ModelConfig(BaseModel):
 
     # default lora setting
     max_lora_rank: int = 16  # maximum rank for LoRA adapters
-    max_loras: int = 1  # maximum number of LoRA adapters that can be applied simultaneously
+    max_loras: int = 8  # maximum number of LoRA adapters that can be applied simultaneously
+    # Unload an adapter idle this long; the next request re-adds it. 0 disables.
+    adapter_idle_ttl_minutes: float = 30.0
     # Multiplier from a LoRA adapter's rank to its lora_alpha:
     # lora_alpha = rank * lora_alpha_ratio. Shared by the "hf" and "fsdp" training
     # backends so the same rank produces the same update scaling on both.

@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,34 @@ def compute_tree_size(path: Path) -> int:
         except OSError:
             continue
     return total
+
+
+# FSDP-internal reload and optimizer state; vLLM never reads them.
+TRAINER_ONLY_ADAPTER_FILES = frozenset({"adapter.pt", "optimizer.pt"})
+
+
+def read_adapter_files(adapter_path: Path) -> dict[str, bytes]:
+    """Read a peft adapter directory into memory, ready to ship to another node."""
+    files = {
+        child.name: child.read_bytes()
+        for child in adapter_path.iterdir()
+        if child.is_file()
+        and child.name not in TRAINER_ONLY_ADAPTER_FILES
+        and not child.name.endswith(".tmp")
+    }
+    # vLLM treats a path without a config as a HF Hub repo id and downloads it.
+    if "adapter_config.json" not in files:
+        raise ValueError(f"LoRA adapter {adapter_path} has no adapter_config.json.")
+    return files
+
+
+def write_adapter_files(adapter_path: Path, files: dict[str, bytes]) -> None:
+    """Write adapter bytes; ``os.replace`` per file so vLLM never reads a partial one."""
+    adapter_path.mkdir(parents=True, exist_ok=True)
+    for name, data in files.items():
+        tmp_path = adapter_path / f"{name}.tmp"
+        tmp_path.write_bytes(data)
+        os.replace(tmp_path, adapter_path / name)
 
 
 def read_adapter_target_modules(adapter_path: Path) -> list[str] | None:

@@ -54,7 +54,9 @@ model_owner: local-user
 #   - seed: Random seed for reproducibility (default: 42)
 #   - min_response_tokens: Minimum tokens to generate (default: 0)
 #   - max_lora_rank: Maximum LoRA adapter rank (default: 16)
-#   - max_loras: Maximum simultaneous LoRA adapters (default: 1)
+#   - max_loras: Maximum simultaneous LoRA adapters (default: 8)
+#   - adapter_idle_ttl_minutes: Unload an adapter after this long with no request;
+#       the next request for it re-stages and re-registers it (default: 30, 0 = off)
 #   - training_backend: Training implementation, "hf" or "fsdp" (default: hf)
 #   - fsdp_num_gpus: Number of FSDP workers/GPUs (default: 1)
 #   - fsdp_rank_slots: Preallocated LoRA slots by rank (default: 16 rank-8 slots
@@ -124,7 +126,7 @@ supported_models:
     top_p: 1.0
     top_k: -1
     max_lora_rank: 16
-    max_loras: 1
+    max_loras: 8
     lora_alpha_ratio: 2
     # FSDP creates every adapter slot before sharding. By default these modifiers
     # match Tinker's LoraConfig defaults and resolve to attention + MLP modules on
@@ -166,7 +168,7 @@ supported_models:
     top_p: 1.0
     top_k: -1
     max_lora_rank: 16
-    max_loras: 1
+    max_loras: 8
 
 # =============================================================================
 # Authentication

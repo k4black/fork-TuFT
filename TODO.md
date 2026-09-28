@@ -88,6 +88,18 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     inference; multi-node: 4 train nodes + 1 inference node). An unsatisfiable
     resource name currently leaves the actor pending in the Ray scheduler instead of
     failing fast.
+- [x] **D4: LoRA Adapter Staging on Inference Nodes** (`checkpoints.py`,
+  `backends/vllm_engine.py`, `backends/sampling_backend.py`, `oai/router.py`)
+  - Design: `../llmqa-team-junk/docs/research/2026-09-14-lora-weight-streaming.md`.
+  - vLLM nodes need no shared filesystem: adapter bytes travel as a plain Ray arg and
+    `VLLMEngine.stage_adapter` writes them under `/dev/shm/tuft-adapters-{uuid}`.
+  - `VLLMSamplingBackend` owns both namespaces: sampling sessions (`add_adapter`) and
+    OAI names (`ensure_oai_lora_loaded`). An OAI name is unstaged only after vLLM
+    confirms the unload (2xx/404).
+  - Idle TTL (`adapter_idle_ttl_minutes`, default 30, 0 = off) unloads and unstages
+    idle adapters; the next request re-adds them. `max_loras` default 1 → 8.
+  - Deferred: trainer-side save/resume without shared `checkpoint_dir` (multi-node
+    FSDP needs it anyway; revisit save and load together), disk GC of checkpoints.
 
 ---
 

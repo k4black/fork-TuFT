@@ -13,6 +13,7 @@ from typing import Any, Optional
 from opentelemetry.trace import StatusCode
 from tinker import types
 
+from ..checkpoints import read_adapter_files
 from ..compat import sampled_sequence
 from ..config import ModelConfig
 from ..telemetry.tracing import get_tracer
@@ -97,6 +98,15 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         self._instance_index = instance_index
         self.engine = self._create_engine(config)
         self.lora_adapters: dict[str, LoRARequest] = {}
+        # Names loaded into this instance's vLLM OpenAI server (a cache; unload
+        # always asks the server).
+        self._oai_loaded: set[str] = set()
+        # Source dir per session id, kept after an idle unload for re-add.
+        self._adapter_paths: dict[str, Path] = {}
+        # Last request time per adapter id, read by the idle sweep.
+        self._last_used: dict[str, float] = {}
+        self._idle_ttl = config.adapter_idle_ttl_minutes * 60
+        self._sweep_task: Optional[asyncio.Task] = None
         self._counter = 1
         self._lock = asyncio.Lock()
         self._openai_api_url: Optional[str] = None
@@ -238,6 +248,8 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         # Wait for the OpenAI API server to be ready to accept connections
         if self._openai_api_url:
             await self._wait_for_openai_server(self._openai_api_url)
+        if self._idle_ttl > 0 and self._sweep_task is None:
+            self._sweep_task = asyncio.create_task(self._sweep_loop())
 
     async def _wait_for_openai_server(self, url: str, timeout: float = 120.0) -> None:
         """Poll the vLLM OpenAI server until it accepts connections."""
@@ -281,10 +293,20 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             span.set_attribute("tuft.num_samples", num_samples)
             span.set_attribute("tuft.has_lora", lora_id is not None)
             try:
+                lora_request = None
+                # One lock hold, so the sweep cannot unload between check and use.
                 async with self._lock:
-                    if lora_id is not None and lora_id not in self.lora_adapters:
-                        raise ValueError(f"LoRA adapter {lora_id} not found in backend.")
-                    lora_request = self.lora_adapters[lora_id] if lora_id is not None else None
+                    if lora_id is not None:
+                        if lora_id not in self.lora_adapters:
+                            adapter_path = self._adapter_paths.get(lora_id)
+                            if adapter_path is None:
+                                raise ValueError(f"LoRA adapter {lora_id} not found in backend.")
+                            # Swept while idle: re-add, the caller only sees latency.
+                            await self._add_adapter_locked(lora_id, adapter_path)
+                        # ponytail: stamped at request start only; a single
+                        # generation longer than the TTL can be swept mid-flight.
+                        self._last_used[lora_id] = time.monotonic()
+                        lora_request = self.lora_adapters[lora_id]
 
                 prompt_token_ids = prompt.to_ints()
                 params = {
@@ -342,49 +364,155 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 span.set_status(StatusCode.ERROR)
                 raise
 
-    async def add_adapter(self, lora_id: str, adapter_path: Path) -> None:
-        from vllm.lora.request import LoRARequest
+    async def _stage(self, lora_id: str, adapter_path: Path) -> str:
+        """Ship the adapter bytes to the engine node (plain Ray arg, no shared FS)."""
+        files = read_adapter_files(adapter_path)
+        return await self.engine.stage_adapter.remote(lora_id, files)  # type: ignore[attr-defined]
 
+    async def ensure_oai_lora_loaded(self, lora_name: str, adapter_path: Path) -> None:
+        """Stage the adapter and load it into this instance's vLLM OpenAI server."""
+        import httpx
+
+        if self._openai_api_url is None:
+            return
+        async with self._lock:
+            self._last_used[lora_name] = time.monotonic()
+            if lora_name in self._oai_loaded:
+                return
+            lora_path = await self._stage(lora_name, adapter_path)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self._openai_api_url}/v1/load_lora_adapter",
+                    json={"lora_name": lora_name, "lora_path": lora_path},
+                    headers={"Authorization": "Bearer EMPTY"},
+                    timeout=60.0,
+                )
+            # "already loaded" is success: a name always maps to the same weights.
+            # On failure keep the staged files; the load may have registered anyway.
+            if resp.status_code != 200 and "already" not in resp.text.lower():
+                raise RuntimeError(
+                    f"Failed to load LoRA adapter '{lora_name}': {resp.status_code} {resp.text}"
+                )
+            self._oai_loaded.add(lora_name)
+            logger.info(
+                "Loaded LoRA '%s' via vLLM OpenAI API at %s", lora_name, self._openai_api_url
+            )
+
+    async def _oai_unload(self, lora_name: str) -> bool:
+        """Unload the name from the OpenAI server; True only if 2xx or 404."""
+        import httpx
+
+        if self._openai_api_url is None:
+            return True
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self._openai_api_url}/v1/unload_lora_adapter",
+                    json={"lora_name": lora_name},
+                    headers={"Authorization": "Bearer EMPTY"},
+                    timeout=30.0,
+                )
+            status = resp.status_code
+        except Exception:
+            status = None
+        if status is None or not (200 <= status < 300 or status == 404):
+            logger.warning("LoRA '%s' unload not confirmed (%s); kept staged.", lora_name, status)
+            return False
+        self._oai_loaded.discard(lora_name)
+        return True
+
+    async def add_adapter(self, lora_id: str, adapter_path: Path) -> None:
         with _get_tracer().start_as_current_span("sampling_backend.add_adapter") as span:
             span.set_attribute("tuft.lora_id", lora_id)
             try:
                 async with self._lock:
-                    if not adapter_path.exists():
-                        raise ValueError(f"LoRA adapter path {adapter_path} does not exist.")
-                    self._counter += 1
-                    request = LoRARequest(
-                        lora_int_id=self._counter + 1,
-                        lora_name=lora_id,
-                        lora_path=str(adapter_path),
-                    )
-                    # Register with vLLM first; only record the adapter in the local
-                    # registry after success. Otherwise a failure (missing path, or the
-                    # engine raising) would leave a stale entry that sample() would later
-                    # pass to vLLM even though it was never registered.
-                    added = await self.engine.add_lora.remote(request)  # type: ignore[attr-defined]
-                    if added is False:
-                        raise RuntimeError(
-                            f"vLLM did not register LoRA adapter {lora_id} from {adapter_path}."
-                        )
-                    self.lora_adapters[lora_id] = request
+                    await self._add_adapter_locked(lora_id, adapter_path)
             except Exception as e:
                 span.record_exception(e)
                 span.set_status(StatusCode.ERROR)
                 raise
 
+    async def _add_adapter_locked(self, lora_id: str, adapter_path: Path) -> None:
+        """Stage and register the adapter. The caller holds ``_lock``."""
+        from vllm.lora.request import LoRARequest
+
+        if not adapter_path.exists():
+            raise ValueError(f"LoRA adapter path {adapter_path} does not exist.")
+        staged_path = await self._stage(lora_id, adapter_path)
+        self._counter += 1
+        request = LoRARequest(
+            lora_int_id=self._counter + 1,
+            lora_name=lora_id,
+            lora_path=staged_path,
+        )
+        # Register with vLLM first; only record the adapter in the local
+        # registry after success. Otherwise a failure (missing path, or the
+        # engine raising) would leave a stale entry that sample() would later
+        # pass to vLLM even though it was never registered.
+        try:
+            added = await self.engine.add_lora.remote(request)  # type: ignore[attr-defined]
+            if added is False:
+                raise RuntimeError(
+                    f"vLLM did not register LoRA adapter {lora_id} from {adapter_path}."
+                )
+        except Exception:
+            await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
+            raise
+        self.lora_adapters[lora_id] = request
+        self._adapter_paths[lora_id] = adapter_path
+        self._last_used[lora_id] = time.monotonic()
+
+    async def _sweep_loop(self) -> None:
+        """Unload adapters that have served nothing for ``adapter_idle_ttl``."""
+        while True:
+            await asyncio.sleep(max(1.0, self._idle_ttl / 10))
+            try:
+                await self._sweep_idle_adapters()
+            except Exception:
+                logger.exception("Idle adapter sweep failed")
+
+    async def _sweep_idle_adapters(self) -> None:
+        cutoff = time.monotonic() - self._idle_ttl
+        for lora_id in list(self._last_used):
+            async with self._lock:
+                # Re-check under the lock: a request may have landed meanwhile.
+                if self._last_used.get(lora_id, cutoff) >= cutoff:
+                    continue
+                logger.info("Unloading LoRA adapter %s, idle for %.0fs", lora_id, self._idle_ttl)
+                await self._remove_adapter_locked(lora_id)
+
     async def remove_adapter(self, lora_id: str) -> None:
         with _get_tracer().start_as_current_span("sampling_backend.remove_adapter") as span:
             span.set_attribute("tuft.lora_id", lora_id)
             async with self._lock:
-                if lora_id in self.lora_adapters:
-                    # vLLM removes adapters by their integer id, not name.
-                    lora_request = self.lora_adapters.pop(lora_id)
-                    await self.engine.remove_lora.remote(lora_request.lora_int_id)  # type: ignore[attr-defined]
+                await self._remove_adapter_locked(lora_id)
+                # Final, unlike the sweep: no re-add for this id later.
+                self._adapter_paths.pop(lora_id, None)
+
+    async def _remove_adapter_locked(self, lora_id: str) -> None:
+        """Unregister the adapter, then unstage it. Caller holds ``_lock``.
+
+        Session ids (uuid4) and OAI names (``run:ckpt``) never collide. vLLM
+        re-reads the staged dir after an LRU eviction, so an OAI name keeps it
+        until the server confirms the unload; else the next sweep retries.
+        """
+        lora_request = self.lora_adapters.get(lora_id)
+        if lora_request is not None:
+            # By integer id; the entry goes only after success, so a raise retries.
+            await self.engine.remove_lora.remote(lora_request.lora_int_id)  # type: ignore[attr-defined]
+            del self.lora_adapters[lora_id]
+        elif not await self._oai_unload(lora_id):
+            return
+        await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
+        self._last_used.pop(lora_id, None)
 
     async def shutdown(self) -> None:
         """Shut down the vLLM engine Ray actor and release GPU resources."""
         import ray
 
+        if self._sweep_task is not None:
+            self._sweep_task.cancel()
+            self._sweep_task = None
         try:
             await self.engine.shutdown.remote()  # type: ignore[attr-defined]
         except Exception:
@@ -505,6 +633,12 @@ class DPSamplingBackend(BaseSamplingBackend):
             first_error = results[failures[0]]
             if isinstance(first_error, BaseException):
                 raise first_error
+
+    async def ensure_oai_lora_loaded(self, lora_name: str, adapter_path: Path) -> None:
+        """Load the adapter on every DP instance; each stages its own copy."""
+        await asyncio.gather(
+            *[inst.ensure_oai_lora_loaded(lora_name, adapter_path) for inst in self._instances]
+        )
 
     async def remove_adapter(self, lora_id: str) -> None:
         """Remove LoRA adapter from ALL DP instances."""

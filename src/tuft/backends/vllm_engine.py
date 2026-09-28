@@ -21,10 +21,17 @@ imported on CPU-only machines (unit tests, config validation).
 import asyncio
 import itertools
 import os
+import shutil
 import socket
+import tempfile
 from dataclasses import dataclass
 from logging import getLogger
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
+from uuid import uuid4
+
+from ..checkpoints import write_adapter_files
 
 
 logger = getLogger(__name__)
@@ -121,6 +128,12 @@ class VLLMEngine:
             top_p=config.top_p,
             top_k=config.top_k,
         )
+
+        # Staged adapters: tmpfs when present; uuid keeps same-node replicas apart.
+        shm = Path("/dev/shm")
+        self._adapter_root = (
+            shm if shm.is_dir() else Path(tempfile.gettempdir())
+        ) / f"tuft-adapters-{uuid4().hex[:8]}"
 
         self.async_llm: Any = None
         self.api_server_host: Optional[str] = None
@@ -258,6 +271,22 @@ class VLLMEngine:
                 setattr(params, k, v)
         return params
 
+    def _staged_adapter_dir(self, lora_id: str) -> Path:
+        # Quoted: OAI names carry ':' and '/'.
+        return self._adapter_root / quote(lora_id, safe="")
+
+    async def stage_adapter(self, lora_id: str, files: dict[str, bytes]) -> str:
+        """Write adapter bytes node-locally; return the path for vLLM.
+
+        The dir must outlive ``add_lora``: vLLM re-reads it after an LRU eviction.
+        """
+        adapter_dir = self._staged_adapter_dir(lora_id)
+        await asyncio.to_thread(write_adapter_files, adapter_dir, files)
+        return str(adapter_dir)
+
+    async def unstage_adapter(self, lora_id: str) -> None:
+        shutil.rmtree(self._staged_adapter_dir(lora_id), ignore_errors=True)
+
     async def add_lora(self, lora_request: Any) -> int:
         """Register a LoRA adapter with the engine (direct generate path)."""
         return await self.async_llm.add_lora(lora_request)
@@ -275,6 +304,7 @@ class VLLMEngine:
             except asyncio.CancelledError:
                 pass
             self._api_server_task = None
+        shutil.rmtree(self._adapter_root, ignore_errors=True)
         if self.async_llm is not None:
             logger.info("Shutting down vLLM engine")
             self.async_llm.shutdown()
