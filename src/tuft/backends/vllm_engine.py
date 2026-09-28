@@ -129,10 +129,7 @@ class VLLMEngine:
             top_k=config.top_k,
         )
 
-        # Adapters arrive here as bytes and are staged on the node vLLM reads
-        # from, so no filesystem is shared with the server or the trainer. tmpfs
-        # keeps the (engine-blocking) add_lora read off disk; the per-actor uuid
-        # keeps DP replicas on one node out of each other's directory.
+        # Staged adapters: tmpfs when present; uuid keeps same-node replicas apart.
         shm = Path("/dev/shm")
         self._adapter_root = (
             shm if shm.is_dir() else Path(tempfile.gettempdir())
@@ -275,34 +272,19 @@ class VLLMEngine:
         return params
 
     def _staged_adapter_dir(self, lora_id: str) -> Path:
-        # lora_id is "{training_run_id}:{checkpoint_id}", so it carries both ':'
-        # and '/'; quoting it keeps one adapter in one flat directory.
+        # Quoted: OAI names carry ':' and '/'.
         return self._adapter_root / quote(lora_id, safe="")
 
     async def stage_adapter(self, lora_id: str, files: dict[str, bytes]) -> str:
-        """Write adapter bytes to node-local storage; return the path for vLLM.
+        """Write adapter bytes node-locally; return the path for vLLM.
 
-        The staged directory must outlive the ``add_lora`` call: vLLM silently
-        re-reads it from disk when its worker-side LRU evicts the adapter, so it
-        is removed only by ``unstage_adapter`` or ``shutdown``.
+        The dir must outlive ``add_lora``: vLLM re-reads it after an LRU eviction.
         """
         adapter_dir = self._staged_adapter_dir(lora_id)
         await asyncio.to_thread(write_adapter_files, adapter_dir, files)
-        if not (adapter_dir / "adapter_config.json").is_file():
-            # Fail here rather than hand vLLM a path it cannot read: a missing
-            # lora_path is not an error to vLLM, it is a Hugging Face Hub repo
-            # id it will try to snapshot_download (vllm/lora/utils.py). Nothing
-            # is registered against this directory, and no unload will come
-            # round to clean it up, so drop whatever landed.
-            shutil.rmtree(adapter_dir, ignore_errors=True)
-            raise RuntimeError(
-                f"Staging LoRA adapter {lora_id} into {adapter_dir} wrote no "
-                f"adapter_config.json (received files: {sorted(files)})."
-            )
         return str(adapter_dir)
 
     async def unstage_adapter(self, lora_id: str) -> None:
-        """Drop a staged adapter directory, once vLLM can no longer read it."""
         shutil.rmtree(self._staged_adapter_dir(lora_id), ignore_errors=True)
 
     async def add_lora(self, lora_request: Any) -> int:

@@ -101,13 +101,8 @@ class ModelConfig(BaseModel):
 
     # default lora setting
     max_lora_rank: int = 16  # maximum rank for LoRA adapters
-    # Maximum number of LoRA adapters vLLM keeps resident simultaneously. Several
-    # checkpoints are normally served at once (sampling sessions plus OpenAI-API
-    # traffic), so the default leaves room for them; override per model.
-    max_loras: int = 8
-    # Unload an adapter that has served no request for this long, freeing its vLLM
-    # slot and its staged copy. The next request for it re-stages and re-registers
-    # it transparently, paying that one request's latency. 0 disables.
+    max_loras: int = 8  # maximum number of LoRA adapters that can be applied simultaneously
+    # Unload an adapter idle this long; the next request re-adds it. 0 disables.
     adapter_idle_ttl_minutes: float = 30.0
     # Multiplier from a LoRA adapter's rank to its lora_alpha:
     # lora_alpha = rank * lora_alpha_ratio. Shared by the "hf" and "fsdp" training

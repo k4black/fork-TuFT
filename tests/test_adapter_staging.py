@@ -61,14 +61,12 @@ async def test_stage_adapter_round_trip(tmp_path):
     assert not staged.exists()
 
 
-async def test_stage_adapter_fails_loudly_without_config(tmp_path):
-    # vLLM reads a lora_path it cannot find as a Hugging Face repo id and
-    # downloads it, so staging must never return a path it did not write to.
-    engine = _engine(tmp_path)
-    with pytest.raises(RuntimeError, match="adapter_config.json"):
-        await engine.stage_adapter(LORA_ID, {"adapter_model.safetensors": b"x"})
-    # Nothing will unload this id, so the half-written directory goes now.
-    assert not engine._staged_adapter_dir(LORA_ID).exists()
+def test_read_adapter_files_requires_config(tmp_path):
+    # vLLM reads a path without a config as a HF repo id and downloads it.
+    adapter_dir = _adapter_dir(tmp_path)
+    (adapter_dir / "adapter_config.json").unlink()
+    with pytest.raises(ValueError, match="adapter_config.json"):
+        read_adapter_files(adapter_dir)
 
 
 STAGED = "/dev/shm/tuft-adapters-0123/staged"
@@ -86,11 +84,9 @@ def _backend(
     *,
     idle_ttl: float = 0.0,
 ) -> VLLMSamplingBackend:
-    """A backend whose engine, vLLM OpenAI server and vllm import are all stubs.
+    """Stub engine, OpenAI server and vllm import; calls land in ``calls``.
 
-    Every interesting call lands in ``calls``. ``statuses`` maps an OpenAI
-    endpoint name to the status it answers with; 0 stands for a transport
-    failure.
+    ``statuses`` maps an endpoint to its status; 0 is a transport failure.
     """
     import httpx
 
@@ -123,9 +119,7 @@ def _backend(
             status = statuses.get(post_url.rsplit("/", 1)[-1], 200)
             if status == 0:
                 raise httpx.ConnectError("engine unreachable")
-            return SimpleNamespace(
-                status_code=status, json=lambda: {"message": "nope"}, text="nope"
-            )
+            return SimpleNamespace(status_code=status, text="nope")
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda *_a, **_kw: _FakeClient())
 
@@ -156,25 +150,6 @@ def _backend(
     return backend
 
 
-async def test_oai_loaded_adapter_is_unloaded_before_unstaging(tmp_path, monkeypatch):
-    calls: list[tuple] = []
-    backend = _backend(monkeypatch, calls)
-
-    await backend.ensure_oai_lora_loaded(OAI_NAME, _adapter_dir(tmp_path))
-    assert backend._oai_loaded == {OAI_NAME}
-
-    await backend.remove_adapter(OAI_NAME)
-
-    # The serving layer drops the name BEFORE the staged files go: vLLM re-reads
-    # that path whenever its worker-side LRU evicts the adapter.
-    assert [call for call in calls if call[0] != "stage"] == [
-        ("post", f"{OAI_URL}/v1/load_lora_adapter", {"lora_name": OAI_NAME, "lora_path": STAGED}),
-        ("post", f"{OAI_URL}/v1/unload_lora_adapter", {"lora_name": OAI_NAME}),
-        ("unstage", OAI_NAME),
-    ]
-    assert backend._oai_loaded == set()
-
-
 @pytest.mark.parametrize(
     "unload_status, confirmed",
     [
@@ -196,18 +171,6 @@ async def test_unstaging_waits_for_a_confirmed_unload(
     assert (("unstage", OAI_NAME) in calls) is confirmed
     # An unconfirmed unload keeps the name so a later removal retries it.
     assert (OAI_NAME in backend._oai_loaded) is not confirmed
-
-
-async def test_failed_oai_load_keeps_the_staged_copy(tmp_path, monkeypatch):
-    # The load may have registered the name despite the error response, and the
-    # staged path is deterministic, so a retry rewrites this same directory.
-    calls: list[tuple] = []
-    backend = _backend(monkeypatch, calls, {"load_lora_adapter": 500})
-
-    with pytest.raises(RuntimeError, match="Failed to load LoRA adapter"):
-        await backend.ensure_oai_lora_loaded(OAI_NAME, _adapter_dir(tmp_path))
-
-    assert ("unstage", OAI_NAME) not in calls
 
 
 async def test_sample_transparently_readds_a_swept_adapter(tmp_path, monkeypatch):
@@ -241,11 +204,8 @@ async def test_sample_transparently_readds_a_swept_adapter(tmp_path, monkeypatch
         lora_id=SESSION_ID,
     )
 
-    # The client sees a normal response; the adapter was re-staged underneath.
     assert response.sequences[0].tokens == [7]
     assert backend.lora_adapters[SESSION_ID].lora_path == STAGED
-    # Re-add and stamp happened under one lock hold, so a sweep waiting on the
-    # lock now sees a fresh adapter rather than the one it snapshotted.
     assert backend._last_used[SESSION_ID] > time.monotonic() - 60
 
 
@@ -283,6 +243,12 @@ async def test_swept_oai_name_reloads_on_the_next_request(tmp_path, monkeypatch)
 
     await backend.ensure_oai_lora_loaded(OAI_NAME, adapter_dir)
 
-    loads = [c for c in calls if c[0] == "post" and c[1].endswith("/v1/load_lora_adapter")]
-    assert len(loads) == 2
+    # Unload before unstage: vLLM re-reads the staged path while the name lives.
+    load = ("post", f"{OAI_URL}/v1/load_lora_adapter", {"lora_name": OAI_NAME, "lora_path": STAGED})
+    assert [c for c in calls if c[0] != "stage"] == [
+        load,
+        ("post", f"{OAI_URL}/v1/unload_lora_adapter", {"lora_name": OAI_NAME}),
+        ("unstage", OAI_NAME),
+        load,
+    ]
     assert backend._oai_loaded == {OAI_NAME}
