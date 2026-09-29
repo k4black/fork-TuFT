@@ -379,6 +379,14 @@ docker build -f docker/Dockerfile.train -t tuft-train:cu12 \
 docker build -f docker/Dockerfile.infer -t tuft-infer:latest .
 ```
 
+CI publishes them to Docker Hub: releases as `<version>` and `latest`, `main` as `dev`.
+`tuft-train` tags carry a `-cu12` / `-cu13` suffix; the bare tag is CUDA 13.
+
+```bash
+docker pull k4black/tuft-train:latest       # or :latest-cu12, :0.3.0, :dev
+docker pull k4black/tuft-infer:latest       # or :0.3.0, :dev
+```
+
 ## Deployment
 
 Don't have a GPU? Run TuFT on **pay-as-you-go cloud compute** — rent a GPU on demand and fine-tune from your laptop (no local GPU). The [`deploy/`](deploy/) helpers wrap the standard `tuft launch` server for popular cloud backends and walk you through configuring the deployment, running an end-to-end "talk like Yoda" training example on `Qwen/Qwen3-0.6B`, and downloading the trained adapter.
