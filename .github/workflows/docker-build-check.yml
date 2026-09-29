@@ -20,9 +20,10 @@ on:
 permissions:
   contents: read
 
+# Releases share one group and queue; main and PR runs cancel older ones.
 concurrency:
-  group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  group: docker-${{ github.event_name == 'release' && 'release' || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
 
 jobs:
   build-check:
@@ -37,7 +38,6 @@ jobs:
           - variant: train-cu12
             image: tuft-train
             suffix: -cu12
-            default: false
             dockerfile: docker/Dockerfile.train
             build-args: |
               CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
@@ -53,7 +53,6 @@ jobs:
           - variant: infer
             image: tuft-infer
             suffix: ''
-            default: false
             dockerfile: docker/Dockerfile.infer
             build-args: ''
             smoke: "from tuft.backends.vllm_worker import TuFTGPUWorker; print('smoke OK', TuFTGPUWorker)"
