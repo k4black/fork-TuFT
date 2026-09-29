@@ -51,9 +51,15 @@ jobs:
             default: true
             dockerfile: docker/Dockerfile.train
             build-args: ''
-          - variant: infer
+          - variant: infer-cu12
             image: tuft-infer
-            suffix: ''
+            suffix: -cu12
+            dockerfile: docker/Dockerfile.infer
+            build-args: VLLM_IMAGE=vllm/vllm-openai:v0.28.0-cu129
+          - variant: infer-cu13
+            image: tuft-infer
+            suffix: -cu13
+            default: true
             dockerfile: docker/Dockerfile.infer
             build-args: ''
     steps:
