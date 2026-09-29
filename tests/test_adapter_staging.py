@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import pickle
 import sys
 import time
 from collections import Counter
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from tinker import types
 
-from tuft.backends.sampling_backend import VLLMSamplingBackend
-from tuft.backends.vllm_engine import VLLMEngine
+from tuft.backends.sampling_backend import VLLMSamplingBackend, _build_sample_response
+from tuft.backends.vllm_engine import VLLMEngine, _plain_output
 from tuft.checkpoints import read_adapter_files
 
 
@@ -262,3 +263,30 @@ async def test_lru_cap_unloads_the_oldest_idle_adapter(tmp_path, monkeypatch):
     assert set(backend.lora_adapters) == {"busy", "newest"}
     # The evicted session keeps its source path, so its next request re-adds it.
     assert backend._adapter_paths["old"] == adapter_dir
+
+
+def test_engine_output_unpickles_without_vllm(monkeypatch):
+    # Stand-ins for vLLM's output classes, importable only while "fake_vllm" is.
+    fake = ModuleType("fake_vllm")
+    for name in ("Logprob", "CompletionOutput", "RequestOutput"):
+        cls = type(name, (SimpleNamespace,), {"__module__": "fake_vllm"})
+        setattr(fake, name, cls)
+    monkeypatch.setitem(sys.modules, "fake_vllm", fake)
+    raw = fake.RequestOutput(
+        prompt_logprobs=[None, {5: fake.Logprob(logprob=-0.5, rank=1)}],
+        outputs=[
+            fake.CompletionOutput(
+                token_ids=(7,),
+                finish_reason="stop",
+                logprobs=[{7: fake.Logprob(logprob=-0.1, rank=1)}],
+            )
+        ],
+    )
+    raw_bytes, plain_bytes = pickle.dumps(raw), pickle.dumps(_plain_output(raw))
+
+    monkeypatch.delitem(sys.modules, "fake_vllm")  # the server side: no vLLM
+    with pytest.raises(ModuleNotFoundError):
+        pickle.loads(raw_bytes)
+    response = _build_sample_response(pickle.loads(plain_bytes), include_prompt_logprobs=True)
+    assert response.sequences[0].tokens == [7]
+    assert response.prompt_logprobs == [None, -0.5]

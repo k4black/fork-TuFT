@@ -33,10 +33,10 @@ def _build_sample_response(
     include_prompt_logprobs: bool = False,
     topk_prompt_logprobs: int = 0,
 ) -> types.SampleResponse:
-    """Build a tinker 0.18.2 SampleResponse from a raw vLLM RequestOutput.
+    """Build a tinker 0.18.2 SampleResponse from a vLLM RequestOutput.
 
-    The engine actor (``vllm_engine.VLLMEngine.generate``) returns vLLM's
-    ``RequestOutput`` untouched; this function is the single adapter between
+    The engine actor (``vllm_engine.VLLMEngine.generate``) returns the
+    ``RequestOutput`` fields as builtins; this function is the single adapter between
     vLLM's output format and tinker's frozen dataclasses (constructed via
     their list-based ``_tokens_list=`` / ``_logprobs_list=`` fields in
     tinker 0.18.2).
