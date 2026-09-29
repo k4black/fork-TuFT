@@ -34,15 +34,14 @@ RUN chmod 1777 /tmp && apt update && apt install -y --no-install-recommends \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && ln -sf /usr/bin/pip3 /usr/bin/pip
 
-ENV VIRTUAL_ENV=/root/.tuft/venv
-ENV PATH=/root/.tuft/venv/bin:/root/.local/bin:$PATH
+COPY --from=ghcr.io/astral-sh/uv:0.9.21 /uv /uvx /bin/
 
-# Copy the TuFT repository
+ENV VIRTUAL_ENV=/root/.tuft/venv
+ENV PATH=/root/.tuft/venv/bin:$PATH
+
+# Dependencies before source: the multi-GB layers below are reused until
+# pyproject.toml changes, so a source-only change rebuilds and ships one small layer.
 COPY ./pyproject.toml .
-COPY ./LICENSE .
-COPY ./README.md .
-COPY ./src ./src
-COPY ./scripts ./scripts
 
 #  Uncomment the following line if you want to use AliCloud Mirror to speed up pip install
 # ENV UV_DEFAULT_INDEX=http://mirrors.cloud.aliyuncs.com/pypi/simple/
@@ -54,15 +53,26 @@ COPY ./scripts ./scripts
 # which this image does not ship. The override file drops the vLLM requirement
 # -- uv applies overrides unconditionally, and a marker that is never true
 # removes the requirement from the resolution.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && uv venv --python 3.12 "$VIRTUAL_ENV" \
+RUN uv venv --python 3.12 "$VIRTUAL_ENV" \
     && printf 'vllm; sys_platform == "never"\n' > /tmp/no-vllm.txt \
     && uv pip install --overrides /tmp/no-vllm.txt --torch-backend "$TORCH_BACKEND" \
-        ".[backend,persistence]"
+        -r pyproject.toml --extra backend --extra persistence
 
-# Optional accelerators: no wheel exists for every torch/CUDA combination.
-RUN uv pip install "fla-core>=0.5.0" "flash-linear-attention>=0.4.2" \
-    && python scripts/install_flash_attn.py || true
+# flash-attn 2.8.3 for torch 2.13: official wheels stop at torch 2.9, so pin the
+# community prebuilt wheel by SHA-256. cu126 serves cu129 (same CUDA 12 ABI).
+RUN set -eu; \
+    case "$TORCH_BACKEND" in \
+      cu129) cuda=cu126; sha=41806f85fae421e0b0e70edde3121fd7126126aeba610fefa5d1b6cff88197af ;; \
+      cu130) cuda=cu130; sha=c65d762d24b7dd1ea8dbd9f5a98708fa8abbfd8f33f46bfc6123e76f1e174d3f ;; \
+      *) echo "no pinned flash-attn wheel for $TORCH_BACKEND"; exit 1 ;; \
+    esac; \
+    whl="flash_attn-2.8.3+${cuda}torch2.13-cp312-cp312-linux_x86_64.whl"; \
+    curl -fsSL -o "/tmp/$whl" \
+      "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/$(echo "$whl" | sed 's/+/%2B/')"; \
+    echo "$sha  /tmp/$whl" | sha256sum -c -; \
+    uv pip install "/tmp/$whl" "fla-core>=0.5.0" "flash-linear-attention>=0.4.2"; \
+    rm "/tmp/$whl"; \
+    python -c "import flash_attn; print('flash_attn', flash_attn.__version__)"
 
 # Gate: every compiled extension must link the CUDA runtime major that
 # TORCH_BACKEND asks for (cu129 -> 12, cu130 -> 13). A foreign major loads at
@@ -77,6 +87,11 @@ RUN set -eu; \
       exit 1; \
     fi; \
     echo "CUDA ${major} ABI check passed"
+
+COPY ./LICENSE ./README.md ./
+COPY ./src ./src
+RUN uv pip install --no-deps . \
+    && python -c "import torch, tuft; print('smoke OK', torch.__version__)"
 
 ENV TUFT_HOST=0.0.0.0 TUFT_PORT=10610
 EXPOSE 10610

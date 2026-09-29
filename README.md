@@ -369,14 +369,24 @@ cannot target CUDA 12 (driver 550 hosts).
 | Image | Dockerfile | Contents |
 |---|---|---|
 | `tuft-train` | [`docker/Dockerfile.train`](docker/Dockerfile.train) | PyTorch, FSDP2, PEFT, Transformers, Ray and the TuFT server. No vLLM. Builds for CUDA 12 and CUDA 13. |
-| `tuft-infer` | [`docker/Dockerfile.infer`](docker/Dockerfile.infer) | The official `vllm/vllm-openai` image plus TuFT, so vLLM workers can import the prompt-logprobs patch. |
+| `tuft-infer` | [`docker/Dockerfile.infer`](docker/Dockerfile.infer) | The official `vllm/vllm-openai` image plus TuFT, so vLLM workers can import the prompt-logprobs patch. CUDA 12 builds from vLLM's `-cu129` image. |
 
 ```bash
 docker build -f docker/Dockerfile.train -t tuft-train:cu13 .
 docker build -f docker/Dockerfile.train -t tuft-train:cu12 \
     --build-arg CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04 \
     --build-arg TORCH_BACKEND=cu129 .
-docker build -f docker/Dockerfile.infer -t tuft-infer:latest .
+docker build -f docker/Dockerfile.infer -t tuft-infer:cu13 .
+docker build -f docker/Dockerfile.infer -t tuft-infer:cu12 \
+    --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.28.0-cu129 .
+```
+
+CI publishes them to Docker Hub: releases as `<version>` and `latest`, `main` as `dev`.
+Tags carry a `-cu12` / `-cu13` suffix; the bare tag is CUDA 13.
+
+```bash
+docker pull k4black/tuft-train:latest       # or :latest-cu12, :0.3.0, :dev
+docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
 ```
 
 ## Deployment

@@ -19,6 +19,8 @@ env:
 
 jobs:
   build-and-push-image:
+    # The fork publishes split images to Docker Hub via docker-build-check.yml.
+    if: github.repository == 'agentscope-ai/TuFT'
     runs-on: self-hosted  # TODO: setup a self-hosted runner on a machine with sufficient resources
     timeout-minutes: 360
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
