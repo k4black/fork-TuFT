@@ -240,6 +240,19 @@ class VLLMEngine:
             return None
         return f"http://{self.api_server_host}:{self.api_server_port}"
 
+    @staticmethod
+    def _lora_request(lora: Any) -> Any:
+        """vLLM's LoRARequest from a ``(lora_int_id, lora_name, lora_path)`` tuple.
+
+        Built on the engine node, so the TuFT server needs no vLLM (tuft-train image).
+        """
+        if lora is None:
+            return None
+        from vllm.lora.request import LoRARequest
+
+        lora_int_id, lora_name, lora_path = lora
+        return LoRARequest(lora_name=lora_name, lora_int_id=lora_int_id, lora_path=lora_path)
+
     async def generate(self, prompt: Any, lora_request: Any = None, **kwargs: Any) -> Any:
         """Generate and return the raw vLLM ``RequestOutput``.
 
@@ -250,7 +263,7 @@ class VLLMEngine:
             request_id=str(next(self._request_counter)),
             prompt=prompt,
             sampling_params=self._create_sampling_params(**kwargs),
-            lora_request=lora_request,
+            lora_request=self._lora_request(lora_request),
         )
         async for request_output in stream:
             if request_output.finished:
@@ -289,7 +302,7 @@ class VLLMEngine:
 
     async def add_lora(self, lora_request: Any) -> int:
         """Register a LoRA adapter with the engine (direct generate path)."""
-        return await self.async_llm.add_lora(lora_request)
+        return await self.async_llm.add_lora(self._lora_request(lora_request))
 
     async def remove_lora(self, lora_int_id: int) -> None:
         """Remove a LoRA adapter from the engine by its integer id."""
