@@ -97,7 +97,10 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     OAI names (`ensure_oai_lora_loaded`). An OAI name is unstaged only after vLLM
     confirms the unload (2xx/404).
   - Idle TTL (`adapter_idle_ttl_minutes`, default 30, 0 = off) unloads and unstages
-    idle adapters; the next request re-adds them. `max_loras` default 1 → 8.
+    idle adapters; the next request re-adds them. `max_loras` default 1 → 8, and it
+    also caps staged sampling sessions (LRU). Adapters with requests in flight are never unloaded.
+  - The server holds `LoraRef` tuples; `VLLMEngine` builds vLLM's `LoRARequest`, so the
+    server runs in `tuft-train` (no vLLM). 2-node train + infer smoke pending.
   - Deferred: trainer-side save/resume without shared `checkpoint_dir` (multi-node
     FSDP needs it anyway; revisit save and load together), disk GC of checkpoints.
 

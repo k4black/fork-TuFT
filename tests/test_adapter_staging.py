@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from collections import Counter
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 from tinker import types
@@ -83,8 +84,9 @@ def _backend(
     statuses: dict[str, int] | None = None,
     *,
     idle_ttl: float = 0.0,
+    max_staged: int = 8,
 ) -> VLLMSamplingBackend:
-    """Stub engine, OpenAI server and vllm import; calls land in ``calls``.
+    """Stub engine and OpenAI server; calls land in ``calls``.
 
     ``statuses`` maps an endpoint to its status; 0 is a transport failure.
     """
@@ -92,20 +94,8 @@ def _backend(
 
     statuses = statuses or {}
 
-    vllm = ModuleType("vllm")
-    vllm_lora = ModuleType("vllm.lora")
-    vllm_lora_request = ModuleType("vllm.lora.request")
-    vllm_lora_request.LoRARequest = SimpleNamespace  # type: ignore[attr-defined]
-    vllm_lora.request = vllm_lora_request  # type: ignore[attr-defined]
-    vllm.lora = vllm_lora  # type: ignore[attr-defined]
-    # Every parent package is imported before the leaf, so all three entries
-    # must be present for `from vllm.lora.request import ...` to resolve.
-    for name, module in [
-        ("vllm", vllm),
-        ("vllm.lora", vllm_lora),
-        ("vllm.lora.request", vllm_lora_request),
-    ]:
-        monkeypatch.setitem(sys.modules, name, module)
+    # The server side must run without vLLM (the tuft-train image has none).
+    monkeypatch.setitem(sys.modules, "vllm", None)
 
     class _FakeClient:
         async def __aenter__(self):
@@ -142,6 +132,8 @@ def _backend(
     backend._oai_loaded = set()
     backend._adapter_paths = {}
     backend._last_used = {}
+    backend._in_flight = Counter()
+    backend._max_staged = max_staged
     backend._idle_ttl = idle_ttl
     backend._sweep_task = None
     backend._counter = 1
@@ -252,3 +244,21 @@ async def test_swept_oai_name_reloads_on_the_next_request(tmp_path, monkeypatch)
         load,
     ]
     assert backend._oai_loaded == {OAI_NAME}
+
+
+async def test_lru_cap_unloads_the_oldest_idle_adapter(tmp_path, monkeypatch):
+    adapter_dir = _adapter_dir(tmp_path)
+    calls: list[tuple] = []
+    backend = _backend(monkeypatch, calls, max_staged=2)
+    for session in ("old", "busy", "new"):
+        await backend.add_adapter(session, adapter_dir)
+        backend._last_used[session] -= 100 if session == "old" else 50
+    # "old" was evicted when "new" arrived; a request keeps "busy" pinned.
+    assert set(backend.lora_adapters) == {"busy", "new"}
+    assert ("unstage", "old") in calls
+
+    backend._in_flight["busy"] += 1
+    await backend.add_adapter("newest", adapter_dir)
+    assert set(backend.lora_adapters) == {"busy", "newest"}
+    # The evicted session keeps its source path, so its next request re-adds it.
+    assert backend._adapter_paths["old"] == adapter_dir

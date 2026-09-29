@@ -641,6 +641,11 @@ class HFTrainingModel:
             str(config.model_path),
             dtype="auto",
             device_map="auto",
+            **(
+                {"attn_implementation": config.attn_implementation}
+                if config.attn_implementation
+                else {}
+            ),
         )
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable({"use_reentrant": False})

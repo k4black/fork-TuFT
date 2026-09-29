@@ -6,9 +6,10 @@ import os
 import socket
 import threading
 import time
+from collections import Counter
 from logging import getLogger
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from opentelemetry.trace import StatusCode
 from tinker import types
@@ -77,6 +78,14 @@ def _build_sample_response(
     )
 
 
+class LoraRef(NamedTuple):
+    """An adapter as the server holds it; ``VLLMEngine`` turns it into a LoRARequest."""
+
+    lora_int_id: int
+    lora_name: str
+    lora_path: str
+
+
 class VLLMSamplingBackend(BaseSamplingBackend):
     """A sampling backend using vLLM.
 
@@ -91,20 +100,22 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         *,
         instance_index: int = 0,
     ) -> None:
-        from vllm.lora.request import LoRARequest
-
         super().__init__(config)
         self._worker_venv_path = worker_venv_path
         self._instance_index = instance_index
         self.engine = self._create_engine(config)
-        self.lora_adapters: dict[str, LoRARequest] = {}
+        self.lora_adapters: dict[str, LoraRef] = {}
         # Names loaded into this instance's vLLM OpenAI server (a cache; unload
         # always asks the server).
         self._oai_loaded: set[str] = set()
         # Source dir per session id, kept after an idle unload for re-add.
         self._adapter_paths: dict[str, Path] = {}
-        # Last request time per adapter id, read by the idle sweep.
+        # Last request time per adapter id, read by the idle sweep and the LRU cap.
         self._last_used: dict[str, float] = {}
+        # Requests generating per adapter id; neither the sweep nor the cap unloads these.
+        self._in_flight: Counter[str] = Counter()
+        # At most this many sessions stay staged (vLLM's default max_cpu_loras).
+        self._max_staged = config.max_loras
         self._idle_ttl = config.adapter_idle_ttl_minutes * 60
         self._sweep_task: Optional[asyncio.Task] = None
         self._counter = 1
@@ -292,6 +303,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         with _get_tracer().start_as_current_span("sampling_backend.sample") as span:
             span.set_attribute("tuft.num_samples", num_samples)
             span.set_attribute("tuft.has_lora", lora_id is not None)
+            pinned: Optional[str] = None  # counted in _in_flight until this request ends
             try:
                 lora_request = None
                 # One lock hold, so the sweep cannot unload between check and use.
@@ -301,11 +313,11 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                             adapter_path = self._adapter_paths.get(lora_id)
                             if adapter_path is None:
                                 raise ValueError(f"LoRA adapter {lora_id} not found in backend.")
-                            # Swept while idle: re-add, the caller only sees latency.
+                            # Unloaded while idle: re-add, the caller only sees latency.
                             await self._add_adapter_locked(lora_id, adapter_path)
-                        # ponytail: stamped at request start only; a single
-                        # generation longer than the TTL can be swept mid-flight.
                         self._last_used[lora_id] = time.monotonic()
+                        self._in_flight[lora_id] += 1
+                        pinned = lora_id
                         lora_request = self.lora_adapters[lora_id]
 
                 prompt_token_ids = prompt.to_ints()
@@ -363,6 +375,11 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 span.record_exception(e)
                 span.set_status(StatusCode.ERROR)
                 raise
+            finally:
+                if pinned is not None:
+                    self._in_flight[pinned] -= 1
+                    if self._in_flight[pinned] <= 0:
+                        del self._in_flight[pinned]
 
     async def _stage(self, lora_id: str, adapter_path: Path) -> str:
         """Ship the adapter bytes to the engine node (plain Ray arg, no shared FS)."""
@@ -434,17 +451,11 @@ class VLLMSamplingBackend(BaseSamplingBackend):
 
     async def _add_adapter_locked(self, lora_id: str, adapter_path: Path) -> None:
         """Stage and register the adapter. The caller holds ``_lock``."""
-        from vllm.lora.request import LoRARequest
-
         if not adapter_path.exists():
             raise ValueError(f"LoRA adapter path {adapter_path} does not exist.")
         staged_path = await self._stage(lora_id, adapter_path)
         self._counter += 1
-        request = LoRARequest(
-            lora_int_id=self._counter + 1,
-            lora_name=lora_id,
-            lora_path=staged_path,
-        )
+        request = LoraRef(self._counter + 1, lora_id, staged_path)
         # Register with vLLM first; only record the adapter in the local
         # registry after success. Otherwise a failure (missing path, or the
         # engine raising) would leave a stale entry that sample() would later
@@ -461,6 +472,26 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         self.lora_adapters[lora_id] = request
         self._adapter_paths[lora_id] = adapter_path
         self._last_used[lora_id] = time.monotonic()
+        await self._evict_lru_locked(keep=lora_id)
+
+    async def _evict_lru_locked(self, keep: str) -> None:
+        """Unload least recently used sessions beyond ``max_loras``. Caller holds ``_lock``.
+
+        Each sampler refresh stages a new session, so without a cap /dev/shm grows
+        until the idle TTL. An evicted session re-adds on its next request. Soft cap:
+        in-flight sessions stay. OAI names are left to the idle TTL, since proxied
+        requests are not tracked in flight.
+        """
+        for lora_id in sorted(self.lora_adapters, key=self._last_used.__getitem__):
+            if len(self.lora_adapters) <= self._max_staged:
+                return
+            if lora_id != keep and not self._in_flight[lora_id]:
+                logger.info("Unloading LoRA adapter %s, over max_loras", lora_id)
+                try:
+                    await self._remove_adapter_locked(lora_id)
+                except Exception:
+                    # Best effort: the add succeeded; the next add or sweep retries.
+                    logger.warning("Could not unload LoRA adapter %s", lora_id, exc_info=True)
 
     async def _sweep_loop(self) -> None:
         """Unload adapters that have served nothing for ``adapter_idle_ttl``."""
@@ -476,7 +507,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         for lora_id in list(self._last_used):
             async with self._lock:
                 # Re-check under the lock: a request may have landed meanwhile.
-                if self._last_used.get(lora_id, cutoff) >= cutoff:
+                if self._in_flight[lora_id] or self._last_used.get(lora_id, cutoff) >= cutoff:
                     continue
                 logger.info("Unloading LoRA adapter %s, idle for %.0fs", lora_id, self._idle_ttl)
                 await self._remove_adapter_locked(lora_id)
