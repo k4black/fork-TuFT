@@ -7,9 +7,9 @@ docs/sphinx_doc/source/development/vllm-backend.md for the full design and
 maintenance notes). One actor instance owns:
 
 - a ``vllm.AsyncLLMEngine`` created in ``prepare()``, used directly by the
-  Tinker-compatible sampling path (``generate()`` returns raw vLLM
-  ``RequestOutput``; the tinker response types are built by the caller in
-  ``sampling_backend.py``), and
+  Tinker-compatible sampling path (``generate()`` returns the ``RequestOutput``
+  fields TuFT reads as builtins; the tinker response types are built by the
+  caller in ``sampling_backend.py``), and
 - vLLM's own OpenAI-compatible API server, started in-process against that
   same engine (see ``vllm_api_server.py``) so HTTP traffic proxied by
   ``tuft.oai`` shares the engine and its LoRA adapters.
@@ -27,6 +27,7 @@ import tempfile
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 from urllib.parse import quote
 from uuid import uuid4
@@ -81,6 +82,39 @@ class VLLMEngineConfig:
 
     # Ray placement-group bundle indices ("" outside standalone TP mode).
     bundle_indices: str = ""
+
+
+def _plain_output(output: Any) -> SimpleNamespace:
+    """Copy the ``RequestOutput`` fields ``_build_sample_response`` reads into builtins.
+
+    Ray unpickles the return value on the TuFT server, which has no vLLM
+    (tuft-train image).
+    """
+
+    def logprobs(positions: Any) -> Optional[list]:
+        if positions is None:
+            return None
+        return [
+            None
+            if position is None
+            else {
+                token_id: SimpleNamespace(logprob=lp.logprob, rank=lp.rank)
+                for token_id, lp in position.items()
+            }
+            for position in positions
+        ]
+
+    return SimpleNamespace(
+        prompt_logprobs=logprobs(output.prompt_logprobs),
+        outputs=[
+            SimpleNamespace(
+                token_ids=list(seq.token_ids),
+                finish_reason=seq.finish_reason,
+                logprobs=logprobs(seq.logprobs),
+            )
+            for seq in output.outputs
+        ],
+    )
 
 
 class VLLMEngine:
@@ -254,7 +288,7 @@ class VLLMEngine:
         return LoRARequest(lora_name=lora_name, lora_int_id=lora_int_id, lora_path=lora_path)
 
     async def generate(self, prompt: Any, lora_request: Any = None, **kwargs: Any) -> Any:
-        """Generate and return the raw vLLM ``RequestOutput``.
+        """Generate and return the ``RequestOutput`` fields TuFT reads, as builtins.
 
         ``prompt`` is a vLLM prompt dict (e.g. ``{"prompt_token_ids": [...]}``);
         ``kwargs`` override fields of the default ``SamplingParams``.
@@ -267,7 +301,7 @@ class VLLMEngine:
         )
         async for request_output in stream:
             if request_output.finished:
-                return request_output
+                return _plain_output(request_output)
         raise RuntimeError("[vLLM] The request is not finished. This should not happen.")
 
     def _create_sampling_params(self, **kwargs: Any):
