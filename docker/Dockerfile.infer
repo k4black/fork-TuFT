@@ -11,15 +11,25 @@
 # Build:
 #   docker build -f docker/Dockerfile.infer -t tuft-infer:latest .
 
-FROM vllm/vllm-openai:v0.27.0
+# Keep in step with the vllm pin in pyproject.toml; the constraint below fails
+# the build when they drift.
+FROM vllm/vllm-openai:v0.28.0
 
-COPY ./pyproject.toml ./LICENSE ./README.md /opt/tuft/
+COPY --from=ghcr.io/astral-sh/uv:0.9.21 /uv /bin/uv
+
+# Dependencies before source (see Dockerfile.train). The base image's torch and
+# vLLM are frozen as constraints, so a pyproject.toml asking for other versions
+# fails to resolve instead of reinstalling them over the base image.
+COPY ./pyproject.toml /opt/tuft/
+RUN pip3 list --format=freeze | grep -iE '^(torch|vllm)==' > /tmp/base-pins.txt \
+    && uv pip install --system --no-cache --constraints /tmp/base-pins.txt \
+        -r /opt/tuft/pyproject.toml --extra backend --extra persistence
+
+COPY ./scripts/verify_runtime_versions.py /opt/tuft/scripts/
+COPY ./LICENSE ./README.md /opt/tuft/
 COPY ./src /opt/tuft/src
-COPY ./scripts /opt/tuft/scripts
-
-# verify_runtime_versions.py is the ABI gate here: it fails the build if the
-# install moved torch or vLLM off the pins the base image was built with.
-RUN pip3 install --no-cache-dir "/opt/tuft[backend,persistence]" \
-    && python3 /opt/tuft/scripts/verify_runtime_versions.py
+RUN uv pip install --system --no-cache --no-deps /opt/tuft \
+    && python3 /opt/tuft/scripts/verify_runtime_versions.py \
+    && python3 -c "from tuft.backends.vllm_worker import TuFTGPUWorker; print('smoke OK')"
 
 # The base image's entrypoint (the vLLM OpenAI API server) is kept as is.

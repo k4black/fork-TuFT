@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - 'docker/**'
+      - '.dockerignore'
       - 'scripts/install.sh'
       - 'scripts/install_flash_attn.py'
       - 'scripts/verify_runtime_versions.py'
@@ -29,6 +30,8 @@ jobs:
   build-check:
     name: Build Docker (${{ matrix.variant }})
     runs-on: ubuntu-latest
+    env:
+      PUBLISH: ${{ github.event_name == 'push' || github.event_name == 'release' }}
     strategy:
       fail-fast: false
       matrix:
@@ -42,20 +45,17 @@ jobs:
             build-args: |
               CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
               TORCH_BACKEND=cu129
-            smoke: "import torch, tuft; print('smoke OK', torch.__version__)"
           - variant: train-cu13
             image: tuft-train
             suffix: -cu13
             default: true
             dockerfile: docker/Dockerfile.train
             build-args: ''
-            smoke: "import torch, tuft; print('smoke OK', torch.__version__)"
           - variant: infer
             image: tuft-infer
             suffix: ''
             dockerfile: docker/Dockerfile.infer
             build-args: ''
-            smoke: "from tuft.backends.vllm_worker import TuFTGPUWorker; print('smoke OK', TuFTGPUWorker)"
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -74,53 +74,45 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker Image (${{ matrix.variant }})
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          build-args: ${{ matrix.build-args }}
-          push: false
-          load: true
-          tags: tuft-test:${{ matrix.variant }}
-          cache-from: type=gha,scope=${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
-
-      # --entrypoint is needed for the infer image, whose base entrypoint is the
-      # vLLM API server; on the train image it resolves to the venv python
-      # because the venv is first on PATH.
-      - name: Verify Built Image Smoke Test
-        run: |
-          docker run --rm --entrypoint python3 tuft-test:${{ matrix.variant }} \
-            -c "${{ matrix.smoke }}"
-
-      - name: Log in to Docker Hub
-        if: github.event_name == 'push' || github.event_name == 'release'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # release v0.3.0 -> 0.3.0 and latest (not for pre-releases); main -> dev.
-      - name: Push to Docker Hub
-        if: github.event_name == 'push' || github.event_name == 'release'
+      # release v0.3.0 -> 0.3.0 and latest (not for pre-releases); main -> dev;
+      # pull requests build under a local tag and push nothing.
+      - name: Compute tags
+        id: tags
         env:
           REPO: docker.io/k4black/${{ matrix.image }}
           SUFFIX: ${{ matrix.suffix }}
           DEFAULT: ${{ matrix.default }}
           PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = release ]; then
-            names="${GITHUB_REF_NAME#v}"
-            [ "$PRERELEASE" = true ] || names="$names latest"
-          else
-            names=dev
-          fi
+          case "$GITHUB_EVENT_NAME" in
+            release) names="${GITHUB_REF_NAME#v}"; [ "$PRERELEASE" = true ] || names="$names latest" ;;
+            push) names=dev ;;
+            *) echo "tags=tuft-test:${{ matrix.variant }}" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          tags=""
           for name in $names; do
-            tags="$REPO:$name$SUFFIX"
-            [ "$DEFAULT" = true ] && tags="$tags $REPO:$name"
-            for tag in $tags; do
-              docker tag tuft-test:${{ matrix.variant }} "$tag"
-              docker push "$tag"
-            done
+            tags="$tags,$REPO:$name$SUFFIX"
+            [ "$DEFAULT" = true ] && tags="$tags,$REPO:$name"
           done
+          echo "tags=${tags#,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The smoke test runs as the Dockerfiles' last RUN, so nothing is loaded
+      # into the local daemon. Layers come from the published :dev image; only
+      # publishing runs write that (inline) cache.
+      - name: Build Docker Image (${{ matrix.variant }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build-args }}
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=registry,ref=docker.io/k4black/${{ matrix.image }}:dev${{ matrix.suffix }}
+          cache-to: ${{ env.PUBLISH == 'true' && 'type=inline' || '' }}
