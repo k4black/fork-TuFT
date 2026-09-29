@@ -98,7 +98,7 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     confirms the unload (2xx/404).
   - Idle TTL (`adapter_idle_ttl_minutes`, default 30, 0 = off) unloads and unstages
     idle adapters; the next request re-adds them. `max_loras` default 1 → 8, and it
-    also caps staged adapters (LRU). Adapters with requests in flight are never unloaded.
+    also caps staged sampling sessions (LRU). Adapters with requests in flight are never unloaded.
   - The server holds `LoraRef` tuples; `VLLMEngine` builds vLLM's `LoRARequest`, so the
     server runs in `tuft-train` (no vLLM). 2-node train + infer smoke pending.
   - Deferred: trainer-side save/resume without shared `checkpoint_dir` (multi-node

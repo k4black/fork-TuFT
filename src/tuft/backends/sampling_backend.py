@@ -114,7 +114,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         self._last_used: dict[str, float] = {}
         # Requests generating per adapter id; neither the sweep nor the cap unloads these.
         self._in_flight: Counter[str] = Counter()
-        # At most this many adapters stay staged (vLLM's default max_cpu_loras).
+        # At most this many sessions stay staged (vLLM's default max_cpu_loras).
         self._max_staged = config.max_loras
         self._idle_ttl = config.adapter_idle_ttl_minutes * 60
         self._sweep_task: Optional[asyncio.Task] = None
@@ -411,7 +411,6 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     f"Failed to load LoRA adapter '{lora_name}': {resp.status_code} {resp.text}"
                 )
             self._oai_loaded.add(lora_name)
-            await self._evict_lru_locked(keep=lora_name)
             logger.info(
                 "Loaded LoRA '%s' via vLLM OpenAI API at %s", lora_name, self._openai_api_url
             )
@@ -476,13 +475,15 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         await self._evict_lru_locked(keep=lora_id)
 
     async def _evict_lru_locked(self, keep: str) -> None:
-        """Unload least recently used adapters beyond ``max_loras``. Caller holds ``_lock``.
+        """Unload least recently used sessions beyond ``max_loras``. Caller holds ``_lock``.
 
         Each sampler refresh stages a new session, so without a cap /dev/shm grows
-        until the idle TTL. An evicted adapter re-adds on its next request.
+        until the idle TTL. An evicted session re-adds on its next request. Soft cap:
+        in-flight sessions stay. OAI names are left to the idle TTL, since proxied
+        requests are not tracked in flight.
         """
-        for lora_id in sorted(self._last_used, key=self._last_used.__getitem__):
-            if len(self._last_used) <= self._max_staged:
+        for lora_id in sorted(self.lora_adapters, key=self._last_used.__getitem__):
+            if len(self.lora_adapters) <= self._max_staged:
                 return
             if lora_id != keep and not self._in_flight[lora_id]:
                 logger.info("Unloading LoRA adapter %s, over max_loras", lora_id)

@@ -101,7 +101,7 @@ class ModelConfig(BaseModel):
 
     # default lora setting
     max_lora_rank: int = 16  # maximum rank for LoRA adapters
-    # Maximum LoRA adapters applied simultaneously; also caps adapters staged per
+    # Maximum LoRA adapters applied simultaneously; also caps sampling sessions staged per
     # vLLM instance (least recently used unload first, re-added on next request).
     max_loras: int = 8
     # Unload an adapter idle this long; the next request re-adds it. 0 disables.

@@ -54,7 +54,7 @@ model_owner: local-user
 #   - seed: Random seed for reproducibility (default: 42)
 #   - min_response_tokens: Minimum tokens to generate (default: 0)
 #   - max_lora_rank: Maximum LoRA adapter rank (default: 16)
-#   - max_loras: Maximum simultaneous LoRA adapters; also caps staged adapters (default: 8)
+#   - max_loras: Maximum simultaneous LoRA adapters; also caps staged sampling sessions (default: 8)
 #   - adapter_idle_ttl_minutes: Unload an adapter after this long with no request;
 #       the next request for it re-stages and re-registers it (default: 30, 0 = off)
 #   - training_backend: Training implementation, "hf" or "fsdp" (default: hf)
