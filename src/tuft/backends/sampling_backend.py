@@ -487,7 +487,11 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 return
             if lora_id != keep and not self._in_flight[lora_id]:
                 logger.info("Unloading LoRA adapter %s, over max_loras", lora_id)
-                await self._remove_adapter_locked(lora_id)
+                try:
+                    await self._remove_adapter_locked(lora_id)
+                except Exception:
+                    # Best effort: the add succeeded; the next add or sweep retries.
+                    logger.warning("Could not unload LoRA adapter %s", lora_id, exc_info=True)
 
     async def _sweep_loop(self) -> None:
         """Unload adapters that have served nothing for ``adapter_idle_ttl``."""
