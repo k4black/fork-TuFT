@@ -100,7 +100,7 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
     idle adapters; the next request re-adds them. `max_loras` default 1 → 8, and it
     also caps staged sampling sessions (LRU). Adapters with requests in flight are never unloaded.
   - The server holds `LoraRef` tuples; `VLLMEngine` builds vLLM's `LoRARequest`, so the
-    server runs in `tuft-train` (no vLLM). 2-node train + infer smoke pending.
+    server runs in `tuft-train` (no vLLM). 2-node smoke passed 2026-09-29 (`2dc0a62`).
   - Deferred: trainer-side save/resume without shared `checkpoint_dir` (multi-node
     FSDP needs it anyway; revisit save and load together), disk GC of checkpoints.
 
