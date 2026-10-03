@@ -41,11 +41,13 @@ from tinker.proto.response_conv import (
 from tinker.types.forward_backward_output import ForwardBackwardOutput
 from tinker.types.sample_response import SampleResponse
 
+from .loss_fn import LOSS_FN
+
 
 #: Payload types the SDK decodes as protobuf. Anything else falls back to JSON.
 PROTO_PAYLOAD_TYPES: tuple[type, ...] = (SampleResponse, ForwardBackwardOutput)
 
-_LOSS_FN_NAMES = frozenset(get_args(types.LossFnType))
+_LOSS_FN_NAMES = frozenset(get_args(types.LossFnType)) | LOSS_FN.keys()
 
 # tinker >= 0.26.2 made these sampling-identity fields required; 0.25 has neither.
 _SAMPLED_SEQUENCE_HAS_SEQUENCE_ID = any(
