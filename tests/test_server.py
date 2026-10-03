@@ -10,6 +10,8 @@ import httpx
 import pytest
 import ray
 import uvicorn
+from fastapi.testclient import TestClient
+from ray.exceptions import RayActorError
 from tinker import types
 from tinker.lib.public_interfaces.service_client import ServiceClient
 
@@ -303,3 +305,21 @@ def test_forward_backward_custom_round_trip(server_endpoint: str) -> None:
         )
     finally:
         service_client.holder.close()
+
+
+def test_readyz_reports_dead_actor(tmp_path: Path) -> None:
+    config = AppConfig(checkpoint_dir=tmp_path)
+    config.supported_models = [
+        ModelConfig(model_name="m", model_path=Path("/dummy/m"), max_model_len=4096)
+    ]
+    app = create_root_app(config)
+    client = TestClient(app)
+    assert client.get("/api/v1/readyz").json() == {"status": "ready"}
+
+    async def dead() -> None:
+        raise RayActorError()
+
+    app.state.server_state.training.training_backends["m"].ping = dead
+    response = client.get("/api/v1/readyz")
+    assert response.status_code == 503
+    assert response.json() == {"status": "not_ready", "failed": {"m": "training: RayActorError()"}}

@@ -31,6 +31,9 @@ class HFTrainingBackend(BaseTrainingBackend):
     async def async_init(self) -> None:
         await self.model.async_init.remote()
 
+    async def ping(self) -> None:
+        await self.model.async_init.remote()
+
     async def create_adapter(self, lora_id: str, lora_config: types.LoraConfig) -> None:
         """Create a LoRA adapter with the given ID and configuration."""
         with _get_tracer().start_as_current_span("training_backend.create_adapter") as span:
