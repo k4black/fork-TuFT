@@ -106,6 +106,24 @@ All implementations must follow `/ponytail` (minimal code, reuse existing patter
 
 ---
 
+## Phase 5: Shared-Server Hardening (P1, 2026-10-03 review)
+Source: codebase audit + ecosystem research (tinker SDK 0.32.0, cookbook needs >=0.30.1, SkyRL, OpenRL).
+- [x] **Upstream sync v0.2.1** (merge `27fbcee`): seq-guard fast-forward after a failed op (#162),
+  chunked target logprobs, 1800 s proxy timeout, replicated small FSDP requests (#164), bounded
+  micro-batches (#165). Dropped the fork's dummy-datum padding (`dummy_datum.py`) for upstream's
+  zero-loss rounds. Kept the fork's publish workflow (no PyPI release from the fork).
+- [ ] **E1: tinker SDK 0.30+** — widen the pin past 0.29, absorb `optim_params`/`optimizer_config`,
+  `topk_sample_logprobs`, `target_prompt_logprobs`, `sessions/{id}/finish`; CI matrix adds 0.32.
+- [ ] **E2: Tenant isolation** — OAI `resolve_model` gets the caller and applies owner/public checks,
+  no silent base-model fallback on a missing adapter, `retrieve` by a non-owner must not mutate the future.
+- [ ] **E3: Resource release** — reap runs on heartbeat expiry / `finish` (free slot, keep checkpoints),
+  evict retrieved futures.
+- [ ] **E4: Durable checkpoints** — runs survive restart without Redis, archive URL downloadable over HTTP.
+- [ ] **E5: Readiness + compat matrix** — `/readyz` that pings backends; committed per-method SDK
+  compatibility table enforced by a CPU test.
+
+---
+
 ## Phase 4: Measured Improvements (P2 - After Measurement)
 - [ ] **Token-budget batching**: Length sorting and padded-token budget with coordinated FSDP microsteps.
 - [ ] **Bounded fair admission**: Bounded turns across adapter queues; handle sequence gaps, duplicates, and cancellations.
