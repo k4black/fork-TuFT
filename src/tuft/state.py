@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, TypeVar
 
 from pydantic import BaseModel, Field
@@ -13,7 +14,11 @@ from tinker import types
 from .auth import AuthenticationDB, User
 from .checkpoints import CheckpointRecord
 from .config import AppConfig, ModelCapability
-from .exceptions import SessionNotFoundException, UserMismatchException
+from .exceptions import (
+    SessionFinishedException,
+    SessionNotFoundException,
+    UserMismatchException,
+)
 from .futures import FutureStore
 from .persistence import get_redis_store, is_persistence_enabled, load_record, save_record
 from .sampling_controller import SamplingController
@@ -44,6 +49,7 @@ class SessionRecord(BaseModel):
     sdk_version: str
     created_at: datetime = Field(default_factory=_now)
     last_heartbeat: datetime = Field(default_factory=_now)
+    finished_at: datetime | None = None
 
 
 class SessionManager:
@@ -66,6 +72,8 @@ class SessionManager:
         for key in store.keys(pattern):
             record = load_record(key, SessionRecord)
             if record is not None:
+                # Grace period: clients could not heartbeat while the server was down.
+                record.last_heartbeat = _now()
                 self._sessions[record.session_id] = record
 
     def _save_session(self, session_id: str) -> None:
@@ -105,8 +113,16 @@ class SessionManager:
         record = self.require(session_id)
         if record.user_id != user_id:
             raise UserMismatchException()
+        if record.finished_at is not None:
+            raise SessionFinishedException(session_id)
         record.last_heartbeat = _now()
         self._save_session(session_id)
+
+    def finish(self, record: SessionRecord) -> None:
+        """Mark the session terminal; the first finish wins."""
+        if record.finished_at is None:
+            record.finished_at = _now()
+            self._save_session(record.session_id)
 
     def list_sessions(self, user_id: str) -> list[str]:
         return [k for k, v in self._sessions.items() if v.user_id == user_id]
@@ -143,14 +159,43 @@ class ServerState:
         self.sampling = SamplingController(self.config)
         self.auth_db = AuthenticationDB(self.config.authorized_users)
         self.future_store = FutureStore()
+        self._sweep_task: asyncio.Task | None = None
 
     async def async_init(self) -> None:
         """Put any async initialization logic here"""
         await self.sampling.async_init()
         await self._restore_from_checkpoints()
+        if self.config.session_heartbeat_ttl_minutes > 0 and self._sweep_task is None:
+            self._sweep_task = asyncio.create_task(self._sweep_loop())
+
+    async def _sweep_loop(self) -> None:
+        """Finish sessions with stale heartbeats and drop expired futures."""
+        while True:
+            await asyncio.sleep(max(1.0, self.config.session_heartbeat_ttl_minutes * 60 / 10))
+            try:
+                await self._sweep_once()
+            except Exception:
+                logger.exception("Session sweep failed")
+
+    async def _sweep_once(self) -> None:
+        ttl = timedelta(minutes=self.config.session_heartbeat_ttl_minutes)
+        cutoff = _now() - ttl
+        for record in list(self.sessions._sessions.values()):
+            if record.finished_at is None and record.last_heartbeat < cutoff:
+                logger.info("Finishing session %s, no heartbeat for %s", record.session_id, ttl)
+                try:
+                    await self._finish_session(record)
+                except Exception:
+                    logger.exception("Failed to finish session %s", record.session_id)
+        future_ttl = get_redis_store().future_ttl
+        if future_ttl is not None:
+            await self.future_store.evict_expired(future_ttl)
 
     async def shutdown(self) -> None:
         """Shut down all backends and release resources (Ray actors, GPU memory)."""
+        if self._sweep_task is not None:
+            self._sweep_task.cancel()
+            self._sweep_task = None
         try:
             await self.training.shutdown()
         except Exception:
@@ -173,6 +218,18 @@ class ServerState:
 
         # Restore training runs (adapter + checkpoint)
         for model_id, record in self.training.training_runs.items():
+            session = self.sessions._sessions.get(record.session_id)
+            if not record.released and session is not None and session.finished_at is not None:
+                # Crashed between finish and release: finish the release now.
+                record.released = True
+                self.training._save_training_run(model_id)
+            if record.released:
+                # Its adapter stays freed; a queued operation can never run.
+                self.future_store.mark_model_pending_futures_failed(
+                    model_id=model_id,
+                    error_message=f"Training run {model_id} was released.",
+                )
+                continue
             if record.corrupted:
                 # A corrupted run cannot restore an adapter, so none of its
                 # pending operations can ever complete. Fail them explicitly
@@ -223,6 +280,20 @@ class ServerState:
     def heartbeat(self, session_id: str, user_id: str) -> None:
         self.sessions.heartbeat(session_id, user_id)
 
+    async def finish_session(self, session_id: str, user_id: str) -> None:
+        record = self.sessions.require(session_id)
+        if record.user_id != user_id:
+            raise UserMismatchException()
+        await self._finish_session(record)
+
+    async def _finish_session(self, record: SessionRecord) -> None:
+        """Mark the session finished, release its runs and drop its samplers."""
+        self.sessions.finish(record)
+        for model_id, run in list(self.training.training_runs.items()):
+            if run.session_id == record.session_id:
+                await self.training.release_run(model_id)
+        await self.sampling.evict_session(record.session_id)
+
     async def create_model(
         self,
         session_id: str,
@@ -231,14 +302,21 @@ class ServerState:
         model_owner: str,
         user_metadata: dict[str, str] | None,
     ) -> TrainingRunRecord:
-        self.sessions.require(session_id)
-        return await self.training.create_model(
+        session = self.sessions.require(session_id)
+        if session.finished_at is not None:
+            raise SessionFinishedException(session_id)
+        record = await self.training.create_model(
             session_id=session_id,
             base_model=base_model,
             lora_config=lora_config,
             model_owner=model_owner,
             user_metadata=user_metadata,
         )
+        if session.finished_at is not None:
+            # Finished while the adapter was being created.
+            await self.training.release_run(record.training_run_id)
+            raise SessionFinishedException(session_id)
+        return record
 
     def build_supported_models(self) -> list[SupportedModelInfo]:
         """Common supported-model metadata, built from configuration.
@@ -296,14 +374,21 @@ class ServerState:
         *,
         session_seq_id: int,
     ) -> str:
-        self.sessions.require(session_id)
-        return await self.sampling.create_sampling_session(
+        session = self.sessions.require(session_id)
+        if session.finished_at is not None:
+            raise SessionFinishedException(session_id)
+        sampler_id = await self.sampling.create_sampling_session(
             session_id=session_id,
             user_id=user_id,
             base_model=base_model,
             model_path=model_path,
             session_seq_id=session_seq_id,
         )
+        if session.finished_at is not None:
+            # Finished while the sampler was being created.
+            await self.sampling.evict_session(session_id)
+            raise SessionFinishedException(session_id)
+        return sampler_id
 
     async def run_sample(self, request: types.SampleRequest, user_id: str) -> types.SampleResponse:
         return await self.sampling.run_sample(request, user_id=user_id)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -19,6 +20,7 @@ from tuft.exceptions import (
     LossFunctionMissingInputException,
     MissingSequenceIDException,
     SequenceConflictException,
+    SessionFinishedException,
     UnknownModelException,
     UserMismatchException,
 )
@@ -1437,3 +1439,140 @@ async def test_load_checkpoint_accepts_matching_lora_alpha(request, tmp_path) ->
         user_id="tester",
         optimizer=True,
     )
+
+
+async def _create_run(state: ServerState, session_id: str) -> str:
+    run = await state.create_model(
+        session_id,
+        model_owner="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=types.LoraConfig(rank=4, train_unembed=False),
+        user_metadata=None,
+    )
+    return run.training_run_id
+
+
+@pytest.mark.asyncio
+async def test_finish_session_releases_run_keeps_checkpoints(request, tmp_path, monkeypatch):
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    run_id = await _create_run(state, session_id)
+    checkpoint = await state.save_checkpoint(
+        run_id, user_id="tester", name="before-finish", checkpoint_type="training"
+    )
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    removed: list[str] = []
+    original_remove_adapter = backend.remove_adapter
+
+    async def recording_remove_adapter(lora_id):
+        removed.append(lora_id)
+        await original_remove_adapter(lora_id)
+
+    monkeypatch.setattr(backend, "remove_adapter", recording_remove_adapter)
+
+    await state.finish_session(session_id, user_id="tester")
+    await state.finish_session(session_id, user_id="tester")
+
+    assert removed == [run_id]
+    with pytest.raises(InvalidRequestException, match="was released"):
+        await state.run_forward(
+            run_id,
+            user_id="tester",
+            data=[],
+            loss_fn="cross_entropy",
+            loss_fn_config=None,
+            seq_id=None,
+            backward=False,
+        )
+    assert [c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")] == ["before-finish"]
+    with pytest.raises(SessionFinishedException) as excinfo:
+        state.heartbeat(session_id, user_id="tester")
+    assert excinfo.value.status_code == 410
+    with pytest.raises(SessionFinishedException):
+        await _create_run(state, session_id)
+
+    new_run_id = await _create_run(state, _create_session(state))
+    await state.load_checkpoint(
+        new_run_id,
+        path=checkpoint.tinker_checkpoint.tinker_path,
+        user_id="tester",
+        optimizer=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_finishes_only_expired_sessions(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    stale_session, live_session = _create_session(state), _create_session(state)
+    stale_run = await _create_run(state, stale_session)
+    live_run = await _create_run(state, live_session)
+    state.sessions.require(stale_session).last_heartbeat -= timedelta(hours=1)
+
+    await state._sweep_once()
+
+    assert state.training.training_runs[stale_run].released is True
+    assert state.training.training_runs[live_run].released is False
+
+
+@pytest.mark.asyncio
+async def test_restore_skips_released_run(request, tmp_path, monkeypatch) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    await state.training.release_run(run_id)
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    created: list[str] = []
+
+    async def recording_create_adapter(lora_id, lora_config):
+        created.append(lora_id)
+
+    monkeypatch.setattr(backend, "create_adapter", recording_create_adapter)
+
+    await state._restore_from_checkpoints()
+
+    assert created == []
+
+
+@pytest.mark.asyncio
+async def test_finish_during_create_releases_new_run(request, tmp_path, monkeypatch) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_create_adapter = backend.create_adapter
+
+    async def blocking_create_adapter(lora_id, lora_config):
+        entered.set()
+        await release.wait()
+        await original_create_adapter(lora_id, lora_config)
+
+    monkeypatch.setattr(backend, "create_adapter", blocking_create_adapter)
+    create = asyncio.create_task(_create_run(state, session_id))
+    await entered.wait()
+    await state.finish_session(session_id, user_id="tester")
+    release.set()
+
+    with pytest.raises(SessionFinishedException):
+        await create
+    [run] = state.training.training_runs.values()
+    assert run.released is True
+
+
+@pytest.mark.asyncio
+async def test_restore_releases_run_of_finished_session(request, tmp_path, monkeypatch) -> None:
+    """A crash between finish and release leaves a finished session with a live run."""
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    run_id = await _create_run(state, session_id)
+    state.sessions.finish(state.sessions.require(session_id))
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    created: list[str] = []
+
+    async def recording_create_adapter(lora_id, lora_config):
+        created.append(lora_id)
+
+    monkeypatch.setattr(backend, "create_adapter", recording_create_adapter)
+
+    await state._restore_from_checkpoints()
+
+    assert state.training.training_runs[run_id].released is True
+    assert created == []

@@ -311,6 +311,8 @@ supported_models:
 
 See [`config/tuft_config.example.yaml`](config/tuft_config.example.yaml) for a complete example configuration with all available options.
 
+Session lifecycle: `ServiceClient.close()` (`POST /api/v1/sessions/{id}/finish`) or no heartbeat for `session_heartbeat_ttl_minutes` (default 30, `0` disables) finishes the session. The server then frees each training run's adapter and slot and keeps its checkpoints; to continue, create a new run and `load_state` from a checkpoint. Completed futures leave server memory after `persistence.future_ttl_seconds` (default 1 hour).
+
 ## Branching and Development Rules
 
 - **Target branch:** `main` is our working integration branch. All feature work, worktrees, and PRs merge into `main`.
