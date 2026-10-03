@@ -20,6 +20,9 @@ class BaseBackend(ABC):
     async def async_init(self) -> None:
         """Asynchronous initialization if needed."""
 
+    async def ping(self) -> None:  # noqa: B027
+        """Raise if the backend's actors are dead. Used by /api/v1/readyz."""
+
     async def shutdown(self) -> None:  # noqa: B027
         """Clean up resources (Ray actors, GPU memory, NCCL communicators, etc.).
 

@@ -119,8 +119,8 @@ Source: codebase audit + ecosystem research (tinker SDK 0.32.0, cookbook needs >
 - [ ] **E3: Resource release** — reap runs on heartbeat expiry / `finish` (free slot, keep checkpoints),
   evict retrieved futures.
 - [ ] **E4: Durable checkpoints** — runs survive restart without Redis, archive URL downloadable over HTTP.
-- [ ] **E5: Readiness + compat matrix** — `/readyz` that pings backends; committed per-method SDK
-  compatibility table enforced by a CPU test.
+- [x] **E5: Readiness + compat matrix** — `/api/v1/readyz` pings backends (503 lists dead models);
+  `docs/compatibility.md` table (55 methods on 0.28.1) enforced by `tests/test_compat_matrix.py`.
 
 ---
 

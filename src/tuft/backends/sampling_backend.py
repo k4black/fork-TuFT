@@ -554,6 +554,9 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             pass
         self.lora_adapters.clear()
 
+    async def ping(self) -> None:
+        await self.engine.check_health.remote()  # type: ignore[attr-defined]
+
 
 class DPSamplingBackend(BaseSamplingBackend):
     """Data-Parallel sampling backend: N independent vLLM instances with round-robin LB.
@@ -674,6 +677,9 @@ class DPSamplingBackend(BaseSamplingBackend):
     async def remove_adapter(self, lora_id: str) -> None:
         """Remove LoRA adapter from ALL DP instances."""
         await asyncio.gather(*[inst.remove_adapter(lora_id) for inst in self._instances])
+
+    async def ping(self) -> None:
+        await asyncio.gather(*[inst.ping() for inst in self._instances])
 
     async def shutdown(self) -> None:
         """Shut down all DP vLLM instances."""

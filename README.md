@@ -425,6 +425,7 @@ We provide practical examples and comprehensive guides for using TuFT. For full 
 | [Persistence](https://agentscope-ai.github.io/TuFT/en/latest/user-guide/persistence.html) | Optional Redis-based server state persistence for crash recovery. |
 | [Observability](https://agentscope-ai.github.io/TuFT/en/latest/user-guide/telemetry.html) | OpenTelemetry integration for tracing, metrics, and logs. |
 | [Console](https://agentscope-ai.github.io/TuFT/en/latest/user-guide/console.html) | Dashboard for monitoring training runs, checkpoints, and sampling playground. |
+| [SDK Compatibility](docs/compatibility.md) | Status of each Tinker SDK client method against TuFT routes. |
 ## Architecture
 
 TuFT provides a unified service API for agentic model training and sampling. The system supports multiple LoRA adapters per base model and checkpoint management.

@@ -266,6 +266,10 @@ class VLLMEngine:
             port = s.getsockname()[1]
         return address, port
 
+    async def check_health(self) -> None:
+        """Raise when the vLLM EngineCore died."""
+        await self.async_llm.check_health()
+
     def get_api_server_url(self) -> Optional[str]:
         """URL of the embedded OpenAI API server (None if not enabled)."""
         if not self._prepared:
