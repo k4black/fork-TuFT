@@ -95,16 +95,16 @@ class SessionManager:
         self._save_session(session_id)
         return record
 
-    def require(self, session_id: str) -> SessionRecord:
+    def require(self, session_id: str, user_id: str) -> SessionRecord:
         record = self._sessions.get(session_id)
         if record is None:
             raise SessionNotFoundException(session_id)
+        if record.user_id != user_id:
+            raise UserMismatchException()
         return record
 
     def heartbeat(self, session_id: str, user_id: str) -> None:
-        record = self.require(session_id)
-        if record.user_id != user_id:
-            raise UserMismatchException()
+        record = self.require(session_id, user_id)
         record.last_heartbeat = _now()
         self._save_session(session_id)
 
@@ -231,7 +231,7 @@ class ServerState:
         model_owner: str,
         user_metadata: dict[str, str] | None,
     ) -> TrainingRunRecord:
-        self.sessions.require(session_id)
+        self.sessions.require(session_id, model_owner)
         return await self.training.create_model(
             session_id=session_id,
             base_model=base_model,
@@ -296,7 +296,7 @@ class ServerState:
         *,
         session_seq_id: int,
     ) -> str:
-        self.sessions.require(session_id)
+        self.sessions.require(session_id, user_id)
         return await self.sampling.create_sampling_session(
             session_id=session_id,
             user_id=user_id,
@@ -393,9 +393,7 @@ class ServerState:
         await self.sampling.evict_model(model_id, user_id=user_id)
 
     def get_session_overview(self, session_id: str, user_id: str) -> types.GetSessionResponse:
-        record = self.sessions.require(session_id)
-        if record.user_id != user_id:
-            raise UserMismatchException()
+        self.sessions.require(session_id, user_id)
         training_run_ids = [
             run_id
             for run_id, run in self.training.training_runs.items()

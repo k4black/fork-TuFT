@@ -10,7 +10,11 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_serializer
 from tinker import types
 
-from .exceptions import CheckpointIncompatibleException, CheckpointMetadataReadException
+from .exceptions import (
+    CheckpointAccessDeniedException,
+    CheckpointIncompatibleException,
+    CheckpointMetadataReadException,
+)
 
 
 def compute_tree_size(path: Path) -> int:
@@ -312,6 +316,11 @@ class CheckpointRecord(BaseModel):
                 "lora_alpha_ratio: 1 before the setting existed), or start a new training run."
             ),
         )
+
+    def require_access(self, user_id: str) -> None:
+        """Raise CheckpointAccessDeniedException unless the user owns it or it is public."""
+        if not (self.public or self.owner_name == user_id):
+            raise CheckpointAccessDeniedException(checkpoint_id=self.checkpoint_id)
 
     def set_visibility(self, public: bool) -> None:
         """Set the visibility of the checkpoint."""
