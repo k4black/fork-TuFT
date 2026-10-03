@@ -487,7 +487,6 @@ class FutureStore:
             # Record not found - may have expired due to TTL or never existed
             raise FutureNotFoundException(request_id)
         if record.user_id != user_id:
-            record.status = "failed"
             raise UserMismatchException()
         # Wait for completion if still pending
         if record.status == "pending":

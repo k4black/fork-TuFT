@@ -9,6 +9,7 @@ from typing import Optional
 
 from ..checkpoints import CheckpointRecord
 from ..config import AppConfig
+from ..exceptions import CheckpointNotFoundException
 
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class ResolvedModel:
 def resolve_model(
     model_field: str,
     config: AppConfig,
+    user_id: str,
 ) -> ResolvedModel:
     """Resolve the ``model`` field from an OpenAI API request.
 
@@ -43,6 +45,8 @@ def resolve_model(
 
     Raises:
         ValueError: If the model cannot be resolved.
+        CheckpointAccessDeniedException: If the user neither owns nor sees a public checkpoint.
+        CheckpointNotFoundException: If the checkpoint has no adapter weights.
     """
     supported_names = {m.model_name for m in config.supported_models}
     model_paths = {str(m.model_path): m.model_name for m in config.supported_models}
@@ -66,6 +70,7 @@ def resolve_model(
             )
         except FileNotFoundError as exc:
             raise ValueError(f"Checkpoint not found for model: {model_field}") from exc
+        parsed_checkpoint.require_access(user_id)
 
         metadata = parsed_checkpoint.metadata
         base_model_ref = metadata.base_model
@@ -78,27 +83,17 @@ def resolve_model(
         adapter_path = parsed_checkpoint.adapter_path
         lora_id = f"{parsed_checkpoint.training_run_id}:{parsed_checkpoint.checkpoint_id}"
 
-        if adapter_path.exists():
-            # vLLM expects the lora_name (lora_id) as the model field,
-            # not the filesystem path. The LoRA is registered under lora_id
-            # via the sampling backend's ensure_oai_lora_loaded().
-            return ResolvedModel(
-                base_model=base_model_ref,
-                backend_model_name=lora_id,
-                lora_adapter_path=adapter_path,
-                lora_id=lora_id,
-            )
-        else:
-            return ResolvedModel(
-                base_model=base_model_ref,
-                backend_model_name=str(
-                    next(
-                        m.model_path
-                        for m in config.supported_models
-                        if m.model_name == base_model_ref
-                    )
-                ),
-            )
+        if not adapter_path.exists():
+            raise CheckpointNotFoundException(checkpoint_id=parsed_checkpoint.checkpoint_id)
+        # vLLM expects the lora_name (lora_id) as the model field,
+        # not the filesystem path. The LoRA is registered under lora_id
+        # via the sampling backend's ensure_oai_lora_loaded().
+        return ResolvedModel(
+            base_model=base_model_ref,
+            backend_model_name=lora_id,
+            lora_adapter_path=adapter_path,
+            lora_id=lora_id,
+        )
 
     # --- Try matching against model paths ---
     if model_field in model_paths:

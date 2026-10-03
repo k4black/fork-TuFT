@@ -202,6 +202,14 @@ async def test_sampling_session_wrong_user(request, tmp_path) -> None:
             user_id="different_user",
         )
     assert "You do not have permission" in str(excinfo.value)
+    with pytest.raises(UserMismatchException):
+        await state.create_sampling_session(
+            session_id=session_id,
+            base_model="Qwen/Qwen3-0.6B",
+            model_path=None,
+            session_seq_id=2,
+            user_id="different_user",
+        )
 
 
 @pytest.mark.asyncio

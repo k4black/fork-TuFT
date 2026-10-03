@@ -18,7 +18,6 @@ from .checkpoints import CheckpointRecord
 from .config import SAMPLING_CAPABILITY, AppConfig, ModelConfig
 from .exceptions import (
     CapabilityDisabledException,
-    CheckpointAccessDeniedException,
     CheckpointNotFoundException,
     MissingSequenceIDException,
     SessionNotFoundException,
@@ -264,12 +263,7 @@ class SamplingController:
                         )
                     metadata = parsed_checkpoint.metadata
                     base_model_ref = metadata.base_model
-                    is_public = parsed_checkpoint.public
-                    model_owner = parsed_checkpoint.owner_name
-                    if not is_public and model_owner != user_id:
-                        raise CheckpointAccessDeniedException(
-                            checkpoint_id=parsed_checkpoint.checkpoint_id,
-                        )
+                    parsed_checkpoint.require_access(user_id)
                     if base_model_ref not in self._base_backends:
                         self.require_sampling_capability(base_model_ref)
                         raise UnknownModelException(model_name=base_model_ref)
