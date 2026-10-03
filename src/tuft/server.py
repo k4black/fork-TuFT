@@ -222,6 +222,13 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Missing LoRA config"
             )
+        # tinker >= 0.29.1 sends an optimizer family; only Adam is implemented.
+        optimizer_config = getattr(request, "optimizer_config", None)
+        if optimizer_config is not None and optimizer_config.type != "adamw":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only the Adam optimizer is supported",
+            )
         try:
             training_record = await state.create_model(
                 session_id=request.session_id,
@@ -394,11 +401,19 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> types.UntypedAPIFuture:
+        # tinker 0.29.1 renamed `adam_params` to `optim_params`.
+        params = getattr(request, "optim_params", None) or request.adam_params
+        if not isinstance(params, types.AdamParams):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only the Adam optimizer is supported",
+            )
+
         async def _operation() -> types.OptimStepResponse:
             return await state.run_optim_step(
                 request.model_id,
                 user.user_id,
-                request.adam_params,
+                params,
                 request.seq_id,
             )
 
@@ -411,7 +426,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
             operation_args={
                 "model_id": request.model_id,
                 "user_id": user.user_id,
-                "params": request.adam_params,
+                "params": params,
                 "seq_id": request.seq_id,
             },
         )
@@ -570,6 +585,13 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> types.UntypedAPIFuture:
+        # tinker 0.29-0.31 sampling features this server does not implement.
+        for field in ("topk_sample_logprobs", "prompt_alt_tokens_k", "target_prompt_logprobs"):
+            if getattr(request, field, None):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{field} is not supported",
+                )
         # tinker >= 0.26.2 requires one sequence id per requested sample on the
         # promise; the ids are session-scoped and stable per (session, seq, i).
         sample_sequence_ids = [
