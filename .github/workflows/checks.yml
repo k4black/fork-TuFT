@@ -113,4 +113,4 @@ jobs:
       - name: Run tinker SDK end-to-end qualification
         # --no-sync: uv run would otherwise re-resolve tinker from pyproject and
         # undo the explicit pin, collapsing both matrix legs onto one version.
-        run: uv run --no-sync pytest tests/test_tinker_sdk_e2e.py
+        run: uv run --no-sync pytest tests/test_tinker_sdk_e2e.py tests/test_compat_matrix.py
