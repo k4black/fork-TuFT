@@ -533,7 +533,10 @@ async def test_checkpoint_archive_is_a_signed_tar_download(tmp_path) -> None:
         )
     )
     app = _create_test_app(
-        AppConfig(checkpoint_dir=tmp_path, authorized_users={"test-key": "tester"})
+        AppConfig(
+            checkpoint_dir=tmp_path,
+            authorized_users={"test-key": "tester", "other-key": "other"},
+        )
     )
     async with _client(app) as client:
         redirect = await client.get(
@@ -541,6 +544,11 @@ async def test_checkpoint_archive_is_a_signed_tar_download(tmp_path) -> None:
             headers={"X-API-Key": "test-key"},
         )
         assert redirect.status_code == 302
+        denied = await client.get(
+            "/api/v1/training_runs/run-1/checkpoints/sampler_weights/ck-1/archive",
+            headers={"X-API-Key": "other-key"},
+        )
+        assert denied.status_code == 403
         location = redirect.headers["Location"]
         assert location.startswith("http://")
 

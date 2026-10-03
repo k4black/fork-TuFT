@@ -952,18 +952,18 @@ class TrainingController:
     def get_checkpoint(
         self, model_id: str, checkpoint_id: str, user_id: str | None
     ) -> CheckpointRecord:
-        """Find a checkpoint in memory, or on disk when its run is gone (e.g. restart).
+        """Find a checkpoint in memory, else on disk (run or index entry gone, e.g. restart).
 
         ``user_id`` None skips the access check (signed archive downloads).
         """
         training_run = self.training_runs.get(model_id)
-        if training_run is not None:
-            checkpoint = training_run.checkpoints.get(
-                checkpoint_id
-            ) or training_run.sampler_checkpoints.get(checkpoint_id)
-            if checkpoint is None:
-                raise CheckpointNotFoundException(checkpoint_id=checkpoint_id)
-        else:
+        checkpoint = (
+            training_run.checkpoints.get(checkpoint_id)
+            or training_run.sampler_checkpoints.get(checkpoint_id)
+            if training_run is not None
+            else None
+        )
+        if checkpoint is None:
             assert self.config.checkpoint_dir is not None
             try:
                 # "weights" works for sampler checkpoints too: the type comes from metadata.

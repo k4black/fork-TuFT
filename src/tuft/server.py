@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
@@ -156,6 +156,11 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
     app.state.server_state = ServerState(resolved_config)
     # Signs archive download URLs; a restart invalidates outstanding URLs.
     app.state.archive_key = secrets.token_bytes(32)
+
+    # Routes without their own try/except surface TuFT errors with their status, not 500.
+    @app.exception_handler(TuFTException)
+    async def _tuft_exception_handler(_: Request, exc: TuFTException) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     # Mount OpenAI-compatible API router
     oai_router = create_oai_router()
