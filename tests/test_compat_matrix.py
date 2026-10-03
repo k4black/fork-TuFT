@@ -6,6 +6,7 @@ import inspect
 import re
 from pathlib import Path
 
+from fastapi.routing import APIRoute
 from tinker.lib.public_interfaces.rest_client import RestClient
 from tinker.lib.public_interfaces.sampling_client import SamplingClient
 from tinker.lib.public_interfaces.service_client import ServiceClient
@@ -42,7 +43,8 @@ def test_compat_matrix(tmp_path: Path) -> None:
     registered = {
         f"{method} {_norm(route.path)}"
         for route in create_root_app(config).routes
-        for method in getattr(route, "methods", None) or ()
+        if isinstance(route, APIRoute)
+        for method in route.methods
     }
     wrong = []
     for name, (status, route) in rows.items():
