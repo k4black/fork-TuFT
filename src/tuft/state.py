@@ -218,6 +218,11 @@ class ServerState:
 
         # Restore training runs (adapter + checkpoint)
         for model_id, record in self.training.training_runs.items():
+            session = self.sessions._sessions.get(record.session_id)
+            if not record.released and session is not None and session.finished_at is not None:
+                # Crashed between finish and release: finish the release now.
+                record.released = True
+                self.training._save_training_run(model_id)
             if record.released:
                 # Its adapter stays freed; a queued operation can never run.
                 self.future_store.mark_model_pending_futures_failed(
@@ -297,15 +302,21 @@ class ServerState:
         model_owner: str,
         user_metadata: dict[str, str] | None,
     ) -> TrainingRunRecord:
-        if self.sessions.require(session_id).finished_at is not None:
+        session = self.sessions.require(session_id)
+        if session.finished_at is not None:
             raise SessionFinishedException(session_id)
-        return await self.training.create_model(
+        record = await self.training.create_model(
             session_id=session_id,
             base_model=base_model,
             lora_config=lora_config,
             model_owner=model_owner,
             user_metadata=user_metadata,
         )
+        if session.finished_at is not None:
+            # Finished while the adapter was being created.
+            await self.training.release_run(record.training_run_id)
+            raise SessionFinishedException(session_id)
+        return record
 
     def build_supported_models(self) -> list[SupportedModelInfo]:
         """Common supported-model metadata, built from configuration.
@@ -363,15 +374,21 @@ class ServerState:
         *,
         session_seq_id: int,
     ) -> str:
-        if self.sessions.require(session_id).finished_at is not None:
+        session = self.sessions.require(session_id)
+        if session.finished_at is not None:
             raise SessionFinishedException(session_id)
-        return await self.sampling.create_sampling_session(
+        sampler_id = await self.sampling.create_sampling_session(
             session_id=session_id,
             user_id=user_id,
             base_model=base_model,
             model_path=model_path,
             session_seq_id=session_seq_id,
         )
+        if session.finished_at is not None:
+            # Finished while the sampler was being created.
+            await self.sampling.evict_session(session_id)
+            raise SessionFinishedException(session_id)
+        return sampler_id
 
     async def run_sample(self, request: types.SampleRequest, user_id: str) -> types.SampleResponse:
         return await self.sampling.run_sample(request, user_id=user_id)
