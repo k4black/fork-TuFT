@@ -402,7 +402,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         user: User = Depends(_get_user),
     ) -> types.UntypedAPIFuture:
         # tinker 0.29.1 renamed `adam_params` to `optim_params`.
-        params = getattr(request, "optim_params", None) or request.adam_params
+        params = getattr(request, "optim_params", None) or getattr(request, "adam_params", None)
         if not isinstance(params, types.AdamParams):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
