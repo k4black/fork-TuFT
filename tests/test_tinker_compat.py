@@ -27,6 +27,7 @@ from tuft.compat import (
     serialize_forward_backward_output_proto,
 )
 from tuft.config import AppConfig, ModelConfig
+from tuft.exceptions import SessionFinishedException
 from tuft.futures import FutureRecord
 from tuft.server import create_root_app
 
@@ -60,9 +61,17 @@ class _FakeState:
         self.future_store = _ImmediateFutureStore()
         self.backward: bool | None = None
         self.data: list[Any] = []
+        self.finished = False
 
     def get_user(self, api_key: str) -> User | None:
         return User("tester") if api_key == "test-key" else None
+
+    async def finish_session(self, session_id: str, user_id: str) -> None:
+        self.finished = True
+
+    def heartbeat(self, session_id: str, user_id: str) -> None:
+        if self.finished:
+            raise SessionFinishedException(session_id)
 
     async def run_forward(self, *args: Any, backward: bool, **kwargs: Any):
         self.backward = backward
@@ -507,3 +516,18 @@ def test_future_record_survives_a_redis_round_trip(payload: Any) -> None:
     record = FutureRecord(request_id="r", status="ready", payload=payload)
     restored = FutureRecord.model_validate_json(record.model_dump_json())
     assert type(restored.payload) is type(payload)
+
+
+@pytest.mark.asyncio
+async def test_finish_session_is_idempotent_and_ends_heartbeats(compatibility_app) -> None:
+    app, _ = compatibility_app
+    headers = {"X-API-Key": "test-key"}
+    body = {"reason": {"type": "user_requested"}, "detail": None}
+    async with _client(app) as client:
+        for _ in range(2):
+            response = await client.post("/api/v1/sessions/s-1/finish", json=body, headers=headers)
+            assert response.status_code == 204
+        heartbeat = await client.post(
+            "/api/v1/session_heartbeat", json={"session_id": "s-1"}, headers=headers
+        )
+    assert heartbeat.status_code == 410
