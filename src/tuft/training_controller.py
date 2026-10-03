@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from opentelemetry.trace import StatusCode
@@ -27,7 +27,6 @@ from .exceptions import (
     CapabilityDisabledException,
     CheckpointAccessDeniedException,
     CheckpointIncompatibleException,
-    CheckpointMetadataReadException,
     CheckpointNotFoundException,
     InvalidRequestException,
     SequenceConflictException,
@@ -787,34 +786,12 @@ class TrainingController:
         """Load a checkpoint."""
         try:
             assert self.config.checkpoint_dir is not None
-            parsed_checkpoint = CheckpointRecord.from_tinker_path(
-                path,
-                self.config.checkpoint_dir,
-            )
+            checkpoint = CheckpointRecord.from_tinker_path(path, self.config.checkpoint_dir)
         except FileNotFoundError as exc:
             raise CheckpointNotFoundException(checkpoint_id=model_id) from exc
-        source_model_id = parsed_checkpoint.training_run_id or model_id
-        source_training_run = self.get_run_record(
-            source_model_id, user_id, enforce_user_match=False
-        )
-
-        collection = (
-            source_training_run.checkpoints
-            if parsed_checkpoint.checkpoint_type == "training"
-            else source_training_run.sampler_checkpoints
-        )
-
-        checkpoint = collection.get(parsed_checkpoint.checkpoint_id)
-        if checkpoint is None:
-            raise CheckpointNotFoundException(checkpoint_id=parsed_checkpoint.checkpoint_id)
-        try:
-            metadata = checkpoint.metadata
-        except FileNotFoundError as exc:
-            raise CheckpointMetadataReadException(
-                checkpoint_id=parsed_checkpoint.checkpoint_id
-            ) from exc
+        metadata = checkpoint.metadata
         if not (metadata.public or metadata.owner_name == user_id):
-            raise CheckpointAccessDeniedException(checkpoint_id=parsed_checkpoint.checkpoint_id)
+            raise CheckpointAccessDeniedException(checkpoint_id=checkpoint.checkpoint_id)
 
         # Only the destination needs a live training backend; checkpoints of a
         # training-disabled source run remain loadable.
@@ -824,7 +801,7 @@ class TrainingController:
         if destination_training_run.backend is None:
             raise UnknownModelException(model_name=model_id)
 
-        checkpoint_id = parsed_checkpoint.checkpoint_id
+        checkpoint_id = checkpoint.checkpoint_id
         logger.info("Checkpoint load begin: %s", checkpoint_id)
 
         async def _operation() -> None:
@@ -972,22 +949,56 @@ class TrainingController:
 
         return self._effective_lora_targets(base_model, lora_config).modules
 
-    def delete_checkpoint(self, model_id: str, user_id: str, checkpoint_id: str) -> None:
-        training_run = self.get_run_record(model_id, user_id)
-        removed = training_run.checkpoints.pop(checkpoint_id, None)
-        is_sampler = False
-        if removed is None:
-            removed = training_run.sampler_checkpoints.pop(checkpoint_id, None)
-            is_sampler = True
-        if removed is None:
-            raise CheckpointNotFoundException(checkpoint_id=checkpoint_id)
-        removed.delete()
+    def get_checkpoint(
+        self, model_id: str, checkpoint_id: str, user_id: str | None
+    ) -> CheckpointRecord:
+        """Find a checkpoint in memory, or on disk when its run is gone (e.g. restart).
 
-        self._save_training_run(model_id)
-        if is_sampler:
-            self._delete_sampler_checkpoint_record(model_id, checkpoint_id)
+        ``user_id`` None skips the access check (signed archive downloads).
+        """
+        training_run = self.training_runs.get(model_id)
+        if training_run is not None:
+            checkpoint = training_run.checkpoints.get(
+                checkpoint_id
+            ) or training_run.sampler_checkpoints.get(checkpoint_id)
+            if checkpoint is None:
+                raise CheckpointNotFoundException(checkpoint_id=checkpoint_id)
         else:
+            assert self.config.checkpoint_dir is not None
+            try:
+                # "weights" works for sampler checkpoints too: the type comes from metadata.
+                checkpoint = CheckpointRecord.from_tinker_path(
+                    f"tinker://{model_id}/weights/{checkpoint_id}", self.config.checkpoint_dir
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                raise CheckpointNotFoundException(checkpoint_id=checkpoint_id) from exc
+        # TODO: switch to CheckpointRecord.require_access once tenant isolation lands.
+        if user_id is not None and not (checkpoint.public or checkpoint.owner_name == user_id):
+            raise CheckpointAccessDeniedException(checkpoint_id=checkpoint_id)
+        return checkpoint
+
+    def _get_owned_checkpoint(
+        self, model_id: str, checkpoint_id: str, user_id: str
+    ) -> CheckpointRecord:
+        checkpoint = self.get_checkpoint(model_id, checkpoint_id, user_id=None)
+        if checkpoint.owner_name != user_id:
+            raise UserMismatchException()
+        return checkpoint
+
+    def delete_checkpoint(self, model_id: str, user_id: str, checkpoint_id: str) -> None:
+        checkpoint = self._get_owned_checkpoint(model_id, checkpoint_id, user_id)
+        checkpoint.delete()
+        training_run = self.training_runs.get(model_id)
+        if training_run is None:
+            return
+        if checkpoint.checkpoint_type == "training":
+            training_run.checkpoints.pop(checkpoint_id, None)
+            self._save_training_run(model_id)
             self._delete_checkpoint_record(model_id, checkpoint_id)
+        else:
+            training_run.sampler_checkpoints.pop(checkpoint_id, None)
+            self._save_training_run(model_id)
+            self._delete_sampler_checkpoint_record(model_id, checkpoint_id)
 
     def list_checkpoints(self, model_id: str, user_id: str) -> list[types.Checkpoint]:
         training_run = self.get_run_record(model_id, user_id)
@@ -1012,42 +1023,27 @@ class TrainingController:
     def set_visibility(
         self, model_id: str, checkpoint_id: str, user_id: str, *, public: bool
     ) -> None:
-        training_run = self.get_run_record(model_id=model_id, user_id=user_id)
-        target = training_run.checkpoints.get(checkpoint_id)
-        is_sampler = False
-        if target is None:
-            target = training_run.sampler_checkpoints.get(checkpoint_id)
-            is_sampler = True
-        if target is None:
-            raise CheckpointNotFoundException(checkpoint_id=checkpoint_id)
-        target.set_visibility(public)
-
-        if is_sampler:
-            self._save_sampler_checkpoint(model_id, checkpoint_id)
-        else:
+        checkpoint = self._get_owned_checkpoint(model_id, checkpoint_id, user_id)
+        checkpoint.set_visibility(public)
+        if model_id not in self.training_runs:
+            return
+        if checkpoint.checkpoint_type == "training":
             self._save_checkpoint(model_id, checkpoint_id)
+        else:
+            self._save_sampler_checkpoint(model_id, checkpoint_id)
 
-    def build_archive_url(
-        self,
-        model_id: str,
-        user_id: str,
-        checkpoint_id: str,
-    ) -> types.CheckpointArchiveUrlResponse:
-        training_run = self.get_run_record(model_id, user_id)
-        checkpoint = training_run.checkpoints.get(
-            checkpoint_id
-        ) or training_run.sampler_checkpoints.get(checkpoint_id)
-        if checkpoint is None:
-            raise CheckpointNotFoundException(checkpoint_id=checkpoint_id)
-        expires = datetime.now(timezone.utc) + timedelta(minutes=15)
-        return types.CheckpointArchiveUrlResponse(url=checkpoint.path.as_uri(), expires=expires)
-
-    def get_weights_info(self, model_id: str, user_id: str) -> types.WeightsInfoResponse:
-        training_run = self.get_run_record(model_id, user_id)
+    def get_weights_info(self, tinker_path: str, user_id: str) -> types.WeightsInfoResponse:
+        try:
+            parsed = types.ParsedCheckpointTinkerPath.from_tinker_path(tinker_path)
+        except ValueError as exc:
+            raise CheckpointNotFoundException(checkpoint_id=tinker_path) from exc
+        metadata = self.get_checkpoint(
+            parsed.training_run_id, parsed.checkpoint_id.split("/", 1)[-1], user_id
+        ).metadata
         return types.WeightsInfoResponse(
-            base_model=training_run.base_model,
+            base_model=metadata.base_model,
             is_lora=True,
-            lora_rank=training_run.lora_rank,
+            lora_rank=metadata.lora_rank,
         )
 
     def get_latest_checkpoint(self, model_id: str) -> CheckpointRecord | None:

@@ -118,7 +118,8 @@ Source: codebase audit + ecosystem research (tinker SDK 0.32.0, cookbook needs >
   no silent base-model fallback on a missing adapter, `retrieve` by a non-owner must not mutate the future.
 - [ ] **E3: Resource release** — reap runs on heartbeat expiry / `finish` (free slot, keep checkpoints),
   evict retrieved futures.
-- [ ] **E4: Durable checkpoints** — runs survive restart without Redis, archive URL downloadable over HTTP.
+- [x] **E4: Durable checkpoints** — checkpoints resolve from disk after a restart without Redis
+  (load, delete, publish, weights_info, archive); the archive route redirects to a signed HTTP tar download.
 - [ ] **E5: Readiness + compat matrix** — `/readyz` that pings backends; committed per-method SDK
   compatibility table enforced by a CPU test.
 

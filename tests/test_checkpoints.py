@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from src.tuft.checkpoints import CheckpointRecord
 
 
@@ -85,3 +87,8 @@ def test_saved_target_modules_prefers_adapter_config_and_falls_back_to_metadata(
 
     (record.adapter_path / "adapter_config.json").write_text("not-json", encoding="utf-8")
     assert record.saved_target_modules == ["q_proj", "v_proj"]
+
+
+def test_from_tinker_path_rejects_paths_outside_root(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        CheckpointRecord.from_tinker_path("tinker://../weights/x", tmp_path / "root")
