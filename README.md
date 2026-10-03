@@ -23,6 +23,11 @@ TuFT (**T**enant-**u**nified **F**ine**T**uning) is a multi-tenant platform that
 > [!TIP]
 > **🚀 No GPU? No problem!** You can deploy TuFT to a pay-as-you-go cloud provider — **Modal** (serverless, scale-to-zero) or **Lambda Cloud** — and fine-tune from your laptop with no local GPU. See [Deployment](#deployment).
 
+> [!NOTE]
+> **This is [k4black/fork-TuFT](https://github.com/k4black/fork-TuFT)**, a fork of [agentscope-ai/TuFT](https://github.com/agentscope-ai/TuFT).
+> It tracks upstream and adds: split `tuft-train` / `tuft-infer` Docker images (CUDA 12 and 13), Ray placement of training and inference actors on separate nodes, LoRA adapter streaming to vLLM nodes without a shared filesystem, and a wider `tinker` SDK range. See [TODO.md](TODO.md) for the roadmap.
+> The fork is not on PyPI: install it from source or use the [fork images](#fork-images-split-training-and-inference). The quick-install script and the PyPI package below install the upstream release.
+
 We're open source and welcome contributions! Join the community:
 - [DingTalk Group](https://qr.dingtalk.com/action/joingroup?code=v1,k1,UWvzO6HHSeuvRQ5WXCOMJEijadQV+hDjhMIpiVr8qCs=&_dt_no_comment=1&origin=11?)
 - [Discord](https://discord.gg/BCNCaQGxBH)
@@ -226,7 +231,7 @@ We recommend using [uv](https://github.com/astral-sh/uv) for dependency manageme
 1. Clone the repository:
 
     ```bash
-    git clone https://github.com/agentscope-ai/TuFT
+    git clone https://github.com/k4black/fork-TuFT TuFT
     ```
 
     **Potential environment issues:**
@@ -273,6 +278,8 @@ We recommend using [uv](https://github.com/astral-sh/uv) for dependency manageme
 
 ### Install via PyPI
 
+The PyPI package is the upstream release, not this fork.
+
 ```bash
 uv pip install "tuft>=0.1.8"
 
@@ -316,10 +323,12 @@ See [`config/tuft_config.example.yaml`](config/tuft_config.example.yaml) for a c
 If you face issues with local installation or want to get started quickly,
 you can use the pre-built Docker image.
 
-1. Pull the latest image from GitHub Container Registry:
+1. Pull the latest fork image from Docker Hub. `tuft-infer` holds the full stack and runs
+   as an all-in-one image on a single GPU; use the `-cu12` tag on CUDA 12 drivers.
+   The upstream all-in-one image is `ghcr.io/agentscope-ai/tuft:latest`.
 
     ```bash
-    docker pull ghcr.io/agentscope-ai/tuft:latest
+    docker pull k4black/tuft-infer:latest
     ```
 
 2. Run the Docker container and start the TuFT server on port 10610:
@@ -331,7 +340,7 @@ you can use the pre-built Docker image.
         --rm \
         -p 10610:10610 \
         -v <host_dir>:/data \
-        ghcr.io/agentscope-ai/tuft:latest \
+        k4black/tuft-infer:latest \
         tuft launch --port 10610 --config /data/tuft_config.yaml
     ```
 
@@ -358,6 +367,9 @@ you can use the pre-built Docker image.
         max_model_len: 32768
         tensor_parallel_size: 1
     ```
+
+    On a single GPU add `colocate: true` under each model, so training and sampling share the
+    device. Without it the vLLM actor waits for a second GPU and the server never becomes ready.
 
 ### Fork images: split training and inference
 
