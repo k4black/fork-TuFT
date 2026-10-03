@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import json
+import tarfile
 import tracemalloc
 from pathlib import Path
 from typing import Any
@@ -28,7 +31,7 @@ from tuft.compat import (
 )
 from tuft.config import AppConfig, ModelConfig
 from tuft.futures import FutureRecord
-from tuft.server import create_root_app
+from tuft.server import _archive_signature, create_root_app
 
 
 class _ImmediateFutureStore:
@@ -104,8 +107,8 @@ def _proto_request(*, forward_only: bool) -> public_pb.ForwardBackwardRequest:
     return request
 
 
-def _create_test_app():
-    config = AppConfig()
+def _create_test_app(config: AppConfig | None = None):
+    config = config or AppConfig()
     config.supported_models = [
         ModelConfig(
             model_name="test-model",
@@ -507,3 +510,57 @@ def test_future_record_survives_a_redis_round_trip(payload: Any) -> None:
     record = FutureRecord(request_id="r", status="ready", payload=payload)
     restored = FutureRecord.model_validate_json(record.model_dump_json())
     assert type(restored.payload) is type(payload)
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_archive_is_a_signed_tar_download(tmp_path) -> None:
+    checkpoint_dir = tmp_path / "run-1" / "ck-1"
+    (checkpoint_dir / "adapter").mkdir(parents=True)
+    for name in ("adapter_config.json", "adapter_model.safetensors", "adapter.pt"):
+        (checkpoint_dir / "adapter" / name).write_bytes(b"x")
+    (checkpoint_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "model_id": "run-1",
+                "name": "ck-1",
+                "base_model": "test-model",
+                "checkpoint_type": "sampler",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "session_id": "s",
+                "tinker_path": "tinker://run-1/sampler_weights/ck-1",
+                "owner_name": "tester",
+            }
+        )
+    )
+    app = _create_test_app(
+        AppConfig(
+            checkpoint_dir=tmp_path,
+            authorized_users={"test-key": "tester", "other-key": "other"},
+        )
+    )
+    async with _client(app) as client:
+        redirect = await client.get(
+            "/api/v1/training_runs/run-1/checkpoints/sampler_weights/ck-1/archive",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert redirect.status_code == 302
+        denied = await client.get(
+            "/api/v1/training_runs/run-1/checkpoints/sampler_weights/ck-1/archive",
+            headers={"X-API-Key": "other-key"},
+        )
+        assert denied.status_code == 403
+        location = redirect.headers["Location"]
+        assert location.startswith("http://")
+
+        archive = await client.get(location)
+        assert archive.status_code == 200
+        with tarfile.open(fileobj=io.BytesIO(archive.content)) as tar:
+            names = set(tar.getnames())
+        assert {"adapter_config.json", "checkpoint_complete"} <= names
+        assert "adapter.pt" not in names
+
+        tampered = location[:-1] + ("0" if location[-1] != "0" else "1")
+        assert (await client.get(tampered)).status_code == 403
+        sig = _archive_signature(app.state.archive_key, "run-1", "ck-1", 1)
+        expired = f"{location.split('?')[0]}?exp=1&sig={sig}"
+        assert (await client.get(expired)).status_code == 403

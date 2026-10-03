@@ -613,6 +613,45 @@ async def test_load_checkpoint_restores_state(request, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_checkpoint_resolves_from_disk_after_restart(request, tmp_path) -> None:
+    use_gpu = request.config.getoption("--gpu")
+    lora_config = types.LoraConfig(rank=4, train_unembed=False)
+    before = await _build_state(tmp_path, use_gpu)
+    source = await before.create_model(
+        _create_session(before),
+        model_owner="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=lora_config,
+        user_metadata=None,
+    )
+    checkpoint = await before.save_checkpoint(
+        source.training_run_id, user_id="tester", name="durable", checkpoint_type="training"
+    )
+    path = checkpoint.tinker_checkpoint.tinker_path
+
+    # A fresh state on the same checkpoint_dir: no Redis, the source run is gone.
+    after = await _build_state(tmp_path, use_gpu)
+    destination = await after.create_model(
+        _create_session(after),
+        model_owner="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=lora_config,
+        user_metadata=None,
+    )
+    await after.load_checkpoint(
+        destination.training_run_id, user_id="tester", path=path, optimizer=False
+    )
+    with pytest.raises(CheckpointAccessDeniedException):
+        await after.load_checkpoint(
+            destination.training_run_id, user_id="other", path=path, optimizer=False
+        )
+    assert after.get_weights_info(path, user_id="tester").base_model == "Qwen/Qwen3-0.6B"
+
+    after.delete_checkpoint(source.training_run_id, "tester", "durable")
+    assert not checkpoint.path.exists()
+
+
+@pytest.mark.asyncio
 async def test_load_checkpoint_into_new_run_uses_destination_sequence_and_adapter(
     request, tmp_path, monkeypatch
 ) -> None:
