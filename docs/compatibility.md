@@ -4,11 +4,13 @@ One row per public method of the Tinker SDK clients (checked against `tinker==0.
 An `_async` twin has the same status as its sync method.
 `tests/test_compat_matrix.py` fails when the SDK gains a method without a row here, or when a
 row's route disagrees with the routes the server registers.
+That test checks method names against registered routes only. `tests/test_tinker_sdk_e2e.py` covers
+the behaviour of the core flow.
 
 Status values:
 
-- `supported`: the server implements the route the method calls.
-- `partial`: the route exists, but the server drops or fakes part of the behaviour (see the note).
+- `supported`: the route exists, and the e2e or unit tests exercise it.
+- `partial`: the route exists, but it answers with placeholder data or drops part of the request (see the note).
 - `unsupported`: the server has no route for the call. The method fails with 404.
 - `client-side`: the method makes no request of its own, or only composes other rows.
 

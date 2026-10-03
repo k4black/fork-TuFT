@@ -160,7 +160,9 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
                 # Training actors run one call at a time, so a ping queues behind a step: busy.
                 pass
             except RayActorError as exc:
-                failed[name] = f"training: {exc!r}"
+                sampling_err = failed.get(name)
+                failed[name] = f"{sampling_err}; " if sampling_err else ""
+                failed[name] += f"training: {exc!r}"
         if failed:
             return JSONResponse({"status": "not_ready", "failed": failed}, status_code=503)
         return JSONResponse({"status": "ready"})

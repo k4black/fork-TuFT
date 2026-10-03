@@ -316,10 +316,19 @@ def test_readyz_reports_dead_actor(tmp_path: Path) -> None:
     client = TestClient(app)
     assert client.get("/api/v1/readyz").json() == {"status": "ready"}
 
-    async def dead() -> None:
+    async def engine_dead() -> None:
+        raise RuntimeError("engine dead")
+
+    async def actor_dead() -> None:
         raise RayActorError()
 
-    app.state.server_state.training.training_backends["m"].ping = dead
+    app.state.server_state.sampling._base_backends["m"].ping = engine_dead
     response = client.get("/api/v1/readyz")
     assert response.status_code == 503
-    assert response.json() == {"status": "not_ready", "failed": {"m": "training: RayActorError()"}}
+    assert response.json()["failed"] == {"m": "sampling: RuntimeError('engine dead')"}
+
+    app.state.server_state.training.training_backends["m"].ping = actor_dead
+    response = client.get("/api/v1/readyz")
+    assert response.json()["failed"] == {
+        "m": "sampling: RuntimeError('engine dead'); training: RayActorError()"
+    }
