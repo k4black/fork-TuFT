@@ -25,7 +25,6 @@ from .config import (
 )
 from .exceptions import (
     CapabilityDisabledException,
-    CheckpointAccessDeniedException,
     CheckpointIncompatibleException,
     CheckpointNotFoundException,
     InvalidRequestException,
@@ -790,8 +789,7 @@ class TrainingController:
         except FileNotFoundError as exc:
             raise CheckpointNotFoundException(checkpoint_id=model_id) from exc
         metadata = checkpoint.metadata
-        if not (metadata.public or metadata.owner_name == user_id):
-            raise CheckpointAccessDeniedException(checkpoint_id=checkpoint.checkpoint_id)
+        checkpoint.require_access(user_id)
 
         # Only the destination needs a live training backend; checkpoints of a
         # training-disabled source run remain loadable.
@@ -972,9 +970,8 @@ class TrainingController:
                 )
             except (FileNotFoundError, ValueError) as exc:
                 raise CheckpointNotFoundException(checkpoint_id=checkpoint_id) from exc
-        # TODO: switch to CheckpointRecord.require_access once tenant isolation lands.
-        if user_id is not None and not (checkpoint.public or checkpoint.owner_name == user_id):
-            raise CheckpointAccessDeniedException(checkpoint_id=checkpoint_id)
+        if user_id is not None:
+            checkpoint.require_access(user_id)
         return checkpoint
 
     def _get_owned_checkpoint(
