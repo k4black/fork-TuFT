@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+from datetime import timedelta
 
 import pytest
 from tinker import types
@@ -9,6 +11,7 @@ from tinker.types.try_again_response import TryAgainResponse
 
 from tuft.exceptions import (
     FutureCancelledException,
+    FutureNotFoundException,
     ServerException,
     UnknownModelException,
     UserMismatchException,
@@ -33,14 +36,22 @@ async def _wait_for_result(
 @pytest.mark.asyncio
 async def test_future_store_mismatches_user():
     store = FutureStore()
+    release = threading.Event()
 
     def _operation() -> types.SaveWeightsResponse:
+        release.wait(timeout=10)
         return types.SaveWeightsResponse(path="tinker://run/weights/ckpt")
 
     future = await store.enqueue(_operation, model_id="run", user_id="tester")
     with pytest.raises(UserMismatchException) as exc_info:
         await store.retrieve(future.request_id, user_id="wrong_user", timeout=1.0)
     assert "You do not have permission" in str(exc_info.value)
+    # A foreign retrieve must not poison the owner's future.
+    pending = await store.retrieve(future.request_id, user_id="tester", timeout=0.01)
+    assert isinstance(pending, TryAgainResponse)
+    release.set()
+    final = await _wait_for_result(store, future.request_id, user_id="tester")
+    assert isinstance(final, types.SaveWeightsResponse)
     await store.shutdown()
 
 
@@ -135,4 +146,26 @@ async def test_mark_pending_sample_futures_failed():
     # It should NOT be a RequestFailedResponse from our mark call
     assert isinstance(training_result, TryAgainResponse)
 
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evict_expired_keeps_pending():
+    store = FutureStore()
+    release = threading.Event()
+    ready = await store.create_ready_future(
+        types.SaveWeightsResponse(path="tinker://run/weights/ckpt"),
+        model_id="run",
+        user_id="tester",
+    )
+    pending = await store.enqueue(release.wait, model_id="run", user_id="tester")
+    for request_id in (ready.request_id, pending.request_id):
+        store._records[request_id].created_at -= timedelta(hours=2)
+
+    await store.evict_expired(3600)
+
+    with pytest.raises(FutureNotFoundException):
+        await store.retrieve(ready.request_id, user_id="tester", timeout=0.1)
+    assert pending.request_id in store._records
+    release.set()
     await store.shutdown()

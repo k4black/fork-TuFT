@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import json
+import tarfile
 import tracemalloc
 from pathlib import Path
 from typing import Any
@@ -27,8 +30,9 @@ from tuft.compat import (
     serialize_forward_backward_output_proto,
 )
 from tuft.config import AppConfig, ModelConfig
+from tuft.exceptions import SessionFinishedException
 from tuft.futures import FutureRecord
-from tuft.server import create_root_app
+from tuft.server import _archive_signature, create_root_app
 
 
 class _ImmediateFutureStore:
@@ -60,9 +64,17 @@ class _FakeState:
         self.future_store = _ImmediateFutureStore()
         self.backward: bool | None = None
         self.data: list[Any] = []
+        self.finished = False
 
     def get_user(self, api_key: str) -> User | None:
         return User("tester") if api_key == "test-key" else None
+
+    async def finish_session(self, session_id: str, user_id: str) -> None:
+        self.finished = True
+
+    def heartbeat(self, session_id: str, user_id: str) -> None:
+        if self.finished:
+            raise SessionFinishedException(session_id)
 
     async def run_forward(self, *args: Any, backward: bool, **kwargs: Any):
         self.backward = backward
@@ -104,8 +116,8 @@ def _proto_request(*, forward_only: bool) -> public_pb.ForwardBackwardRequest:
     return request
 
 
-def _create_test_app():
-    config = AppConfig()
+def _create_test_app(config: AppConfig | None = None):
+    config = config or AppConfig()
     config.supported_models = [
         ModelConfig(
             model_name="test-model",
@@ -507,3 +519,72 @@ def test_future_record_survives_a_redis_round_trip(payload: Any) -> None:
     record = FutureRecord(request_id="r", status="ready", payload=payload)
     restored = FutureRecord.model_validate_json(record.model_dump_json())
     assert type(restored.payload) is type(payload)
+
+
+@pytest.mark.asyncio
+async def test_finish_session_is_idempotent_and_ends_heartbeats(compatibility_app) -> None:
+    app, _ = compatibility_app
+    headers = {"X-API-Key": "test-key"}
+    body = {"reason": {"type": "user_requested"}, "detail": None}
+    async with _client(app) as client:
+        for _ in range(2):
+            response = await client.post("/api/v1/sessions/s-1/finish", json=body, headers=headers)
+            assert response.status_code == 204
+        heartbeat = await client.post(
+            "/api/v1/session_heartbeat", json={"session_id": "s-1"}, headers=headers
+        )
+    assert heartbeat.status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_archive_is_a_signed_tar_download(tmp_path) -> None:
+    checkpoint_dir = tmp_path / "run-1" / "ck-1"
+    (checkpoint_dir / "adapter").mkdir(parents=True)
+    for name in ("adapter_config.json", "adapter_model.safetensors", "adapter.pt"):
+        (checkpoint_dir / "adapter" / name).write_bytes(b"x")
+    (checkpoint_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "model_id": "run-1",
+                "name": "ck-1",
+                "base_model": "test-model",
+                "checkpoint_type": "sampler",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "session_id": "s",
+                "tinker_path": "tinker://run-1/sampler_weights/ck-1",
+                "owner_name": "tester",
+            }
+        )
+    )
+    app = _create_test_app(
+        AppConfig(
+            checkpoint_dir=tmp_path,
+            authorized_users={"test-key": "tester", "other-key": "other"},
+        )
+    )
+    async with _client(app) as client:
+        redirect = await client.get(
+            "/api/v1/training_runs/run-1/checkpoints/sampler_weights/ck-1/archive",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert redirect.status_code == 302
+        denied = await client.get(
+            "/api/v1/training_runs/run-1/checkpoints/sampler_weights/ck-1/archive",
+            headers={"X-API-Key": "other-key"},
+        )
+        assert denied.status_code == 403
+        location = redirect.headers["Location"]
+        assert location.startswith("http://")
+
+        archive = await client.get(location)
+        assert archive.status_code == 200
+        with tarfile.open(fileobj=io.BytesIO(archive.content)) as tar:
+            names = set(tar.getnames())
+        assert {"adapter_config.json", "checkpoint_complete"} <= names
+        assert "adapter.pt" not in names
+
+        tampered = location[:-1] + ("0" if location[-1] != "0" else "1")
+        assert (await client.get(tampered)).status_code == 403
+        sig = _archive_signature(app.state.archive_key, "run-1", "ck-1", 1)
+        expired = f"{location.split('?')[0]}?exp=1&sig={sig}"
+        assert (await client.get(expired)).status_code == 403

@@ -18,7 +18,7 @@ The route column names the main request. Methods that compose several requests l
 
 | Method | Status | Route | Note |
 |---|---|---|---|
-| `ServiceClient.close` | unsupported | POST /api/v1/sessions/{session_id}/finish | The SDK logs the 404 and still closes its local clients. |
+| `ServiceClient.close` | supported | POST /api/v1/sessions/{session_id}/finish | Marks the session finished and releases its runs; later heartbeats get 410. |
 | `ServiceClient.copy_weights` | unsupported | POST /api/v1/copy_weights | |
 | `ServiceClient.create_lora_training_client` | supported | POST /api/v1/create_model | |
 | `ServiceClient.create_rest_client` | client-side | - | |

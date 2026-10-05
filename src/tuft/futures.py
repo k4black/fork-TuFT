@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal
 
 from pydantic import (
@@ -487,7 +487,6 @@ class FutureStore:
             # Record not found - may have expired due to TTL or never existed
             raise FutureNotFoundException(request_id)
         if record.user_id != user_id:
-            record.status = "failed"
             raise UserMismatchException()
         # Wait for completion if still pending
         if record.status == "pending":
@@ -503,11 +502,15 @@ class FutureStore:
 
         return record.payload
 
-    async def cleanup(self, request_id: str) -> None:
-        """Remove a completed request from the store to free memory."""
+    async def evict_expired(self, ttl_seconds: float) -> None:
+        """Drop completed futures older than ``ttl_seconds`` from memory and storage."""
+        # ponytail: created_at, add completed_at if ops ever run near TTL
+        cutoff = _now() - timedelta(seconds=ttl_seconds)
         async with self._lock:
-            self._records.pop(request_id, None)
-            self._delete_future(request_id)
+            for request_id, record in list(self._records.items()):
+                if record.status != "pending" and record.created_at < cutoff:
+                    del self._records[request_id]
+                    self._delete_future(request_id)
 
     async def shutdown(self) -> None:
         """Cancel all pending tasks and clean up."""

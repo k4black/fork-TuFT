@@ -186,7 +186,7 @@ def create_oai_router() -> APIRouter:
 
                 # Resolve model
                 try:
-                    resolved = resolve_model(model_field, state.config)
+                    resolved = resolve_model(model_field, state.config, user.user_id)
                 except ValueError as exc:
                     raise UnknownModelException(model_name=model_field) from exc
 
