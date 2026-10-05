@@ -239,8 +239,8 @@
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">future_ttl_seconds</span></code></p></td>
 <td><p>integer or null</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">86400</span></code> (1 day)</p></td>
-<td><p>TTL for future records in seconds. Set to <code class="docutils literal notranslate"><span class="pre">null</span></code> for no expiry.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">3600</span></code> (1 hour)</p></td>
+<td><p>TTL for future records in seconds, in Redis and in server memory. Set to <code class="docutils literal notranslate"><span class="pre">null</span></code> for no expiry.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">check_fields</span></code></p></td>
 <td><p>list</p></td>
@@ -255,7 +255,7 @@
 </span><span id="line-2"><span class="w">  </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">REDIS</span>
 </span><span id="line-3"><span class="w">  </span><span class="nt">redis_url</span><span class="p">:</span><span class="w"> </span><span class="s">"redis://localhost:6379/0"</span>
 </span><span id="line-4"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="s">"my-tuft-deployment"</span>
-</span><span id="line-5"><span class="w">  </span><span class="nt">future_ttl_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">86400</span><span class="w">  </span><span class="c1"># 1 day</span>
+</span><span id="line-5"><span class="w">  </span><span class="nt">future_ttl_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3600</span><span class="w">  </span><span class="c1"># 1 hour</span>
 </span><span id="line-6"><span class="w">  </span><span class="nt">check_fields</span><span class="p">:</span>
 </span><span id="line-7"><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SUPPORTED_MODELS</span>
 </span><span id="line-8"><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">CHECKPOINT_DIR</span>
@@ -303,7 +303,7 @@
 <ul>
 <li><p>request lifecycle records: <code class="docutils literal notranslate"><span class="pre">pending</span></code> / <code class="docutils literal notranslate"><span class="pre">ready</span></code> / <code class="docutils literal notranslate"><span class="pre">failed</span></code></p></li>
 <li><p>includes <code class="docutils literal notranslate"><span class="pre">operation_type</span></code>, <code class="docutils literal notranslate"><span class="pre">operation_args</span></code>, <code class="docutils literal notranslate"><span class="pre">future_id</span></code>, payload or error</p></li>
-<li><p>stored with a <strong>TTL</strong> (default: 1 day, configurable via <code class="docutils literal notranslate"><span class="pre">future_ttl_seconds</span></code>)</p></li>
+<li><p>stored with a <strong>TTL</strong> (default: 1 hour, configurable via <code class="docutils literal notranslate"><span class="pre">future_ttl_seconds</span></code>)</p></li>
 </ul>
 </li>
 <li><p><strong>Configuration signature</strong> (<code class="docutils literal notranslate"><span class="pre">ConfigSignature</span></code>)</p>
@@ -371,7 +371,7 @@ rules are described in <a class="reference internal" href="lora-target-modules.h
 </section>
 <section id="redis-grows-indefinitely">
 <h3>Redis grows indefinitely<a class="headerlink" href="#redis-grows-indefinitely" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#redis-grows-indefinitely'">¶</a></h3>
-<p>Long-lived records (sessions, training runs, sampling sessions, checkpoints metadata) do not expire. Futures expire based on the configured <code class="docutils literal notranslate"><span class="pre">future_ttl_seconds</span></code> (default: 1 day). You should also set a namespace per deployment and clear unused namespaces.</p>
+<p>Long-lived records (sessions, training runs, sampling sessions, checkpoints metadata) do not expire. Futures expire based on the configured <code class="docutils literal notranslate"><span class="pre">future_ttl_seconds</span></code> (default: 1 hour). You should also set a namespace per deployment and clear unused namespaces.</p>
 </section>
 </section>
 <hr class="docutils"/>

@@ -73,7 +73,7 @@ Persistence is configured via the `persistence` section in your `tuft_config.yam
 | `redis_url` | string | `redis://localhost:6379/0` | Redis server URL (only used when `mode: REDIS`) |
 | `file_path` | string | `~/.cache/tuft/file_redis.json` | JSON file path (only used when `mode: FILE`) |
 | `namespace` | string | `persistence-tuft-server` | Key namespace prefix for Redis keys |
-| `future_ttl_seconds` | integer or null | `86400` (1 day) | TTL for future records in seconds. Set to `null` for no expiry. |
+| `future_ttl_seconds` | integer or null | `3600` (1 hour) | TTL for future records in seconds, in Redis and in server memory. Set to `null` for no expiry. |
 | `check_fields` | list | `["SUPPORTED_MODELS"]` | List of config fields to validate on restart (see [Safety checks](#safety-checks)) |
 
 ### Full configuration example
@@ -83,7 +83,7 @@ persistence:
   mode: REDIS
   redis_url: "redis://localhost:6379/0"
   namespace: "my-tuft-deployment"
-  future_ttl_seconds: 86400  # 1 day
+  future_ttl_seconds: 3600  # 1 hour
   check_fields:
     - SUPPORTED_MODELS
     - CHECKPOINT_DIR
@@ -124,7 +124,7 @@ TuFT persists **metadata for major server subsystems** incrementally as changes 
 - **Futures** (`FutureStore`)
   - request lifecycle records: `pending` / `ready` / `failed`
   - includes `operation_type`, `operation_args`, `future_id`, payload or error
-  - stored with a **TTL** (default: 1 day, configurable via `future_ttl_seconds`)
+  - stored with a **TTL** (default: 1 hour, configurable via `future_ttl_seconds`)
 
 - **Configuration signature** (`ConfigSignature`)
   - a snapshot of selected `AppConfig` fields for restore safety
@@ -187,7 +187,7 @@ This is expected if those futures were created **after** the latest recovered ch
 
 ### Redis grows indefinitely
 
-Long-lived records (sessions, training runs, sampling sessions, checkpoints metadata) do not expire. Futures expire based on the configured `future_ttl_seconds` (default: 1 day). You should also set a namespace per deployment and clear unused namespaces.
+Long-lived records (sessions, training runs, sampling sessions, checkpoints metadata) do not expire. Futures expire based on the configured `future_ttl_seconds` (default: 1 hour). You should also set a namespace per deployment and clear unused namespaces.
 
 ---
 
