@@ -1553,7 +1553,7 @@ async def test_sweep_finishes_only_expired_sessions(request, tmp_path) -> None:
     stale_session, live_session = _create_session(state), _create_session(state)
     stale_run = await _create_run(state, stale_session)
     live_run = await _create_run(state, live_session)
-    state.sessions.require(stale_session).last_heartbeat -= timedelta(hours=1)
+    state.sessions.require(stale_session, "tester").last_heartbeat -= timedelta(hours=1)
 
     await state._sweep_once()
 
@@ -1610,7 +1610,7 @@ async def test_restore_releases_run_of_finished_session(request, tmp_path, monke
     state = await _build_state(tmp_path, request.config.getoption("--gpu"))
     session_id = _create_session(state)
     run_id = await _create_run(state, session_id)
-    state.sessions.finish(state.sessions.require(session_id))
+    state.sessions.finish(state.sessions.require(session_id, "tester"))
     backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
     created: list[str] = []
 
