@@ -45,7 +45,9 @@ The route column names the main request. Methods that compose several requests l
 | `TrainingClient.save_weights_for_sampler` | supported | POST /api/v1/save_weights_for_sampler | |
 | `SamplingClient.compute_logprobs` | supported | POST /api/v1/asample | Samples one token with prompt logprobs. |
 | `SamplingClient.create` | supported | POST /api/v1/create_sampling_session | |
+| `SamplingClient.from_sampler_handle` | client-side | - | 0.32+; rebuilds a client from a handle string. |
 | `SamplingClient.get_base_model` | supported | GET /api/v1/samplers/{sampler_id} | |
+| `SamplingClient.get_sampler_handle` | client-side | - | 0.32+; serialises the client without credentials. |
 | `SamplingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
 | `SamplingClient.get_tokenizer` | partial | GET /api/v1/samplers/{sampler_id} | Loads `base_model` from the HF Hub. TuFT sets it to the configured `model_name`. |
 | `SamplingClient.on_queue_state_change` | client-side | - | |
@@ -56,6 +58,7 @@ The route column names the main request. Methods that compose several requests l
 | `RestClient.export_session_trace` | unsupported | GET /api/v1/sessions/{session_id}/trace_export | |
 | `RestClient.get_audit_log` | unsupported | GET /api/v1/audit | |
 | `RestClient.get_billing_usage` | unsupported | GET /api/v1/billing/usage/events | |
+| `RestClient.get_current_checkpoint_storage_usage` | unsupported | GET /api/v1/billing/usage/checkpoints/current | 0.32+ |
 | `RestClient.get_checkpoint_archive_url` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
 | `RestClient.get_checkpoint_archive_url_from_tinker_path` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
 | `RestClient.get_external_weights_urls` | unsupported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/external_weights_urls | |
