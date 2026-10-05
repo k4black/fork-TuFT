@@ -10,7 +10,11 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_serializer
 from tinker import types
 
-from .exceptions import CheckpointIncompatibleException, CheckpointMetadataReadException
+from .exceptions import (
+    CheckpointAccessDeniedException,
+    CheckpointIncompatibleException,
+    CheckpointMetadataReadException,
+)
 
 
 def compute_tree_size(path: Path) -> int:
@@ -313,6 +317,11 @@ class CheckpointRecord(BaseModel):
             ),
         )
 
+    def require_access(self, user_id: str) -> None:
+        """Raise CheckpointAccessDeniedException unless the user owns it or it is public."""
+        if not (self.public or self.owner_name == user_id):
+            raise CheckpointAccessDeniedException(checkpoint_id=self.checkpoint_id)
+
     def set_visibility(self, public: bool) -> None:
         """Set the visibility of the checkpoint."""
         self.public = public
@@ -382,6 +391,8 @@ class CheckpointRecord(BaseModel):
         checkpoint_path = (
             checkpoint_root_dir / parsed.training_run_id / parsed.checkpoint_id.split("/", 1)[-1]
         )
+        if not checkpoint_path.resolve().is_relative_to(checkpoint_root_dir.resolve()):
+            raise FileNotFoundError(f"Checkpoint path escapes the checkpoint root: {path}")
         record = cls(
             checkpoint_id=parsed.checkpoint_id.split("/", 1)[-1],
             checkpoint_type=parsed.checkpoint_type,
@@ -392,6 +403,8 @@ class CheckpointRecord(BaseModel):
         )
         metadata = record.metadata  # This may raise FileNotFoundError or JSONDecodeError
         record.owner_name = metadata.owner_name
+        # The path segment does not tell training from sampler: both share <run>/<name>.
+        record.checkpoint_type = metadata.checkpoint_type
         record.size_bytes = metadata.size_bytes
         record.public = metadata.public
         record.created_at = datetime.fromisoformat(metadata.created_at)

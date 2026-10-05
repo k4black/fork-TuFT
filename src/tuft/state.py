@@ -103,16 +103,16 @@ class SessionManager:
         self._save_session(session_id)
         return record
 
-    def require(self, session_id: str) -> SessionRecord:
+    def require(self, session_id: str, user_id: str) -> SessionRecord:
         record = self._sessions.get(session_id)
         if record is None:
             raise SessionNotFoundException(session_id)
+        if record.user_id != user_id:
+            raise UserMismatchException()
         return record
 
     def heartbeat(self, session_id: str, user_id: str) -> None:
-        record = self.require(session_id)
-        if record.user_id != user_id:
-            raise UserMismatchException()
+        record = self.require(session_id, user_id)
         if record.finished_at is not None:
             raise SessionFinishedException(session_id)
         record.last_heartbeat = _now()
@@ -281,9 +281,7 @@ class ServerState:
         self.sessions.heartbeat(session_id, user_id)
 
     async def finish_session(self, session_id: str, user_id: str) -> None:
-        record = self.sessions.require(session_id)
-        if record.user_id != user_id:
-            raise UserMismatchException()
+        record = self.sessions.require(session_id, user_id)
         await self._finish_session(record)
 
     async def _finish_session(self, record: SessionRecord) -> None:
@@ -302,7 +300,7 @@ class ServerState:
         model_owner: str,
         user_metadata: dict[str, str] | None,
     ) -> TrainingRunRecord:
-        session = self.sessions.require(session_id)
+        session = self.sessions.require(session_id, model_owner)
         if session.finished_at is not None:
             raise SessionFinishedException(session_id)
         record = await self.training.create_model(
@@ -374,7 +372,7 @@ class ServerState:
         *,
         session_seq_id: int,
     ) -> str:
-        session = self.sessions.require(session_id)
+        session = self.sessions.require(session_id, user_id)
         if session.finished_at is not None:
             raise SessionFinishedException(session_id)
         sampler_id = await self.sampling.create_sampling_session(
@@ -447,16 +445,12 @@ class ServerState:
         )
 
     def get_weights_info(self, tinker_path: str, user_id: str) -> types.WeightsInfoResponse:
-        parsed = types.ParsedCheckpointTinkerPath.from_tinker_path(tinker_path)
-        return self.training.get_weights_info(parsed.training_run_id, user_id)
+        return self.training.get_weights_info(tinker_path, user_id)
 
-    def build_archive_url(
-        self,
-        model_id: str,
-        user_id: str,
-        checkpoint_id: str,
-    ) -> types.CheckpointArchiveUrlResponse:
-        return self.training.build_archive_url(model_id, user_id, checkpoint_id)
+    def get_checkpoint(
+        self, model_id: str, checkpoint_id: str, user_id: str | None
+    ) -> CheckpointRecord:
+        return self.training.get_checkpoint(model_id, checkpoint_id, user_id)
 
     def list_training_runs(
         self, *, user_id: str, limit: int | None = None, offset: int = 0
@@ -478,9 +472,7 @@ class ServerState:
         await self.sampling.evict_model(model_id, user_id=user_id)
 
     def get_session_overview(self, session_id: str, user_id: str) -> types.GetSessionResponse:
-        record = self.sessions.require(session_id)
-        if record.user_id != user_id:
-            raise UserMismatchException()
+        self.sessions.require(session_id, user_id)
         training_run_ids = [
             run_id
             for run_id, run in self.training.training_runs.items()
