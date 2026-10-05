@@ -1112,6 +1112,10 @@ class FSDPTrainingBackend(BaseTrainingBackend):
         _validate_explicit_target_modules(config)
         self.logger = logging.getLogger(f"{__name__}.FSDPTrainingBackend")
 
+    async def ping(self) -> None:
+        # No actors before the first create_adapter (lazy init): nothing to check.
+        await asyncio.gather(*[a.get_node_ip.remote() for a in self._actors])
+
     async def shutdown(self) -> None:
         """Kill all FSDP worker Ray actors and release GPU resources."""
         import ray

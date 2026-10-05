@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
+from ray.exceptions import RayActorError
 from tinker import types
 
 from .auth import User
@@ -173,6 +174,28 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/v1/healthz", response_model=types.HealthResponse)
     async def healthz() -> types.HealthResponse:
         return types.HealthResponse(status="ok")
+
+    @app.get("/api/v1/readyz")
+    async def readyz(state: ServerState = Depends(_get_state)) -> JSONResponse:
+        failed: dict[str, str] = {}
+        for name, backend in state.sampling._base_backends.items():
+            try:
+                await asyncio.wait_for(backend.ping(), 2)
+            except Exception as exc:  # timeout, dead actor, or EngineDeadError from check_health
+                failed[name] = f"sampling: {exc!r}"
+        for name, backend in state.training.training_backends.items():
+            try:
+                await asyncio.wait_for(backend.ping(), 2)
+            except asyncio.TimeoutError:
+                # Training actors run one call at a time, so a ping queues behind a step: busy.
+                pass
+            except RayActorError as exc:
+                sampling_err = failed.get(name)
+                failed[name] = f"{sampling_err}; " if sampling_err else ""
+                failed[name] += f"training: {exc!r}"
+        if failed:
+            return JSONResponse({"status": "not_ready", "failed": failed}, status_code=503)
+        return JSONResponse({"status": "ready"})
 
     @app.get(
         "/api/v1/get_server_capabilities",
@@ -952,9 +975,9 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
 
     for route in app.routes:
         path = getattr(route, "path", None) or ""
-        # Skip healthz, OAI routes (own auth via _get_user_oai) and signed archive URLs
+        # Skip probes, OAI routes (own auth via _get_user_oai) and signed archive URLs
         if (
-            path == "/api/v1/healthz"
+            path in ("/api/v1/healthz", "/api/v1/readyz")
             or path.startswith("/oai/")
             or path.startswith("/api/v1/archives/")
         ):

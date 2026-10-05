@@ -122,8 +122,8 @@ Source: codebase audit + ecosystem research (tinker SDK 0.32.0, cookbook needs >
   heartbeat); the same sweep drops completed futures older than `future_ttl_seconds` (now 1 h).
 - [x] **E4: Durable checkpoints** — checkpoints resolve from disk after a restart without Redis
   (load, delete, publish, weights_info, archive); the archive route redirects to a signed HTTP tar download.
-- [ ] **E5: Readiness + compat matrix** — `/readyz` that pings backends; committed per-method SDK
-  compatibility table enforced by a CPU test.
+- [x] **E5: Readiness + compat matrix** — `/api/v1/readyz` pings backends (503 lists dead models);
+  `docs/compatibility.md` table (55 methods on 0.28.1) enforced by `tests/test_compat_matrix.py`.
 
 ---
 

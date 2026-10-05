@@ -150,6 +150,10 @@ curl http://localhost:10610/api/v1/healthz
 # {"status":"ok"}
 ```
 
+`/api/v1/healthz` is liveness only. For readiness use `/api/v1/readyz`: it returns 503 with the
+failed models when a sampling or training actor has died. The socket opens only after vLLM
+init, so give a probe a long startup period.
+
 The training script [`examples/personality_sft/train.py`](https://github.com/agentscope-ai/TuFT/tree/main/examples/personality_sft/train.py)
 is a **client** that drives the loop over HTTP via the Tinker SDK — it needs only CPU-side
 dependencies:

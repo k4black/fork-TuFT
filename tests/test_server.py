@@ -10,6 +10,8 @@ import httpx
 import pytest
 import ray
 import uvicorn
+from fastapi.testclient import TestClient
+from ray.exceptions import RayActorError
 from tinker import types
 from tinker.lib.public_interfaces.rest_client import RestClient
 from tinker.lib.public_interfaces.service_client import ServiceClient
@@ -306,3 +308,30 @@ def test_forward_backward_custom_round_trip(server_endpoint: str) -> None:
         )
     finally:
         service_client.holder.close()
+
+
+def test_readyz_reports_dead_actor(tmp_path: Path) -> None:
+    config = AppConfig(checkpoint_dir=tmp_path)
+    config.supported_models = [
+        ModelConfig(model_name="m", model_path=Path("/dummy/m"), max_model_len=4096)
+    ]
+    app = create_root_app(config)
+    client = TestClient(app)
+    assert client.get("/api/v1/readyz").json() == {"status": "ready"}
+
+    async def engine_dead() -> None:
+        raise RuntimeError("engine dead")
+
+    async def actor_dead() -> None:
+        raise RayActorError()
+
+    app.state.server_state.sampling._base_backends["m"].ping = engine_dead
+    response = client.get("/api/v1/readyz")
+    assert response.status_code == 503
+    assert response.json()["failed"] == {"m": "sampling: RuntimeError('engine dead')"}
+
+    app.state.server_state.training.training_backends["m"].ping = actor_dead
+    response = client.get("/api/v1/readyz")
+    assert response.json()["failed"] == {
+        "m": "sampling: RuntimeError('engine dead'); training: RayActorError()"
+    }
