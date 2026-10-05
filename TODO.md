@@ -112,8 +112,9 @@ Source: codebase audit + ecosystem research (tinker SDK 0.32.0, cookbook needs >
   chunked target logprobs, 1800 s proxy timeout, replicated small FSDP requests (#164), bounded
   micro-batches (#165). Dropped the fork's dummy-datum padding (`dummy_datum.py`) for upstream's
   zero-loss rounds. Kept the fork's publish workflow (no PyPI release from the fork).
-- [ ] **E1: tinker SDK 0.30+** — widen the pin past 0.29, absorb `optim_params`/`optimizer_config`,
-  `topk_sample_logprobs`, `target_prompt_logprobs`, `sessions/{id}/finish`; CI matrix adds 0.32.
+- [x] **E1: tinker SDK 0.30+** — pin is `tinker>=0.25,<0.33`; `optim_step` reads `optim_params`,
+  unsupported optimizer/sampling features return 400; CI matrix is 0.25.0 + 0.32.0.
+  `sessions/{id}/finish` comes with E3.
 - [ ] **E2: Tenant isolation** — OAI `resolve_model` gets the caller and applies owner/public checks,
   no silent base-model fallback on a missing adapter, `retrieve` by a non-owner must not mutate the future.
 - [x] **E3: Resource release** — `POST /sessions/{id}/finish` and a heartbeat-TTL sweep
@@ -131,4 +132,5 @@ Source: codebase audit + ecosystem research (tinker SDK 0.32.0, cookbook needs >
 - [ ] **Bounded fair admission**: Bounded turns across adapter queues; handle sequence gaps, duplicates, and cancellations.
 - [ ] **Sharded model initialization**: Meta initialization and distributed materialization when base model exceeds single GPU memory during startup.
 - [ ] **Replication versus sharding**: Benchmark replicated training when model fits on single H100; add mesh options only after measurement.
+- [ ] **Tinker 0.29+ features**: top-k sample logprobs, target/alt prompt tokens, Dimuon optimizer (return 400 today).
 - [ ] **Adapter capability reporting**: Expose supported rank/target geometry and free slot capacity; maintain static FSDP slot pool.

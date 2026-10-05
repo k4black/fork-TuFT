@@ -10,7 +10,7 @@ wire formats interoperate:
   responses of the two dataclass payloads (``ForwardBackwardOutput`` /
   ``SampleResponse``), which the SDK only decodes as protobuf.
 
-The CI ``tinker-compat`` matrix runs this file against 0.25.0 and 0.28.1, so the
+The CI ``tinker-compat`` matrix runs this file against 0.25.0 and 0.32.0, so the
 version-adaptive compat shims (sample sequence identity, ``loss_fn_config_v2``,
 the renamed top-k field) are exercised on both wire generations from one server.
 
