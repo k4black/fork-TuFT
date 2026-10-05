@@ -1,6 +1,6 @@
 """Serialization helpers for the Tinker wire formats.
 
-TuFT targets tinker >= 0.25, < 0.29, where ``/forward_backward`` is protobuf-only
+TuFT targets tinker >= 0.25, < 0.33, where ``/forward_backward`` is protobuf-only
 in both directions. The response side is not merely an optimization: since tinker
 0.22 ``SampleResponse`` and ``ForwardBackwardOutput`` are plain dataclasses, and
 the SDK's ``deserialize_json_response`` only revives pydantic models, so a JSON
@@ -20,6 +20,12 @@ version-adaptive (see the module-level capability probes below):
   only mirrors numeric kwargs into the legacy float map.
 - 0.28.0 renamed the top-k prompt-logprobs message and its ``prompt_length``
   field to ``length`` (same field number, so the wire bytes are unchanged).
+- 0.29.1 renamed ``OptimStepRequest.adam_params`` to ``optim_params``
+  (``server.optim_step`` reads either).
+
+Not implemented, rejected with 400: non-Adam optimizers (0.29.1), and the
+sampling fields ``topk_sample_logprobs`` (0.29), ``target_prompt_logprobs``
+(0.30) and ``prompt_alt_tokens_k`` (0.31).
 """
 
 from __future__ import annotations

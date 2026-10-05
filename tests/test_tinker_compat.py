@@ -404,6 +404,57 @@ async def test_sample_response_uses_protobuf_when_requested(compatibility_app) -
     assert decoded.prompt_cache_hit_tokens == 3
 
 
+@pytest.mark.skipif(
+    "optim_params" not in types.OptimStepRequest.model_fields,
+    reason="optimizer families only exist from tinker 0.29.1",
+)
+@pytest.mark.asyncio
+async def test_non_adam_optimizer_is_rejected(compatibility_app) -> None:
+    app, _ = compatibility_app
+    headers = {"X-API-Key": "test-key"}
+    async with _client(app) as client:
+        created = await client.post(
+            "/api/v1/create_model",
+            json={
+                "session_id": "s",
+                "model_seq_id": 0,
+                "base_model": "test-model",
+                "lora_config": {"rank": 8},
+                "optimizer_config": {"type": "dimuon", "version": 1},
+            },
+            headers=headers,
+        )
+        stepped = await client.post(
+            "/api/v1/optim_step",
+            json={"model_id": "m", "optimizer_params": {"type": "dimuon", "learning_rate": 0.1}},
+            headers=headers,
+        )
+    assert created.status_code == 400
+    assert stepped.status_code == 400
+
+
+@pytest.mark.skipif(
+    "topk_sample_logprobs" not in types.SampleRequest.model_fields,
+    reason="topk_sample_logprobs only exists from tinker 0.29",
+)
+@pytest.mark.asyncio
+async def test_unsupported_sample_features_are_rejected(compatibility_app) -> None:
+    app, _ = compatibility_app
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/asample",
+            json={
+                "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
+                "sampling_params": {"max_tokens": 1},
+                "base_model": "test-model",
+                "topk_sample_logprobs": 2,
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+    assert response.status_code == 400
+    assert "topk_sample_logprobs" in response.json()["detail"]
+
+
 def test_openapi_documents_the_protobuf_request_body() -> None:
     schema = _create_test_app().openapi()
     # /api/v1/forward is gone: 0.25 routes forward() through forward_backward

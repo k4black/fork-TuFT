@@ -11,6 +11,7 @@ import pytest
 import ray
 import uvicorn
 from tinker import types
+from tinker.lib.public_interfaces.rest_client import RestClient
 from tinker.lib.public_interfaces.service_client import ServiceClient
 
 from tuft.config import AppConfig, ModelConfig
@@ -272,17 +273,19 @@ def test_forward_backward_custom_round_trip(server_endpoint: str) -> None:
         )
         assert optim_result is not None
 
-        # The SDK validates inputs before anything reaches the server: custom
-        # losses accept only target_tokens and weights per datum.
-        bad_datum = types.Datum(
-            model_input=types.ModelInput.from_ints([11, 12]),
-            loss_fn_inputs={
-                "target_tokens": types.TensorData(data=[21, 22], dtype="int64", shape=[2]),
-                "advantages": types.TensorData(data=[1.0, 1.0], dtype="float32", shape=[2]),
-            },
-        )
-        with pytest.raises(ValueError, match="advantages"):
-            training_client.forward_backward_custom([bad_datum], dpo_style_loss)
+        # SDKs before 0.32 reject extra loss_fn_inputs client-side; 0.32 sends
+        # only target_tokens and weights and drops the rest silently. Detect
+        # 0.32 by a method it introduced, not by version metadata.
+        if not hasattr(RestClient, "get_current_checkpoint_storage_usage"):
+            bad_datum = types.Datum(
+                model_input=types.ModelInput.from_ints([11, 12]),
+                loss_fn_inputs={
+                    "target_tokens": types.TensorData(data=[21, 22], dtype="int64", shape=[2]),
+                    "advantages": types.TensorData(data=[1.0, 1.0], dtype="float32", shape=[2]),
+                },
+            )
+            with pytest.raises(ValueError, match="advantages"):
+                training_client.forward_backward_custom([bad_datum], dpo_style_loss)
 
         # A callback failure surfaces client-side as well.
         def broken_loss(loss_data, logprobs_list):
