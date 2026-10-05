@@ -25,7 +25,6 @@ from .config import (
 )
 from .exceptions import (
     CapabilityDisabledException,
-    CheckpointAccessDeniedException,
     CheckpointIncompatibleException,
     CheckpointMetadataReadException,
     CheckpointNotFoundException,
@@ -813,8 +812,7 @@ class TrainingController:
             raise CheckpointMetadataReadException(
                 checkpoint_id=parsed_checkpoint.checkpoint_id
             ) from exc
-        if not (metadata.public or metadata.owner_name == user_id):
-            raise CheckpointAccessDeniedException(checkpoint_id=parsed_checkpoint.checkpoint_id)
+        checkpoint.require_access(user_id)
 
         # Only the destination needs a live training backend; checkpoints of a
         # training-disabled source run remain loadable.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -33,14 +34,22 @@ async def _wait_for_result(
 @pytest.mark.asyncio
 async def test_future_store_mismatches_user():
     store = FutureStore()
+    release = threading.Event()
 
     def _operation() -> types.SaveWeightsResponse:
+        release.wait(timeout=10)
         return types.SaveWeightsResponse(path="tinker://run/weights/ckpt")
 
     future = await store.enqueue(_operation, model_id="run", user_id="tester")
     with pytest.raises(UserMismatchException) as exc_info:
         await store.retrieve(future.request_id, user_id="wrong_user", timeout=1.0)
     assert "You do not have permission" in str(exc_info.value)
+    # A foreign retrieve must not poison the owner's future.
+    pending = await store.retrieve(future.request_id, user_id="tester", timeout=0.01)
+    assert isinstance(pending, TryAgainResponse)
+    release.set()
+    final = await _wait_for_result(store, future.request_id, user_id="tester")
+    assert isinstance(final, types.SaveWeightsResponse)
     await store.shutdown()
 
 

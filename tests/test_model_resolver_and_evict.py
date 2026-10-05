@@ -38,7 +38,7 @@ def test_resolve_model_immutable_lora_id(tmp_path: Path):
         ],
     )
 
-    resolved = resolve_model(record.tinker_path, app_config)
+    resolved = resolve_model(record.tinker_path, app_config, "user1")
     assert resolved.lora_id == "run1:0001"
     assert resolved.backend_model_name == "run1:0001"
 
