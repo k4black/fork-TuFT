@@ -117,6 +117,10 @@ curl https://<your-workspace>--tuft-yoda-tuftserver-serve.modal.run/api/v1/healt
 # {"status":"ok"}
 ```
 
+`/api/v1/healthz` is liveness only. For readiness use `/api/v1/readyz`: it returns 503 with the
+failed models when a sampling or training actor has died. The socket opens only after vLLM
+init, so give a probe a long startup period.
+
 **Deploy modes.** `--foreground` (used here) wraps `modal serve` — convenient for an
 interactive run; `Ctrl-C` stops it. Omit it for a **detached** deploy (`modal deploy`) that
 keeps running until you `--down` it:

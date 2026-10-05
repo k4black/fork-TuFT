@@ -276,6 +276,9 @@ on the public internet.)</p>
 </span><span id="line-2"><span class="c1"># {"status":"ok"}</span>
 </span></code></pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">/api/v1/healthz</span></code> is liveness only. For readiness use <code class="docutils literal notranslate"><span class="pre">/api/v1/readyz</span></code>: it returns 503 with the
+failed models when a sampling or training actor has died. The socket opens only after vLLM
+init, so give a probe a long startup period.</p>
 <p>The training script <a class="reference external" href="https://github.com/agentscope-ai/TuFT/tree/main/examples/personality_sft/train.py"><code class="docutils literal notranslate"><span class="pre">examples/personality_sft/train.py</span></code></a>
 is a <strong>client</strong> that drives the loop over HTTP via the Tinker SDK — it needs only CPU-side
 dependencies:</p>
