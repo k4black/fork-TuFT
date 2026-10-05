@@ -354,6 +354,9 @@ class AppConfig(BaseModel):
     authorized_users: dict[str, str] = Field(default_factory=dict)
     persistence: PersistenceConfig = Field(default_factory=PersistenceConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    # Finish a session after this long without a heartbeat and release its
+    # training runs. 0 disables the reaper and the expired-future sweep.
+    session_heartbeat_ttl_minutes: float = 30.0
 
     def ensure_directories(self) -> None:
         if self.checkpoint_dir is not None:

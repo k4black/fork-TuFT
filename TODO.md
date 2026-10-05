@@ -117,9 +117,11 @@ Source: codebase audit + ecosystem research (tinker SDK 0.32.0, cookbook needs >
   `sessions/{id}/finish` comes with E3.
 - [ ] **E2: Tenant isolation** — OAI `resolve_model` gets the caller and applies owner/public checks,
   no silent base-model fallback on a missing adapter, `retrieve` by a non-owner must not mutate the future.
-- [ ] **E3: Resource release** — reap runs on heartbeat expiry / `finish` (free slot, keep checkpoints),
-  evict retrieved futures.
-- [ ] **E4: Durable checkpoints** — runs survive restart without Redis, archive URL downloadable over HTTP.
+- [x] **E3: Resource release** — `POST /sessions/{id}/finish` and a heartbeat-TTL sweep
+  (`session_heartbeat_ttl_minutes`, 30) release the session's runs (free slot, keep checkpoints, 410 on
+  heartbeat); the same sweep drops completed futures older than `future_ttl_seconds` (now 1 h).
+- [x] **E4: Durable checkpoints** — checkpoints resolve from disk after a restart without Redis
+  (load, delete, publish, weights_info, archive); the archive route redirects to a signed HTTP tar download.
 - [ ] **E5: Readiness + compat matrix** — `/readyz` that pings backends; committed per-method SDK
   compatibility table enforced by a CPU test.
 

@@ -159,7 +159,7 @@ def test_training_and_sampling_round_trip(server_endpoint: str) -> None:
         archive = rest_client.get_checkpoint_archive_url(model_id, "checkpoint-test").result(
             timeout=CPU_TEST_TIMEOUT
         )
-        assert archive.url.startswith("file:")
+        assert archive.url.startswith("http")
 
         # create sampling client from saved checkpoint
         sampling_client = service_client.create_sampling_client(model_path=sampler_response.path)

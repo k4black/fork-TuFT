@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
+import io
 import logging
+import secrets
+import tarfile
+import time
 from contextlib import asynccontextmanager
-from datetime import timezone
+from email.utils import formatdate
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 from tinker import types
 
 from .auth import User
+from .checkpoints import read_adapter_files
 from .compat import (
     PROTO_PAYLOAD_TYPES,
     RequestTooLargeError,
@@ -76,6 +83,22 @@ def _normalize_checkpoint_id(raw: str) -> str:
     return remainder
 
 
+def _archive_signature(key: bytes, model_id: str, checkpoint_id: str, exp: int) -> str:
+    return hmac.new(key, f"{model_id}/{checkpoint_id}/{exp}".encode(), "sha256").hexdigest()
+
+
+def _build_archive(adapter_path: Path) -> bytes:
+    """Tar the adapter the way the tinker CLI expects: files at the root plus a marker."""
+    files = read_adapter_files(adapter_path) | {"checkpoint_complete": b""}
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
 def _get_state(request: Request) -> ServerState:
     state = getattr(request.app.state, "server_state", None)
     if state is None:
@@ -131,6 +154,13 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.server_state = ServerState(resolved_config)
+    # Signs archive download URLs; a restart invalidates outstanding URLs.
+    app.state.archive_key = secrets.token_bytes(32)
+
+    # Routes without their own try/except surface TuFT errors with their status, not 500.
+    @app.exception_handler(TuFTException)
+    async def _tuft_exception_handler(_: Request, exc: TuFTException) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     # Mount OpenAI-compatible API router
     oai_router = create_oai_router()
@@ -175,8 +205,21 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> types.SessionHeartbeatResponse:
+        # The SDK stops heartbeating on 410 (session finished).
         state.heartbeat(request.session_id, user_id=user.user_id)
         return types.SessionHeartbeatResponse()
+
+    @app.post(
+        "/api/v1/sessions/{session_id}/finish",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def finish_session(
+        session_id: str,
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> None:
+        # The SDK body ({"reason": ..., "detail": ...}) is not stored; finish is idempotent.
+        await state.finish_session(session_id, user_id=user.user_id)
 
     @app.post(
         "/api/v1/create_sampling_session",
@@ -754,24 +797,45 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         status_code=status.HTTP_302_FOUND,
     )
     async def checkpoint_archive(
+        request: Request,
         model_id: str,
         checkpoint_path: str,
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> Response:
-        archive = state.build_archive_url(
-            model_id,
-            user_id=user.user_id,
-            checkpoint_id=_normalize_checkpoint_id(checkpoint_path),
+        checkpoint_id = _normalize_checkpoint_id(checkpoint_path)
+        state.get_checkpoint(model_id, checkpoint_id, user.user_id)
+        exp = int(time.time()) + 900
+        sig = _archive_signature(request.app.state.archive_key, model_id, checkpoint_id, exp)
+        url = request.url_for(
+            "download_checkpoint_archive", model_id=model_id, checkpoint_id=checkpoint_id
         )
-        expires = archive.expires.astimezone(timezone.utc)
         return Response(
             status_code=status.HTTP_302_FOUND,
             headers={
-                "Location": archive.url,
-                "Expires": expires.strftime("%a, %d %b %Y %H:%M:%S GMT"),
+                "Location": f"{url}?exp={exp}&sig={sig}",
+                "Expires": formatdate(exp, usegmt=True),
             },
         )
+
+    # No API key: the SDK and cookbook download the Location with a bare GET.
+    @app.get("/api/v1/archives/{model_id}/{checkpoint_id}")
+    async def download_checkpoint_archive(
+        request: Request,
+        model_id: str,
+        checkpoint_id: str,
+        exp: int,
+        sig: str,
+        state: ServerState = Depends(_get_state),
+    ) -> Response:
+        expected = _archive_signature(request.app.state.archive_key, model_id, checkpoint_id, exp)
+        if exp < time.time() or not hmac.compare_digest(sig, expected):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid URL")
+        checkpoint = state.get_checkpoint(model_id, checkpoint_id, user_id=None)
+        # ponytail: whole adapter held in memory; stream via NamedTemporaryFile
+        # + FileResponse if adapters reach GBs.
+        content = await asyncio.to_thread(_build_archive, checkpoint.adapter_path)
+        return Response(content, media_type="application/x-tar")
 
     @app.get(
         "/api/v1/checkpoints",
@@ -888,8 +952,12 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
 
     for route in app.routes:
         path = getattr(route, "path", None) or ""
-        # Skip healthz and OAI routes (OAI routes use their own auth via _get_user_oai)
-        if path == "/api/v1/healthz" or path.startswith("/oai/"):
+        # Skip healthz, OAI routes (own auth via _get_user_oai) and signed archive URLs
+        if (
+            path == "/api/v1/healthz"
+            or path.startswith("/oai/")
+            or path.startswith("/api/v1/archives/")
+        ):
             continue
         if hasattr(route, "dependencies"):
             require_user_dependency(route)
