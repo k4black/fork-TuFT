@@ -362,16 +362,12 @@ class ServerState:
         )
 
     def get_weights_info(self, tinker_path: str, user_id: str) -> types.WeightsInfoResponse:
-        parsed = types.ParsedCheckpointTinkerPath.from_tinker_path(tinker_path)
-        return self.training.get_weights_info(parsed.training_run_id, user_id)
+        return self.training.get_weights_info(tinker_path, user_id)
 
-    def build_archive_url(
-        self,
-        model_id: str,
-        user_id: str,
-        checkpoint_id: str,
-    ) -> types.CheckpointArchiveUrlResponse:
-        return self.training.build_archive_url(model_id, user_id, checkpoint_id)
+    def get_checkpoint(
+        self, model_id: str, checkpoint_id: str, user_id: str | None
+    ) -> CheckpointRecord:
+        return self.training.get_checkpoint(model_id, checkpoint_id, user_id)
 
     def list_training_runs(
         self, *, user_id: str, limit: int | None = None, offset: int = 0
