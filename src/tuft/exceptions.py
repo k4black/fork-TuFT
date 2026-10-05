@@ -212,6 +212,15 @@ class SessionNotFoundException(SessionException):
         self.session_id = session_id
 
 
+class SessionFinishedException(SessionException):
+    """Session was finished by the client or by heartbeat expiry."""
+
+    def __init__(self, session_id: str):
+        detail = f"Session {session_id} is finished."
+        super().__init__(status_code=410, detail=detail)
+        self.session_id = session_id
+
+
 class UserMismatchException(AuthenticationException):
     """User ID does not match the owner of the resource.
     Do not expose user IDs in the detail message for security reasons.

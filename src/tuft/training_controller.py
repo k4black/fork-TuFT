@@ -92,6 +92,8 @@ class TrainingRunRecord(BaseModel):
     next_training_checkpoint: int = 1
     next_sampler_checkpoint: int = 1
     corrupted: bool = False
+    # Adapter freed on session finish, heartbeat expiry or unload; checkpoints stay.
+    released: bool = False
     next_seq_id: int = 1
     # A failed slot may be retried or explicitly abandoned by sending its successor.
     failed_seq_id: int | None = None
@@ -157,7 +159,6 @@ class TrainingController:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.training_backends = self._create_backends(config.supported_models)
-        # TODO: add a mechanism to manage training_runs
         self.training_runs: Dict[str, TrainingRunRecord] = {}
         self._restore_from_redis()
 
@@ -369,14 +370,6 @@ class TrainingController:
             ]
         )
 
-    def _delete_training_run(self, model_id: str) -> None:
-        if not is_persistence_enabled():
-            return
-        store = get_redis_store()
-        store.delete(self._build_key(model_id))
-        store.delete_pattern(self._build_checkpoint_key(model_id, "*"))
-        store.delete_pattern(self._build_sampler_checkpoint_key(model_id, "*"))
-
     def _delete_checkpoint_record(self, model_id: str, checkpoint_id: str) -> None:
         if not is_persistence_enabled():
             return
@@ -394,6 +387,8 @@ class TrainingController:
         operation: Callable[[], Awaitable[T]],
     ) -> T:
         async with record._execution_lock:
+            # The run may have been released while this operation waited.
+            self._require_not_released(record)
             loop = asyncio.get_running_loop()
             if seq_id is not None:
                 expected = record.next_seq_id
@@ -491,7 +486,16 @@ class TrainingController:
         return record
 
     @staticmethod
-    def _require_resumable_run(record: TrainingRunRecord) -> None:
+    def _require_not_released(record: TrainingRunRecord) -> None:
+        if record.released:
+            raise InvalidRequestException(
+                f"Training run {record.training_run_id} was released (session finished or "
+                "heartbeat expired). Create a new run and load_state from its checkpoint."
+            )
+
+    @classmethod
+    def _require_resumable_run(cls, record: TrainingRunRecord) -> None:
+        cls._require_not_released(record)
         if record.has_legacy_lora_state:
             raise InvalidRequestException(
                 f"Training run {record.training_run_id} does not record its complete effective "
@@ -603,21 +607,26 @@ class TrainingController:
             return await self._with_sequence_guard(record, seq_id, _operation)
 
     async def unload_model(self, model_id: str, user_id: str) -> None:
-        # TODO: Ensure that all created training runs can be unloaded to reduce
-        # GPU memory usage.
         if model_id not in self.training_runs:
             raise UnknownModelException(model_name=model_id)
-        record = self.training_runs[model_id]
-        if record.model_owner != user_id:
+        if self.training_runs[model_id].model_owner != user_id:
             raise UserMismatchException()
-        base_model = record.base_model
-        if record.backend is not None:
-            await record.backend.remove_adapter(model_id)
-        del self.training_runs[model_id]
-        self._delete_training_run(model_id)
+        await self.release_run(model_id)
 
-        # Update metrics
-        get_metrics().training_models_active.add(-1, {"base_model": base_model})
+    async def release_run(self, model_id: str) -> None:
+        """Free the run's adapter and optimizer state; keep the record and checkpoints."""
+        record = self.training_runs[model_id]
+        # Wait for an in-flight operation instead of cutting it.
+        async with record._execution_lock:
+            if record.released:
+                return
+            if record.backend is not None:
+                await record.backend.remove_adapter(model_id)
+            record.released = True
+            await asyncio.get_running_loop().run_in_executor(
+                None, self._save_training_run, model_id
+            )
+        get_metrics().training_models_active.add(-1, {"base_model": record.base_model})
 
     def list_training_runs(
         self, *, user_id: str, limit: int | None = None, offset: int = 0

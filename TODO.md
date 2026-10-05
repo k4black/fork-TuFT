@@ -116,8 +116,9 @@ Source: codebase audit + ecosystem research (tinker SDK 0.32.0, cookbook needs >
   `topk_sample_logprobs`, `target_prompt_logprobs`, `sessions/{id}/finish`; CI matrix adds 0.32.
 - [ ] **E2: Tenant isolation** — OAI `resolve_model` gets the caller and applies owner/public checks,
   no silent base-model fallback on a missing adapter, `retrieve` by a non-owner must not mutate the future.
-- [ ] **E3: Resource release** — reap runs on heartbeat expiry / `finish` (free slot, keep checkpoints),
-  evict retrieved futures.
+- [x] **E3: Resource release** — `POST /sessions/{id}/finish` and a heartbeat-TTL sweep
+  (`session_heartbeat_ttl_minutes`, 30) release the session's runs (free slot, keep checkpoints, 410 on
+  heartbeat); the same sweep drops completed futures older than `future_ttl_seconds` (now 1 h).
 - [x] **E4: Durable checkpoints** — checkpoints resolve from disk after a restart without Redis
   (load, delete, publish, weights_info, archive); the archive route redirects to a signed HTTP tar download.
 - [ ] **E5: Readiness + compat matrix** — `/readyz` that pings backends; committed per-method SDK

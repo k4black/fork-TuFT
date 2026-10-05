@@ -184,6 +184,16 @@ authorized_users:
   tml-devkey: local-user
 
 # =============================================================================
+# Session Lifecycle
+# =============================================================================
+# Finish a session after this many minutes without a client heartbeat (the SDK
+# sends one every 10 s). Finishing frees the session's training run adapters and
+# FSDP slots; checkpoints stay loadable. The same sweep drops completed futures
+# older than persistence.future_ttl_seconds. 0 disables both.
+# Default: 30
+session_heartbeat_ttl_minutes: 30
+
+# =============================================================================
 # Persistence Configuration
 # =============================================================================
 # Configure state persistence for recovery after server restart.
@@ -209,8 +219,8 @@ persistence:
   # TTL (Time-To-Live) for future records in seconds.
   # Futures are short-lived async operation results that expire after this duration.
   # Set to null for no expiry (not recommended for production).
-  # Default: 86400 (1 day)
-  # future_ttl_seconds: 86400
+  # Default: 3600 (1 hour). The server also drops finished futures from memory after this TTL.
+  # future_ttl_seconds: 3600
 
   # Fields to validate on server restart for config consistency.
   # For detailed documentation on available fields and config validation,

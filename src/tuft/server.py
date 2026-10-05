@@ -205,8 +205,21 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> types.SessionHeartbeatResponse:
+        # The SDK stops heartbeating on 410 (session finished).
         state.heartbeat(request.session_id, user_id=user.user_id)
         return types.SessionHeartbeatResponse()
+
+    @app.post(
+        "/api/v1/sessions/{session_id}/finish",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def finish_session(
+        session_id: str,
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> None:
+        # The SDK body ({"reason": ..., "detail": ...}) is not stored; finish is idempotent.
+        await state.finish_session(session_id, user_id=user.user_id)
 
     @app.post(
         "/api/v1/create_sampling_session",

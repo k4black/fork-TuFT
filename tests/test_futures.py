@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from datetime import timedelta
 
 import pytest
 from tinker import types
@@ -10,6 +11,7 @@ from tinker.types.try_again_response import TryAgainResponse
 
 from tuft.exceptions import (
     FutureCancelledException,
+    FutureNotFoundException,
     ServerException,
     UnknownModelException,
     UserMismatchException,
@@ -144,4 +146,26 @@ async def test_mark_pending_sample_futures_failed():
     # It should NOT be a RequestFailedResponse from our mark call
     assert isinstance(training_result, TryAgainResponse)
 
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evict_expired_keeps_pending():
+    store = FutureStore()
+    release = threading.Event()
+    ready = await store.create_ready_future(
+        types.SaveWeightsResponse(path="tinker://run/weights/ckpt"),
+        model_id="run",
+        user_id="tester",
+    )
+    pending = await store.enqueue(release.wait, model_id="run", user_id="tester")
+    for request_id in (ready.request_id, pending.request_id):
+        store._records[request_id].created_at -= timedelta(hours=2)
+
+    await store.evict_expired(3600)
+
+    with pytest.raises(FutureNotFoundException):
+        await store.retrieve(ready.request_id, user_id="tester", timeout=0.1)
+    assert pending.request_id in store._records
+    release.set()
     await store.shutdown()

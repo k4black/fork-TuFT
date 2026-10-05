@@ -61,7 +61,7 @@ class PersistenceMode(str, Enum):
 
 
 # Default TTL values in seconds
-DEFAULT_FUTURE_TTL_SECONDS = 24 * 3600  # 1 day for future records (short-lived)
+DEFAULT_FUTURE_TTL_SECONDS = 3600  # 1 hour for future records (short-lived)
 
 
 class ConfigCheckField:

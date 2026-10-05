@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -426,8 +426,14 @@ class SamplingController:
             return response
 
     async def evict_model(self, model_id: str, user_id: str) -> None:
+        await self._evict(lambda r: r.model_id == model_id and r.user_id == user_id)
+
+    async def evict_session(self, session_id: str) -> None:
+        await self._evict(lambda r: r.session_id == session_id)
+
+    async def _evict(self, match: Callable[[SamplingSessionRecord], bool]) -> None:
         for sampling_id, record in list(self.sampling_sessions.items()):
-            if record.model_id == model_id and record.user_id == user_id:
+            if match(record):
                 base_model = record.base_model
                 if record.model_path and base_model in self._base_backends:
                     try:
