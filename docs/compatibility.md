@@ -1,6 +1,6 @@
 # Tinker SDK compatibility
 
-One row per public method of the Tinker SDK clients (checked against `tinker==0.28.1`).
+One row per public method of the Tinker SDK clients (checked against `tinker==0.32.0`; CI also runs it on 0.25.0).
 An `_async` twin has the same status as its sync method.
 `tests/test_compat_matrix.py` fails when the SDK gains a method without a row here, or when a
 row's route disagrees with the routes the server registers.
