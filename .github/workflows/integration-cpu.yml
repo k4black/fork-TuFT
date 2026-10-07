@@ -112,7 +112,7 @@ jobs:
       - name: dpo
         timeout-minutes: 15
         if: ${{ !cancelled() }}
-        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=256
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=32
 
       - name: Server log
         if: always()
