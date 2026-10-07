@@ -31,12 +31,12 @@ guess_number) run unchanged on the current SDK in the CPU integration workflow.
   `uv.lock`; the file is gitignored, so fresh `uv sync` already gets 0.32);
   `weights_info` returns the `train_*` flags; unnamed sampler saves named `sampler-NNNN`; the HF
   backend rejects ranks above `max_lora_rank`.
-- [ ] **Checkpoint TTL and disk GC** — honour `ttl_seconds` on saves and
+- [x] **Checkpoint TTL and disk GC** — honour `ttl_seconds` on saves and
   `PUT checkpoints/{id}/ttl`; `expires_at` in `metadata.json`; a sweep removes expired checkpoints;
   unnamed sampler saves keep the newest `sampler_checkpoints_keep` per live run and go on release.
-- [ ] **`user_metadata` on saves** — stored and returned in checkpoint records.
-- [ ] **Listings after a restart** — checkpoint and run listings read from disk without Redis.
-- [ ] **`copy_weights` and adapter import** — hard-linked copy into a new non-trainable run;
+- [x] **`user_metadata` on saves** — stored and returned in checkpoint records.
+- [x] **Listings after a restart** — checkpoint and run listings read from disk without Redis.
+- [x] **`copy_weights` and adapter import** — hard-linked copy into a new non-trainable run;
   `source_path` also accepts `hf://<repo>` (request token only) and `s3://` under configured
   prefixes; safetensors only, validated against the base model (config and tensor shapes); imports
   train on both backends.

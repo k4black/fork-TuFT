@@ -415,3 +415,53 @@ def test_terminal_backend_failure_surfaces_without_hanging(sdk_server: str) -> N
         assert isinstance(recovered, types.ForwardBackwardOutput)
     finally:
         service_client.holder.close()
+
+
+@pytest.mark.integration
+def test_checkpoint_ttl_round_trip(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        training_client = service_client.create_lora_training_client(
+            base_model=BASE_MODEL, rank=8, train_unembed=False
+        )
+        path = (
+            training_client.save_state("ttl-e2e", ttl_seconds=7200)
+            .result(timeout=CPU_TEST_TIMEOUT)
+            .path
+        )
+        rest_client = service_client.create_rest_client()
+
+        def expires_at():
+            [checkpoint] = (
+                rest_client.list_checkpoints(training_client.model_id)
+                .result(timeout=CPU_TEST_TIMEOUT)
+                .checkpoints
+            )
+            return checkpoint.expires_at
+
+        assert expires_at() is not None
+        rest_client.set_checkpoint_ttl_from_tinker_path(path, None).result(timeout=CPU_TEST_TIMEOUT)
+        assert expires_at() is None
+        rest_client.set_checkpoint_ttl_from_tinker_path(path, 3600).result(timeout=CPU_TEST_TIMEOUT)
+        assert expires_at() is not None
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not hasattr(ServiceClient, "copy_weights"), reason="copy_weights needs tinker 0.32+"
+)
+def test_copy_weights_then_resume(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        training_client = service_client.create_lora_training_client(
+            base_model=BASE_MODEL, rank=8, train_unembed=False
+        )
+        path = training_client.save_state("copy-e2e").result(timeout=CPU_TEST_TIMEOUT).path
+        copied = service_client.copy_weights(path).result(timeout=CPU_TEST_TIMEOUT)
+        assert copied.startswith("tinker://") and copied != path
+        resumed = service_client.create_training_client_from_state_with_optimizer(copied)
+        assert resumed.model_id != training_client.model_id
+    finally:
+        service_client.holder.close()

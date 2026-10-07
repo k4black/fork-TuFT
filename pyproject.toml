@@ -48,6 +48,8 @@ dependencies = [
     "peft==0.20.0",
     # Used by transformers device_map="auto" in the HF backend.
     "accelerate>=1.0.0",
+    # copy_weights imports adapters from s3:// (default credential chain).
+    "boto3>=1.34.0",
     # TuFT integrates with vLLM directly (src/tuft/backends/vllm_engine.py);
     # the in-process OpenAI API server shim and the prompt-logprobs worker
     # patch are validated against this exact release. Before changing the pin,

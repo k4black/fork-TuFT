@@ -72,6 +72,19 @@ class WeightsInfoBody(BaseModel):
     tinker_path: str
 
 
+class TtlBody(BaseModel):
+    ttl_seconds: int | None = None
+
+
+class CopyWeightsBody(BaseModel):
+    # Local model: tinker 0.25 has no CopyWeightsRequest. model_seq_id is unused.
+    session_id: str
+    model_seq_id: int | None = None
+    source_path: str
+    ttl_seconds: int | None = None
+    weights_access_token: str | None = None
+
+
 def _normalize_checkpoint_id(raw: str) -> str:
     if "/" not in raw:
         return raw
@@ -514,6 +527,8 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
                 request.path,
                 "training",
                 seq_id=request.seq_id,
+                ttl_seconds=request.ttl_seconds,
+                user_metadata=getattr(request, "user_metadata", None),
             )
             return types.SaveWeightsResponse(path=checkpoint.tinker_checkpoint.tinker_path)
 
@@ -564,6 +579,8 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
                 request.path,
                 "sampler",
                 seq_id=request.seq_id,
+                ttl_seconds=request.ttl_seconds,
+                user_metadata=getattr(request, "user_metadata", None),
             )
 
             # If sampling_session_seq_id is provided, create a sampling session directly
@@ -640,6 +657,21 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
                 "optimizer": request.optimizer,
             },
         )
+
+    @app.post("/api/v1/copy_weights")
+    async def copy_weights(
+        body: CopyWeightsBody,
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> dict[str, str]:
+        checkpoint = await state.copy_weights(
+            body.session_id,
+            user.user_id,
+            body.source_path,
+            body.ttl_seconds,
+            body.weights_access_token,
+        )
+        return {"tinker_path": checkpoint.tinker_path}
 
     @app.post(
         "/api/v1/asample",
@@ -819,6 +851,21 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
             user.user_id,
             _normalize_checkpoint_id(checkpoint_path),
             public=False,
+        )
+
+    @app.put(
+        "/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_path:path}/ttl",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def set_checkpoint_ttl(
+        model_id: str,
+        checkpoint_path: str,
+        body: TtlBody,
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> None:
+        state.set_checkpoint_ttl(
+            model_id, user.user_id, _normalize_checkpoint_id(checkpoint_path), body.ttl_seconds
         )
 
     @app.get(

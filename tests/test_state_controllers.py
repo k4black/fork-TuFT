@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -1673,3 +1674,240 @@ async def test_restore_releases_run_of_finished_session(request, tmp_path, monke
 
     assert state.training.training_runs[run_id].released is True
     assert created == []
+
+
+async def _sampler_save(state: ServerState, run_id: str, name: str | None = None, **kwargs):
+    return await state.save_checkpoint(
+        run_id, user_id="tester", name=name, checkpoint_type="sampler", **kwargs
+    )
+
+
+async def _hold(state: ServerState, session_id: str, checkpoint) -> str:
+    return await state.create_sampling_session(
+        session_id=session_id,
+        base_model=None,
+        model_path=checkpoint.tinker_path,
+        user_id="tester",
+        session_seq_id=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_expires_checkpoints_unless_held(request, tmp_path, monkeypatch) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    run_id = await _create_run(state, session_id)
+    short = await _sampler_save(state, run_id, "short", ttl_seconds=3600)
+    long = await _sampler_save(state, run_id, "long", ttl_seconds=7200)
+    held = await _sampler_save(state, run_id, "held", ttl_seconds=3600)
+    await _hold(state, session_id, held)
+    assert short.expires_at is not None
+    later = short.expires_at + timedelta(minutes=30)
+    monkeypatch.setattr("tuft.state._now", lambda: later)
+
+    await state._sweep_checkpoints()
+
+    assert not short.path.exists()
+    assert long.path.exists() and held.path.exists()
+    assert {c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")} == {"long", "held"}
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_newest_unnamed_sampler_saves(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    run_id = await _create_run(state, session_id)
+    saves = [await _sampler_save(state, run_id) for _ in range(4)]
+    named = await _sampler_save(state, run_id, "named")
+    old_sampler = await _hold(state, session_id, saves[0])
+    assert [s.transient for s in saves] == [True] * 4 and named.transient is False
+
+    await state._sweep_checkpoints()
+
+    assert [s.path.exists() for s in saves] == [False, False, True, True]
+    assert old_sampler not in state.sampling.sampling_sessions
+    await state.training.release_run(run_id)
+    await state._sweep_checkpoints()
+    assert not any(s.path.exists() for s in saves)
+    assert [c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")] == ["named"]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_ttl_and_user_metadata(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    with pytest.raises(InvalidRequestException, match="ttl_seconds"):
+        await _sampler_save(state, run_id, "bad", ttl_seconds=60)
+    ckpt = await _sampler_save(state, run_id, "c", user_metadata={"step": "7"})
+    assert ckpt.metadata.expires_at is None
+
+    state.set_checkpoint_ttl(run_id, "tester", "c", 3600)
+    [listed] = state.list_checkpoints(run_id, "tester")
+    assert listed.expires_at is not None and ckpt.metadata.user_metadata == {"step": "7"}
+    assert ckpt.metadata.expires_at == listed.expires_at.isoformat()
+    state.set_checkpoint_ttl(run_id, "tester", "c", None)
+    assert ckpt.metadata.expires_at is None
+    with pytest.raises(UserMismatchException):
+        state.set_checkpoint_ttl(run_id, "other", "c", None)
+
+
+@pytest.mark.asyncio
+async def test_listings_read_disk_without_run_record(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    await state.save_checkpoint(run_id, user_id="tester", name="t", checkpoint_type="training")
+    await _sampler_save(state, run_id, "s")
+    state.training.training_runs.clear()
+
+    assert {c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")} == {"t", "s"}
+    run = state.get_training_run_view(run_id, "tester")
+    assert run.base_model == "Qwen/Qwen3-0.6B" and run.lora_rank == 4
+    assert [c.checkpoint_id for c in state.list_user_checkpoints("tester")] == ["t"]
+    [listed_run] = state.list_training_runs(user_id="tester").training_runs
+    assert listed_run.training_run_id == run_id
+    with pytest.raises(UnknownModelException):
+        state.list_checkpoints(run_id, "other")
+    with pytest.raises(UnknownModelException):
+        state.list_checkpoints("*", "tester")
+
+
+@pytest.mark.asyncio
+async def test_disk_listing_skips_other_owners_checkpoints(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    mine = await _sampler_save(state, run_id, "mine")
+    other_run = await state.create_model(
+        _create_session(state, "other"),
+        model_owner="other",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=types.LoraConfig(rank=4),
+        user_metadata=None,
+    )
+    theirs = await state.save_checkpoint(
+        other_run.training_run_id, user_id="other", name="theirs", checkpoint_type="sampler"
+    )
+    shutil.copytree(theirs.path, mine.path.parent / "theirs")
+    state.training.training_runs.clear()
+
+    assert [c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")] == ["mine"]
+
+
+@pytest.mark.asyncio
+async def test_save_rejects_names_outside_the_run(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_bytes(b"x")
+
+    for name in ["../outside", str(outside), "a/b", ".."]:
+        with pytest.raises(InvalidRequestException, match="one path segment"):
+            await _sampler_save(state, run_id, name)
+    assert (outside / "keep").exists()
+
+
+@pytest.mark.asyncio
+async def test_sweep_rechecks_before_delete(request, tmp_path, monkeypatch) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    ckpt = await _sampler_save(state, run_id, "c", ttl_seconds=3600)
+    [snapshot] = state.training.disk_checkpoints("*/*/metadata.json")
+    state.set_checkpoint_ttl(run_id, "tester", "c", None)
+    assert snapshot.expires_at is not None
+    later = snapshot.expires_at + timedelta(hours=2)
+    monkeypatch.setattr("tuft.state._now", lambda: later)
+
+    await state._drop_checkpoint(snapshot, expired=True)
+
+    assert ckpt.path.exists()
+
+
+@pytest.mark.asyncio
+async def test_resave_replaces_checkpoint_directory(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    ckpt = await _sampler_save(state, run_id, "same")
+    (ckpt.path / "stale.bin").write_bytes(b"x")
+
+    await _sampler_save(state, run_id, "same")
+
+    assert not (ckpt.path / "stale.bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_copy_weights_links_tinker_checkpoint(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    run_id = await _create_run(state, session_id)
+    source = await state.save_checkpoint(
+        run_id, user_id="tester", name="t", checkpoint_type="training"
+    )
+    weights = source.adapter_path / "adapter_model.safetensors"
+    weights.parent.mkdir(parents=True, exist_ok=True)
+    weights.write_bytes(b"w")
+    source_metadata = source.metadata_path.read_text()
+
+    copy = await state.copy_weights(session_id, "tester", source.tinker_path, 3600, None)
+
+    assert (copy.adapter_path / weights.name).stat().st_ino == weights.stat().st_ino
+    assert source.metadata_path.read_text() == source_metadata
+    assert copy.checkpoint_type == "training" and copy.expires_at is not None
+    assert state.training.training_runs[copy.training_run_id].released is True
+    new_run_id = await _create_run(state, session_id)
+    await state.load_checkpoint(new_run_id, "tester", copy.tinker_path, optimizer=True)
+    with pytest.raises(CheckpointAccessDeniedException):
+        await state.copy_weights(
+            _create_session(state, "other"), "other", source.tinker_path, None, None
+        )
+
+
+@pytest.mark.asyncio
+async def test_load_sampler_checkpoint_with_optimizer_is_rejected(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    sampler = await _sampler_save(state, run_id, "s")
+    with pytest.raises(InvalidRequestException, match="no optimizer state"):
+        await state.load_checkpoint(run_id, "tester", sampler.tinker_path, optimizer=True)
+
+
+@pytest.mark.asyncio
+async def test_copy_weights_imports_hf_adapter(request, tmp_path, monkeypatch) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    targets = state.training._effective_lora_targets(
+        "Qwen/Qwen3-0.6B", types.LoraConfig(rank=4, train_mlp=False)
+    )
+    adapter_config = {
+        "base_model_name_or_path": "Qwen/Qwen3-0.6B",
+        "r": 4,
+        "lora_alpha": 8,
+        "target_modules": targets.modules,
+    }
+
+    def fake_snapshot_download(repo, *, local_dir, **kwargs):
+        text = adapter_config.get("raw") or json.dumps(adapter_config)
+        Path(local_dir, "adapter_config.json").write_text(text)
+        Path(local_dir, "adapter_model.safetensors").write_bytes(b"w")
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr("tuft.weights_import.check_shapes", lambda *args: None)
+
+    copy = await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+
+    metadata = copy.metadata
+    assert (copy.checkpoint_type, metadata.lora_rank, metadata.lora_alpha) == ("sampler", 4, 8)
+    assert (metadata.train_attn, metadata.train_mlp) == (True, False)
+    assert metadata.target_modules == targets.modules
+    adapter_config["lora_alpha"] = 4
+    with pytest.raises(CheckpointIncompatibleException):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    adapter_config.update(lora_alpha=8, base_model_name_or_path="other/model")
+    with pytest.raises(InvalidRequestException, match="matches no configured"):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    adapter_config.update(base_model_name_or_path="Qwen/Qwen3-0.6B", r="4")
+    with pytest.raises(InvalidRequestException, match="must be an integer"):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    adapter_config["raw"] = "{not json"
+    with pytest.raises(InvalidRequestException, match="Unreadable adapter_config"):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    assert [p.name for p in tmp_path.iterdir() if (p / "import").exists()] == [copy.training_run_id]

@@ -196,6 +196,20 @@ authorized_users:
 # Default: 30
 session_heartbeat_ttl_minutes: 30
 
+# Unnamed sampler saves (save_weights_and_get_sampling_client) kept per live
+# run. A 60 s sweep deletes older ones and evicts their sampling clients (404),
+# and deletes all of them once the run is released. Async RL with
+# max_steps_off_policy=k needs at least k + 1. The same sweep deletes
+# checkpoints past their ttl_seconds.
+# Default: 2
+sampler_checkpoints_keep: 2
+
+# copy_weights reads s3:// sources only under these prefixes, with the server's
+# default boto3 credential chain. Empty disables s3:// imports.
+# Example: ["s3://my-bucket/adapters/"]
+# Default: []
+import_s3_prefixes: []
+
 # =============================================================================
 # Persistence Configuration
 # =============================================================================

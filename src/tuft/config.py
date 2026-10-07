@@ -360,6 +360,11 @@ class AppConfig(BaseModel):
     # Finish a session after this long without a heartbeat and release its
     # training runs. 0 disables the reaper and the expired-future sweep.
     session_heartbeat_ttl_minutes: float = 30.0
+    # Unnamed sampler saves kept per live run; async RL with max_steps_off_policy=k
+    # needs k + 1. Older ones are deleted and their sampling clients get 404.
+    sampler_checkpoints_keep: int = Field(default=2, ge=1)
+    # copy_weights accepts s3:// sources only under these prefixes (s3://bucket/key/).
+    import_s3_prefixes: list[str] = Field(default_factory=list)
 
     def ensure_directories(self) -> None:
         if self.checkpoint_dir is not None:
