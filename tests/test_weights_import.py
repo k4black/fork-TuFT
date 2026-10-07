@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -98,7 +99,8 @@ def test_check_shapes(tmp_path) -> None:
     adapter = tmp_path / "adapter"
     adapter.mkdir()
 
-    def check(tensors: dict[str, torch.Tensor]) -> None:
+    def check(tensors: dict[str, torch.Tensor], targets: tuple[str, ...] = ("q_proj",)) -> None:
+        (adapter / "adapter_config.json").write_text(json.dumps({"target_modules": targets}))
         save_file(tensors, adapter / "adapter_model.safetensors")
         weights_import.check_shapes(adapter, model_dir, rank=4)
 
@@ -116,6 +118,14 @@ def test_check_shapes(tmp_path) -> None:
         check({f"{q_proj}.lora_A.weight": torch.zeros(4, 16)})
     with pytest.raises(InvalidRequestException, match="lora_A and lora_B"):
         check({})
+    with pytest.raises(InvalidRequestException, match="every module"):
+        check(
+            {
+                f"{q_proj}.lora_A.weight": torch.zeros(4, 16),
+                f"{q_proj}.lora_B.weight": torch.zeros(16, 4),
+            },
+            targets=("q_proj", "k_proj"),
+        )
     (adapter / "adapter_model.safetensors").write_bytes(b"not safetensors")
     with pytest.raises(InvalidRequestException, match="Unreadable"):
         weights_import.check_shapes(adapter, model_dir, rank=4)

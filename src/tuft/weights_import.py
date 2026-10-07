@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from .checkpoints import read_adapter_target_modules
 from .exceptions import InvalidRequestException
 
 
@@ -121,7 +122,16 @@ def check_shapes(adapter_dir: Path, model_path: Path, rank: int) -> None:
                     f"Adapter tensor {key} has shape {shape}; the base model needs {expected}."
                 )
             pairs.setdefault(match[1], set()).add(match[2])
-    if not pairs or any(halves != {"A", "B"} for halves in pairs.values()):
+    targets = read_adapter_target_modules(adapter_dir) or []
+    # PEFT targets every Linear whose name equals a target or ends with ".<target>".
+    expected = {
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Linear)
+        and any(name == t or name.endswith(f".{t}") for t in targets)
+    }
+    if not expected or any(pairs.get(name) != {"A", "B"} for name in expected | set(pairs)):
         raise InvalidRequestException(
-            "adapter_model.safetensors must hold a lora_A and lora_B tensor per module."
+            "adapter_model.safetensors must hold a lora_A and lora_B tensor for every "
+            "module adapter_config.json targets."
         )
