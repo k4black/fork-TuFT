@@ -165,17 +165,52 @@ class ServerState:
         """Put any async initialization logic here"""
         await self.sampling.async_init()
         await self._restore_from_checkpoints()
-        if self.config.session_heartbeat_ttl_minutes > 0 and self._sweep_task is None:
+        if self._sweep_task is None:
             self._sweep_task = asyncio.create_task(self._sweep_loop())
 
     async def _sweep_loop(self) -> None:
-        """Finish sessions with stale heartbeats and drop expired futures."""
+        """Finish stale sessions, drop expired futures and checkpoints."""
+        ttl = self.config.session_heartbeat_ttl_minutes
         while True:
-            await asyncio.sleep(max(1.0, self.config.session_heartbeat_ttl_minutes * 60 / 10))
+            await asyncio.sleep(max(1.0, min(60.0, ttl * 6)) if ttl > 0 else 60.0)
             try:
-                await self._sweep_once()
+                if ttl > 0:
+                    await self._sweep_once()
+                await self._sweep_checkpoints()
             except Exception:
-                logger.exception("Session sweep failed")
+                logger.exception("Sweep failed")
+
+    async def _sweep_checkpoints(self) -> None:
+        """Delete expired checkpoints and unnamed sampler saves beyond the keep limit.
+
+        Expiry skips a checkpoint a live sampler holds. Keep-N does not: it
+        evicts the samplers of the saves it drops, so their clients get 404.
+        """
+        records = await asyncio.to_thread(self.training.disk_checkpoints, "*/*/metadata.json")
+        held = {r.model_path for r in self.sampling.sampling_sessions.values()}
+        now = _now()
+        transient: dict[str, list[CheckpointRecord]] = {}
+        for ckpt in records:
+            expired = ckpt.expires_at is not None and ckpt.expires_at <= now
+            if expired and str(ckpt.adapter_path) not in held:
+                await self._drop_checkpoint(ckpt)
+            elif ckpt.transient:
+                transient.setdefault(ckpt.training_run_id, []).append(ckpt)
+        for run_id, saves in transient.items():
+            run = self.training.training_runs.get(run_id)
+            keep = self.config.sampler_checkpoints_keep if run and not run.released else 0
+            saves.sort(key=lambda c: (c.created_at, c.checkpoint_id), reverse=True)
+            for ckpt in saves[keep:]:
+                await self.sampling._evict(lambda r, p=str(ckpt.adapter_path): r.model_path == p)
+                await self._drop_checkpoint(ckpt)
+
+    async def _drop_checkpoint(self, ckpt: CheckpointRecord) -> None:
+        try:
+            self.training.delete_checkpoint(
+                ckpt.training_run_id, ckpt.owner_name, ckpt.checkpoint_id
+            )
+        except Exception:
+            logger.exception("Failed to delete checkpoint %s", ckpt.tinker_path)
 
     async def _sweep_once(self) -> None:
         ttl = timedelta(minutes=self.config.session_heartbeat_ttl_minutes)
@@ -398,6 +433,8 @@ class ServerState:
         name: str | None,
         checkpoint_type: types.CheckpointType,
         seq_id: int | None = None,
+        ttl_seconds: int | None = None,
+        user_metadata: dict[str, str] | None = None,
     ) -> CheckpointRecord:
         current_future_id = self.future_store.get_current_future_id()
         return await self.training.save_checkpoint(
@@ -407,6 +444,8 @@ class ServerState:
             checkpoint_type=checkpoint_type,
             future_id=current_future_id,
             seq_id=seq_id,
+            ttl_seconds=ttl_seconds,
+            user_metadata=user_metadata,
         )
 
     async def load_checkpoint(
@@ -443,6 +482,11 @@ class ServerState:
             checkpoint_id=checkpoint_id,
             public=public,
         )
+
+    def set_checkpoint_ttl(
+        self, model_id: str, user_id: str, checkpoint_id: str, ttl_seconds: int | None
+    ) -> None:
+        self.training.set_checkpoint_ttl(model_id, checkpoint_id, user_id, ttl_seconds)
 
     def get_weights_info(self, tinker_path: str, user_id: str) -> types.WeightsInfoResponse:
         return self.training.get_weights_info(tinker_path, user_id)

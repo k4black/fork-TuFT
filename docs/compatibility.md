@@ -39,10 +39,10 @@ The route column names the main request. Methods that compose several requests l
 | `TrainingClient.load_state` | supported | POST /api/v1/load_weights | |
 | `TrainingClient.load_state_with_optimizer` | supported | POST /api/v1/load_weights | |
 | `TrainingClient.optim_step` | supported | POST /api/v1/optim_step | |
-| `TrainingClient.save_state` | supported | POST /api/v1/save_weights | |
-| `TrainingClient.save_weights_and_get_sampling_client` | supported | POST /api/v1/create_sampling_session | Calls `save_weights_for_sampler` first. |
+| `TrainingClient.save_state` | supported | POST /api/v1/save_weights | Stores `ttl_seconds` and `user_metadata`. A save under an existing name replaces it; `overwrite` is ignored. |
+| `TrainingClient.save_weights_and_get_sampling_client` | supported | POST /api/v1/create_sampling_session | Calls `save_weights_for_sampler` first. The server keeps the newest `sampler_checkpoints_keep` unnamed saves per live run and deletes all of them on release; older clients get 404. |
 | `TrainingClient.save_weights_external` | unsupported | POST /api/v1/save_weights_external | |
-| `TrainingClient.save_weights_for_sampler` | supported | POST /api/v1/save_weights_for_sampler | |
+| `TrainingClient.save_weights_for_sampler` | supported | POST /api/v1/save_weights_for_sampler | Stores `ttl_seconds` and `user_metadata`. |
 | `SamplingClient.compute_logprobs` | supported | POST /api/v1/asample | Samples one token with prompt logprobs. |
 | `SamplingClient.create` | supported | POST /api/v1/create_sampling_session | |
 | `SamplingClient.from_sampler_handle` | client-side | - | 0.32+; rebuilds a client from a handle string. |
@@ -68,12 +68,12 @@ The route column names the main request. Methods that compose several requests l
 | `RestClient.get_training_run` | supported | GET /api/v1/training_runs/{model_id} | |
 | `RestClient.get_training_run_by_tinker_path` | supported | GET /api/v1/training_runs/{model_id} | |
 | `RestClient.get_weights_info_by_tinker_path` | supported | POST /api/v1/weights_info | |
-| `RestClient.list_checkpoints` | supported | GET /api/v1/training_runs/{model_id}/checkpoints | |
+| `RestClient.list_checkpoints` | supported | GET /api/v1/training_runs/{model_id}/checkpoints | Reads `metadata.json` from disk when the run is not in memory (restart without Redis). |
 | `RestClient.list_sessions` | supported | GET /api/v1/sessions | |
 | `RestClient.list_training_runs` | supported | GET /api/v1/training_runs | |
 | `RestClient.list_user_checkpoints` | supported | GET /api/v1/checkpoints | |
 | `RestClient.publish_checkpoint_from_tinker_path` | supported | POST /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/publish | |
-| `RestClient.set_checkpoint_ttl_from_tinker_path` | unsupported | PUT /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/ttl | |
+| `RestClient.set_checkpoint_ttl_from_tinker_path` | supported | PUT /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/ttl | Owner only. A 60 s sweep deletes expired checkpoints; it skips one a live sampler holds. |
 | `RestClient.unpublish_checkpoint_from_tinker_path` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/publish | |
 | `RestClient.whoami` | client-side | - | Reads identity from the auth JWT. Raises against TuFT: the server disables JWT auth. |
 

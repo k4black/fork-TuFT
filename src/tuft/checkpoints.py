@@ -143,6 +143,10 @@ class CheckpointMetadata(BaseModel):
     public: bool = False
     future_id: int = 0
     seq_id: int | None = None
+    expires_at: str | None = None
+    user_metadata: dict[str, str] | None = None
+    # Unnamed sampler save: the sweep keeps only the newest per live run.
+    transient: bool = False
 
 
 class CheckpointRecord(BaseModel):
@@ -160,6 +164,9 @@ class CheckpointRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     future_id: int = 0
     seq_id: int | None = None
+    expires_at: datetime | None = None
+    user_metadata: dict[str, str] | None = None
+    transient: bool = False
 
     @field_serializer("path")
     def serialize_path(self, path: Path) -> str:
@@ -176,6 +183,8 @@ class CheckpointRecord(BaseModel):
             tinker_path=self.tinker_path,
             size_bytes=self.size_bytes,
             public=self.public,
+            user_metadata=self.user_metadata,
+            expires_at=self.expires_at,
         )
 
     @property
@@ -325,8 +334,15 @@ class CheckpointRecord(BaseModel):
     def set_visibility(self, public: bool) -> None:
         """Set the visibility of the checkpoint."""
         self.public = public
+        self._rewrite_metadata()
+
+    def set_ttl(self, expires_at: datetime | None) -> None:
+        """Set or clear (None) the expiry of the checkpoint."""
+        self.expires_at = expires_at
+        self._rewrite_metadata()
+
+    def _rewrite_metadata(self) -> None:
         metadata = self.metadata
-        metadata.public = public
         self.save_metadata(
             base_model=metadata.base_model,
             session_id=metadata.session_id,
@@ -374,6 +390,9 @@ class CheckpointRecord(BaseModel):
                 size_bytes=self.size_bytes,
                 future_id=self.future_id,
                 seq_id=self.seq_id,
+                expires_at=self.expires_at.isoformat() if self.expires_at else None,
+                user_metadata=self.user_metadata,
+                transient=self.transient,
             )
         except Exception as e:
             raise ValueError(f"Invalid checkpoint metadata: {e}") from e
@@ -410,6 +429,10 @@ class CheckpointRecord(BaseModel):
         record.created_at = datetime.fromisoformat(metadata.created_at)
         record.future_id = metadata.future_id
         record.seq_id = metadata.seq_id
+        if metadata.expires_at:
+            record.expires_at = datetime.fromisoformat(metadata.expires_at)
+        record.user_metadata = metadata.user_metadata
+        record.transient = metadata.transient
         return record
 
     def delete(self) -> None:
@@ -431,6 +454,8 @@ class CheckpointRecord(BaseModel):
         checkpoint_dir = checkpoint_root_dir / training_run_id / checkpoint_name
         if not exist_ok and checkpoint_dir.exists():
             raise FileExistsError(f"Checkpoint directory already exists: {checkpoint_dir}")
+        # A copy may hard-link these files; an in-place save would rewrite the source too.
+        shutil.rmtree(checkpoint_dir, ignore_errors=True)
         checkpoint_dir.mkdir(parents=True, exist_ok=exist_ok)
         return cls(
             checkpoint_id=checkpoint_name,

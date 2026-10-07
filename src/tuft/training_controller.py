@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from opentelemetry.trace import StatusCode
@@ -26,6 +27,7 @@ from .config import (
 from .exceptions import (
     CapabilityDisabledException,
     CheckpointIncompatibleException,
+    CheckpointMetadataReadException,
     CheckpointNotFoundException,
     InvalidRequestException,
     SequenceConflictException,
@@ -54,6 +56,17 @@ T = TypeVar("T")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _expiry(ttl_seconds: int | None) -> datetime | None:
+    """Expiry for a tinker ``ttl_seconds``: 1 hour to 10 years, None never expires."""
+    if ttl_seconds is None:
+        return None
+    if not 3600 <= ttl_seconds <= 315_360_000:
+        raise InvalidRequestException(
+            "ttl_seconds must be between 3600 (1 hour) and 315360000 (10 years)."
+        )
+    return _now() + timedelta(seconds=ttl_seconds)
 
 
 class TrainingRunRecord(BaseModel):
@@ -631,11 +644,7 @@ class TrainingController:
     def list_training_runs(
         self, *, user_id: str, limit: int | None = None, offset: int = 0
     ) -> types.TrainingRunsResponse:
-        runs = [
-            record.to_training_run()
-            for record in self.training_runs.values()
-            if record.model_owner == user_id
-        ]
+        runs = [record.to_training_run() for record in self._owned_runs(user_id)]
         runs.sort(key=lambda run: run.last_request_time, reverse=True)
         total = len(runs)
         start = min(offset, total)
@@ -645,8 +654,63 @@ class TrainingController:
         return types.TrainingRunsResponse(training_runs=paged, cursor=cursor)
 
     def get_training_run_view(self, model_id: str, user_id: str) -> types.TrainingRun:
-        record = self.get_run_record(model_id=model_id, user_id=user_id)
-        return record.to_training_run()
+        return self._listing_run(model_id, user_id).to_training_run()
+
+    def disk_checkpoints(self, pattern: str) -> list[CheckpointRecord]:
+        """Load every checkpoint whose ``<run>/<name>/metadata.json`` matches ``pattern``."""
+        # ponytail: linear glob over checkpoint_dir; index it if counts reach the thousands.
+        assert self.config.checkpoint_dir is not None
+        records = []
+        for path in self.config.checkpoint_dir.glob(pattern):
+            run_id, name = path.parent.parent.name, path.parent.name
+            with contextlib.suppress(
+                FileNotFoundError, ValueError, CheckpointMetadataReadException
+            ):
+                records.append(
+                    CheckpointRecord.from_tinker_path(
+                        f"tinker://{run_id}/weights/{name}", self.config.checkpoint_dir
+                    )
+                )
+        return records
+
+    def _disk_run(self, model_id: str) -> TrainingRunRecord | None:
+        """Rebuild a released run from its checkpoints on disk (no Redis after a restart)."""
+        checkpoints = self.disk_checkpoints(f"{model_id}/*/metadata.json")
+        if not checkpoints:
+            return None
+        metadata = checkpoints[0].metadata
+        record = TrainingRunRecord(
+            training_run_id=model_id,
+            base_model=metadata.base_model,
+            lora_rank=metadata.lora_rank or 0,
+            session_id=metadata.session_id,
+            model_owner=metadata.owner_name,
+            released=True,
+            last_request_time=max(c.created_at for c in checkpoints),
+        )
+        for c in checkpoints:
+            training = c.checkpoint_type == "training"
+            (record.checkpoints if training else record.sampler_checkpoints)[c.checkpoint_id] = c
+        return record
+
+    def _owned_runs(self, user_id: str) -> list[TrainingRunRecord]:
+        """The user's runs: in memory, plus runs only on disk."""
+        assert self.config.checkpoint_dir is not None
+        disk_runs = [
+            self._disk_run(d.name)
+            for d in self.config.checkpoint_dir.iterdir()
+            if d.is_dir() and d.name not in self.training_runs
+        ]
+        runs = [*self.training_runs.values(), *(r for r in disk_runs if r is not None)]
+        return [r for r in runs if r.model_owner == user_id]
+
+    def _listing_run(self, model_id: str, user_id: str) -> TrainingRunRecord:
+        record = self.training_runs.get(model_id) or self._disk_run(model_id)
+        if record is None:
+            raise UnknownModelException(model_name=model_id)
+        if record.model_owner != user_id:
+            raise UserMismatchException()
+        return record
 
     def get_model_info(self, model_id: str, user_id: str) -> types.GetInfoResponse:
         record = self.get_run_record(model_id=model_id, user_id=user_id)
@@ -671,8 +735,11 @@ class TrainingController:
         checkpoint_type: types.CheckpointType,
         future_id: int = 0,
         seq_id: int | None = None,
+        ttl_seconds: int | None = None,
+        user_metadata: dict[str, str] | None = None,
     ) -> CheckpointRecord:
         """Save a checkpoint for the given training run."""
+        expires_at = _expiry(ttl_seconds)
         training_run = self.get_run_record(model_id=model_id, user_id=user_id)
         # Without a live training backend a "checkpoint" would be metadata-only
         # (no weights), so a training-disabled run cannot save one.
@@ -721,6 +788,9 @@ class TrainingController:
                 )
                 checkpoint.future_id = future_id
                 checkpoint.seq_id = seq_id
+                checkpoint.expires_at = expires_at
+                checkpoint.user_metadata = user_metadata
+                checkpoint.transient = name is None and checkpoint_type == "sampler"
                 target_map = (
                     training_run.checkpoints
                     if checkpoint_type == "training"
@@ -1016,7 +1086,7 @@ class TrainingController:
             self._delete_sampler_checkpoint_record(model_id, checkpoint_id)
 
     def list_checkpoints(self, model_id: str, user_id: str) -> list[types.Checkpoint]:
-        training_run = self.get_run_record(model_id, user_id)
+        training_run = self._listing_run(model_id, user_id)
         checkpoints = [item.tinker_checkpoint for item in training_run.checkpoints.values()]
         checkpoints += [
             item.tinker_checkpoint for item in training_run.sampler_checkpoints.values()
@@ -1029,8 +1099,7 @@ class TrainingController:
         user_id: str,
     ) -> list[types.Checkpoint]:
         checkpoints: list[types.Checkpoint] = []
-        training_runs = [run for run in self.training_runs.values() if run.model_owner == user_id]
-        for run in training_runs:
+        for run in self._owned_runs(user_id):
             checkpoints.extend([item.tinker_checkpoint for item in run.checkpoints.values()])
         checkpoints.sort(key=lambda item: item.time, reverse=True)
         return checkpoints
@@ -1040,6 +1109,18 @@ class TrainingController:
     ) -> None:
         checkpoint = self._get_owned_checkpoint(model_id, checkpoint_id, user_id)
         checkpoint.set_visibility(public)
+        self._resave_checkpoint(model_id, checkpoint)
+
+    def set_checkpoint_ttl(
+        self, model_id: str, checkpoint_id: str, user_id: str, ttl_seconds: int | None
+    ) -> None:
+        expires_at = _expiry(ttl_seconds)
+        checkpoint = self._get_owned_checkpoint(model_id, checkpoint_id, user_id)
+        checkpoint.set_ttl(expires_at)
+        self._resave_checkpoint(model_id, checkpoint)
+
+    def _resave_checkpoint(self, model_id: str, checkpoint: CheckpointRecord) -> None:
+        checkpoint_id = checkpoint.checkpoint_id
         if model_id not in self.training_runs:
             return
         if checkpoint.checkpoint_type == "training":

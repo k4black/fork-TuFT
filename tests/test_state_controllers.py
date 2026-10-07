@@ -1652,3 +1652,110 @@ async def test_restore_releases_run_of_finished_session(request, tmp_path, monke
 
     assert state.training.training_runs[run_id].released is True
     assert created == []
+
+
+async def _sampler_save(state: ServerState, run_id: str, name: str | None = None, **kwargs):
+    return await state.save_checkpoint(
+        run_id, user_id="tester", name=name, checkpoint_type="sampler", **kwargs
+    )
+
+
+async def _hold(state: ServerState, session_id: str, checkpoint) -> str:
+    return await state.create_sampling_session(
+        session_id=session_id,
+        base_model=None,
+        model_path=checkpoint.tinker_path,
+        user_id="tester",
+        session_seq_id=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_expires_checkpoints_unless_held(request, tmp_path, monkeypatch) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    run_id = await _create_run(state, session_id)
+    short = await _sampler_save(state, run_id, "short", ttl_seconds=3600)
+    long = await _sampler_save(state, run_id, "long", ttl_seconds=7200)
+    held = await _sampler_save(state, run_id, "held", ttl_seconds=3600)
+    await _hold(state, session_id, held)
+    assert short.expires_at is not None
+    later = short.expires_at + timedelta(minutes=30)
+    monkeypatch.setattr("tuft.state._now", lambda: later)
+
+    await state._sweep_checkpoints()
+
+    assert not short.path.exists()
+    assert long.path.exists() and held.path.exists()
+    assert {c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")} == {"long", "held"}
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_newest_unnamed_sampler_saves(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    run_id = await _create_run(state, session_id)
+    saves = [await _sampler_save(state, run_id) for _ in range(4)]
+    named = await _sampler_save(state, run_id, "named")
+    old_sampler = await _hold(state, session_id, saves[0])
+    assert [s.transient for s in saves] == [True] * 4 and named.transient is False
+
+    await state._sweep_checkpoints()
+
+    assert [s.path.exists() for s in saves] == [False, False, True, True]
+    assert old_sampler not in state.sampling.sampling_sessions
+    await state.training.release_run(run_id)
+    await state._sweep_checkpoints()
+    assert not any(s.path.exists() for s in saves)
+    assert [c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")] == ["named"]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_ttl_and_user_metadata(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    with pytest.raises(InvalidRequestException, match="ttl_seconds"):
+        await _sampler_save(state, run_id, "bad", ttl_seconds=60)
+    ckpt = await _sampler_save(state, run_id, "c", user_metadata={"step": "7"})
+    assert ckpt.metadata.expires_at is None
+
+    state.set_checkpoint_ttl(run_id, "tester", "c", 3600)
+    [listed] = state.list_checkpoints(run_id, "tester")
+    assert listed.expires_at is not None and ckpt.metadata.user_metadata == {"step": "7"}
+    assert ckpt.metadata.expires_at == listed.expires_at.isoformat()
+    state.set_checkpoint_ttl(run_id, "tester", "c", None)
+    assert ckpt.metadata.expires_at is None
+    with pytest.raises(UserMismatchException):
+        state.set_checkpoint_ttl(run_id, "other", "c", None)
+
+
+@pytest.mark.asyncio
+async def test_listings_read_disk_without_run_record(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    await state.save_checkpoint(run_id, user_id="tester", name="t", checkpoint_type="training")
+    await _sampler_save(state, run_id, "s")
+    state.training.training_runs.clear()
+
+    assert {c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")} == {"t", "s"}
+    run = state.get_training_run_view(run_id, "tester")
+    assert run.base_model == "Qwen/Qwen3-0.6B" and run.lora_rank == 4
+    assert [c.checkpoint_id for c in state.list_user_checkpoints("tester")] == ["t"]
+    [listed_run] = state.list_training_runs(user_id="tester").training_runs
+    assert listed_run.training_run_id == run_id
+    with pytest.raises(UserMismatchException):
+        state.list_checkpoints(run_id, "other")
+    with pytest.raises(UnknownModelException):
+        state.list_checkpoints("missing", "tester")
+
+
+@pytest.mark.asyncio
+async def test_resave_replaces_checkpoint_directory(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    ckpt = await _sampler_save(state, run_id, "same")
+    (ckpt.path / "stale.bin").write_bytes(b"x")
+
+    await _sampler_save(state, run_id, "same")
+
+    assert not (ckpt.path / "stale.bin").exists()
