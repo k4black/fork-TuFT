@@ -23,7 +23,7 @@ from .exceptions import (
 )
 from .futures import FutureStore
 from .persistence import get_redis_store, is_persistence_enabled, load_record, save_record
-from .sampling_controller import SamplingController
+from .sampling_controller import SamplingController, SamplingSessionRecord
 from .training_controller import TrainingController, TrainingRunRecord
 
 
@@ -242,7 +242,10 @@ class ServerState:
                         r.model_path == adapter for r in self.sampling.sampling_sessions.values()
                     ):
                         return
-                elif not fresh.transient:
+                elif not fresh.transient or any(
+                    r.model_path == adapter and self._recently_used(r, fresh.created_at)
+                    for r in self.sampling.sampling_sessions.values()
+                ):
                     return
                 else:
                     await self.sampling._evict(lambda r: r.model_path == adapter)
@@ -251,6 +254,12 @@ class ServerState:
                 )
             except Exception:
                 logger.exception("Failed to delete checkpoint %s", ckpt.tinker_path)
+
+    def _recently_used(self, record: SamplingSessionRecord, saved_at: datetime) -> bool:
+        """A sampling session was used within its model's adapter_idle_ttl_minutes."""
+        model = self.config.get_model_config(record.base_model)
+        ttl = model.adapter_idle_ttl_minutes if model else 0
+        return ttl > 0 and (record.last_used_at or saved_at) > _now() - timedelta(minutes=ttl)
 
     async def _sweep_once(self) -> None:
         ttl = timedelta(minutes=self.config.session_heartbeat_ttl_minutes)

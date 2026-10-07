@@ -189,7 +189,7 @@ Session contains training runs: ['550e8400-e29b-41d4-a716-446655440000']
 ```
 
 Checkpoints live on disk under `checkpoint_dir`, so `load_state`, `create_sampling_client` and the run and checkpoint listings still find them after a server restart without Redis.
-Saves honour `ttl_seconds`; the server keeps the newest `sampler_checkpoints_keep` unnamed sampler saves per live run.
+Saves honour `ttl_seconds`; the server keeps the newest `sampler_checkpoints_keep` unnamed sampler saves per live run, plus older ones sampled within the model's `adapter_idle_ttl_minutes`.
 `service.copy_weights(path)` copies a `tinker://` checkpoint or imports a safetensors adapter from `hf://org/repo` or `s3://` (under `import_s3_prefixes`).
 `rest.get_checkpoint_archive_url(model_id, "demo-sampler")` returns a signed `http(s)://.../api/v1/archives/...` URL, valid for 15 minutes and until the server restarts; it downloads a tar of the adapter with no API key.
 

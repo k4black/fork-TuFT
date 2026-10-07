@@ -108,10 +108,11 @@ jobs:
         run: /tmp/cb/bin/python -m tinker_cookbook.recipes.distillation.on_policy_distillation $C log_path=/tmp/r/kd teacher_model=Qwen/Qwen3-1.7B dataset=tulu3 groups_per_batch=2 group_size=2 max_tokens=16 lora_rank=32 eval_every=0
 
       - name: dpo
-        # One step: DPO evaluates the 1024-pair test set on step 0 and the last step.
-        timeout-minutes: 25
+        # Two steps: DPO evaluates the 1024-pair test set on step 0 and the last step,
+        # each from a new sampler save, while its reference sampler stays in use.
+        timeout-minutes: 40
         if: ${{ !cancelled() }}
-        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=32 max_steps=1
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=32 max_steps=2
 
       - name: Server log
         if: always()

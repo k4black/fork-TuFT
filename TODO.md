@@ -33,7 +33,8 @@ guess_number) run unchanged on the current SDK in the CPU integration workflow.
   (agentscope-ai/TuFT#140).
 - [x] **Checkpoint TTL and disk GC** — honour `ttl_seconds` on saves and
   `PUT checkpoints/{id}/ttl`; `expires_at` in `metadata.json`; a sweep removes expired checkpoints;
-  unnamed sampler saves keep the newest `sampler_checkpoints_keep` per live run and go on release.
+  unnamed sampler saves keep the newest `sampler_checkpoints_keep` per live run, plus older ones
+  sampled within `adapter_idle_ttl_minutes`, and go on release once idle.
 - [x] **`user_metadata` on saves** — stored and returned in checkpoint records; `get_session`
   returns the session's `user_metadata`.
 - [x] **Checkpoint storage usage** — `get_current_checkpoint_storage_usage` returns one row for

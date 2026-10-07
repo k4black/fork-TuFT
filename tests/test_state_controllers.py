@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import shutil
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -1750,13 +1750,20 @@ async def test_sweep_keeps_newest_unnamed_sampler_saves(request, tmp_path) -> No
     run_id = await _create_run(state, session_id)
     saves = [await _sampler_save(state, run_id) for _ in range(4)]
     named = await _sampler_save(state, run_id, "named")
-    old_sampler = await _hold(state, session_id, saves[0])
+    in_use = await _hold(state, session_id, saves[0])
+    idle = await _hold(state, session_id, saves[1])
+    now = datetime.now(timezone.utc)
+    hour_ago = now - timedelta(hours=1)
+    state.sampling.sampling_sessions[in_use].last_used_at = now
+    state.sampling.sampling_sessions[idle].last_used_at = hour_ago
     assert [s.transient for s in saves] == [True] * 4 and named.transient is False
 
     await state._sweep_checkpoints()
 
-    assert [s.path.exists() for s in saves] == [False, False, True, True]
-    assert old_sampler not in state.sampling.sampling_sessions
+    assert [s.path.exists() for s in saves] == [True, False, True, True]
+    assert in_use in state.sampling.sampling_sessions
+    assert idle not in state.sampling.sampling_sessions
+    state.sampling.sampling_sessions[in_use].last_used_at = hour_ago
     await state.training.release_run(run_id)
     await state._sweep_checkpoints()
     assert not any(s.path.exists() for s in saves)

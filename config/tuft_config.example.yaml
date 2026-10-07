@@ -196,8 +196,8 @@ authorized_users:
 # Default: 30
 session_heartbeat_ttl_minutes: 30
 
-# Unnamed sampler saves kept per live run; older ones and their sampling
-# clients are evicted. Async RL with max_steps_off_policy=k needs k + 1.
+# Unnamed sampler saves kept per live run. An older one and its sampling clients
+# are evicted once no client sampled it for the model's adapter_idle_ttl_minutes.
 # Default: 2
 sampler_checkpoints_keep: 2
 

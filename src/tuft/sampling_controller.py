@@ -71,6 +71,7 @@ class SamplingSessionRecord(BaseModel):
     model_path: str | None = None
     session_seq_id: int
     last_seq_id: int = -1
+    last_used_at: datetime | None = None
     history: list[SamplingHistoryEntry] = Field(default_factory=list)
     executor: SequenceExecutor = Field(default_factory=SequenceExecutor, exclude=True)
 
@@ -316,6 +317,7 @@ class SamplingController:
         record._history_by_seq_id[seq_id] = entry
         record.history = [record._history_by_seq_id[k] for k in sorted(record._history_by_seq_id)]
         record.last_seq_id = max(record.last_seq_id, seq_id)
+        record.last_used_at = entry.created_at
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._save_session, record.sampling_session_id)
