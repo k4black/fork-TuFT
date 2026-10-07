@@ -9,7 +9,7 @@ from tinker import types
 from tuft.backends.base_backend import BaseTrainingBackend
 from tuft.checkpoints import CheckpointRecord
 from tuft.config import ModelConfig
-from tuft.exceptions import LossFunctionMissingInputException
+from tuft.exceptions import InvalidRequestException, LossFunctionMissingInputException
 from tuft.telemetry.tracing import get_tracer, inject_context
 
 
@@ -36,6 +36,10 @@ class HFTrainingBackend(BaseTrainingBackend):
 
     async def create_adapter(self, lora_id: str, lora_config: types.LoraConfig) -> None:
         """Create a LoRA adapter with the given ID and configuration."""
+        if lora_config.rank > self.config.max_lora_rank:
+            raise InvalidRequestException(
+                f"LoRA rank {lora_config.rank} exceeds max_lora_rank={self.config.max_lora_rank}."
+            )
         with _get_tracer().start_as_current_span("training_backend.create_adapter") as span:
             span.set_attribute("tuft.lora_id", lora_id)
             span.set_attribute("tuft.lora_rank", lora_config.rank)
