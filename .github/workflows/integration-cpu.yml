@@ -13,6 +13,7 @@ env:
   VLLM_CPU_KVCACHE_SPACE: '1'
   RAY_ENABLE_UV_RUN_RUNTIME_ENV: '0'
   TUFT_TINY_MODEL: /tmp/tiny-qwen3
+  TUFT_NO_GPU: '1'
 
 jobs:
   sdk:

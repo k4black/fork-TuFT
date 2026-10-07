@@ -10,12 +10,8 @@ from ..config import ModelConfig
 
 
 def gpu_request(num_gpus: float) -> float:
-    """``num_gpus`` for a Ray actor: 0 when the cluster has no GPUs (CPU-only runs)."""
-    import ray
-
-    if not ray.is_initialized():
-        ray.init()  # what the first .remote() would do anyway
-    return num_gpus if ray.cluster_resources().get("GPU", 0) else 0
+    """``num_gpus`` for a Ray actor: 0 when ``TUFT_NO_GPU=1`` (CPU-only runs)."""
+    return 0 if os.environ.get("TUFT_NO_GPU") == "1" else num_gpus
 
 
 class BaseBackend(ABC):

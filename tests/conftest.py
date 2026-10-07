@@ -83,6 +83,8 @@ def pytest_configure(config):
 def set_cpu_env(request):
     if not (request.config.getoption("--gpu") or request.config.getoption("--cpu-integration")):
         os.environ["TUFT_CPU_TEST"] = "1"
+    if request.config.getoption("--cpu-integration"):
+        os.environ["TUFT_NO_GPU"] = "1"
 
 
 @pytest.fixture(autouse=True, scope="function")

@@ -74,11 +74,10 @@ def test_sampling_actor_requests_configured_resource_per_gpu(monkeypatch):
     assert recorder.options_kwargs["num_gpus"] == 2
 
 
-def test_actors_request_no_gpus_on_a_cpu_cluster(monkeypatch):
-    import ray
-
+def test_actors_request_no_gpus_only_in_cpu_mode(monkeypatch):
     from tuft.backends.base_backend import gpu_request
 
-    monkeypatch.setattr(ray, "is_initialized", lambda: True)
-    monkeypatch.setattr(ray, "cluster_resources", lambda: {"CPU": 4})
+    monkeypatch.delenv("TUFT_NO_GPU", raising=False)
+    assert gpu_request(1) == 1
+    monkeypatch.setenv("TUFT_NO_GPU", "1")
     assert gpu_request(1) == 0

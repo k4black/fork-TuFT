@@ -461,8 +461,9 @@ async def test_non_adam_optimizer_is_rejected(compatibility_app) -> None:
     "topk_sample_logprobs" not in types.SampleRequest.model_fields,
     reason="topk_sample_logprobs only exists from tinker 0.29",
 )
+@pytest.mark.parametrize("k", [-1, 21])
 @pytest.mark.asyncio
-async def test_topk_sample_logprobs_above_20_is_rejected(compatibility_app) -> None:
+async def test_topk_sample_logprobs_out_of_range_is_rejected(compatibility_app, k) -> None:
     app, _ = compatibility_app
     async with _client(app) as client:
         response = await client.post(
@@ -471,7 +472,7 @@ async def test_topk_sample_logprobs_above_20_is_rejected(compatibility_app) -> N
                 "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
                 "sampling_params": {"max_tokens": 1},
                 "base_model": "test-model",
-                "topk_sample_logprobs": 21,
+                "topk_sample_logprobs": k,
             },
             headers={"X-API-Key": "test-key"},
         )
