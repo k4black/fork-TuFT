@@ -114,6 +114,9 @@ supported_models:
   - model_name: Qwen/Qwen3-4B
     model_path: Qwen/Qwen3-4B
     max_model_len: 32768
+    # HF Hub tokenizer that get_info reports (clients load it). Defaults to
+    # model_name; set it when model_name is an alias:
+    # tokenizer_id: Qwen/Qwen3-4B
     # Give this model's GPUs entirely to one side of the service by declaring a
     # single capability. Omit for the default [training, sampling]:
     # capabilities: [training]

@@ -14,7 +14,7 @@ from tinker import types
 
 from .auth import AuthenticationDB, User
 from .checkpoints import CheckpointRecord
-from .config import AppConfig, ModelCapability
+from .config import AppConfig, ModelCapability, ModelConfig
 from .exceptions import (
     CheckpointMetadataReadException,
     SessionFinishedException,
@@ -130,6 +130,15 @@ class SessionManager:
         return [k for k, v in self._sessions.items() if v.user_id == user_id]
 
 
+def _lora_ranks(model: ModelConfig) -> list[int]:
+    """Ranks ``create_lora_training_client`` accepts for this model."""
+    if model.training_backend == "fsdp":
+        from .backends.fsdp_training_backend import _get_rank_slots_from_config
+
+        return sorted(_get_rank_slots_from_config(model))
+    return list(range(1, model.max_lora_rank + 1))
+
+
 class SupportedModelInfo(types.SupportedModel):
     """``SupportedModel`` extended with TuFT's per-model capability roles.
 
@@ -139,6 +148,12 @@ class SupportedModelInfo(types.SupportedModel):
     """
 
     capabilities: list[ModelCapability]
+    # Redeclared: tinker 0.25's SupportedModel lacks them.
+    trainable: bool | None = None
+    sampleable: bool | None = None
+    lora_ranks: list[int] | None = None
+    lora_alpha: int | None = None
+    lora_alpha_ratio: float | None = None
 
 
 class ServerCapabilitiesResponse(types.GetServerCapabilitiesResponse):
@@ -393,6 +408,11 @@ class ServerState:
                 model_name=model.model_name,
                 max_context_length=model.max_model_len,
                 capabilities=model.capabilities,
+                trainable=model.training_enabled,
+                sampleable=model.sampling_enabled,
+                lora_ranks=_lora_ranks(model),
+                lora_alpha=model.lora_alpha,
+                lora_alpha_ratio=model.lora_alpha_ratio,
             )
             for model in self.config.supported_models
         ]

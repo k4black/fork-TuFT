@@ -317,7 +317,25 @@ supported_models:
 
 See [`config/tuft_config.example.yaml`](config/tuft_config.example.yaml) for a complete example configuration with all available options.
 
+`get_info` reports `ModelConfig.tokenizer_id` as the tokenizer, else `model_name`; clients load it from the HF Hub. Set `tokenizer_id` when `model_name` is an alias or a local name.
+
 Session lifecycle: `ServiceClient.close()` (`POST /api/v1/sessions/{id}/finish`) or no heartbeat for `session_heartbeat_ttl_minutes` (default 30, `0` disables) finishes the session. The server then frees each training run's adapter and slot and keeps its checkpoints; to continue, create a new run and `load_state` from a checkpoint. Completed futures leave server memory after `persistence.future_ttl_seconds` (default 1 hour).
+
+### CPU integration tests
+
+The `Integration tests (CPU)` workflow runs a real server without a GPU: the HF training backend and the vLLM `0.28.0+cpu` wheel on a tiny random Qwen3 with the real Qwen3 tokenizer. Run it locally on Linux x86_64:
+
+```bash
+uv venv --python 3.12
+uv pip install --torch-backend cpu -e ".[dev]" \
+  https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0+cpu-cp38-abi3-manylinux_2_34_x86_64.whl
+uv pip uninstall torchcodec
+export TUFT_TINY_MODEL=/tmp/tiny-qwen3 VLLM_CPU_KVCACHE_SPACE=1 TUFT_NO_GPU=1
+.venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
+.venv/bin/pytest --cpu-integration -m cpu_integration -s tests/test_cpu_integration.py
+```
+
+[`config/tuft_config.cookbook.yaml`](config/tuft_config.cookbook.yaml) serves the tiny model as `Qwen/Qwen3-0.6B` with `max_lora_rank: 32`, the cookbook default. Start it with `tuft launch --config config/tuft_config.cookbook.yaml` and point recipes at it with `TINKER_BASE_URL=http://127.0.0.1:10610 TINKER_API_KEY=tml-cookbook`. The workflow's `cookbook` job lists the recipe commands.
 
 ## Branching and Development Rules
 

@@ -72,6 +72,9 @@ class ModelConfig(BaseModel):
     model_name: str  # name used in APIs
     model_path: Path  # path to model checkpoint
     max_model_len: int  # maximum context length supported by the model
+    # Hub tokenizer id that get_info reports; defaults to model_name. Set it when
+    # model_name is an alias the client cannot load a tokenizer for.
+    tokenizer_id: str | None = None
     # Which sides of the service this model provides. The default keeps the
     # historical behavior: every model both trains and samples. Declaring only
     # one capability skips constructing the other side's backend entirely, so
@@ -403,14 +406,15 @@ class AppConfig(BaseModel):
         model between training/sampling/both profiles and restarting is a
         supported workflow, and must not be flagged as configuration drift.
         Records belonging to a disabled capability are preserved and validated
-        against the rest of the model configuration instead.
+        against the rest of the model configuration instead. ``tokenizer_id``
+        only changes what get_info reports.
         """
         return self.model_dump(
             mode="json",
             exclude={
                 "persistence": True,
                 "authorized_users": True,
-                "supported_models": {"__all__": {"capabilities"}},
+                "supported_models": {"__all__": {"capabilities", "tokenizer_id"}},
             },
         )
 

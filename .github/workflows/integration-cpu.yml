@@ -1,0 +1,120 @@
+name: Integration tests (CPU)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  VLLM_CPU_WHEEL: https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0+cpu-cp38-abi3-manylinux_2_34_x86_64.whl
+  VLLM_CPU_KVCACHE_SPACE: '1'
+  RAY_ENABLE_UV_RUN_RUNTIME_ENV: '0'
+  TUFT_TINY_MODEL: /tmp/tiny-qwen3
+  TUFT_NO_GPU: '1'
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.9.21'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ github.job }}-v1
+
+      - name: Install server with the vLLM CPU wheel
+        # uv.lock is gitignored, so resolve from pyproject; vllm==0.28.0 and
+        # torch==2.13.0 accept the +cpu local versions.
+        run: |
+          uv venv --python 3.12
+          uv pip install --torch-backend cpu -e ".[dev]" "$VLLM_CPU_WHEEL"
+          # torchcodec's native library fails to load on the runner and vLLM
+          # catches only ImportError; text-only tests never decode video.
+          uv pip uninstall torchcodec
+          uv pip list | grep -iE "^(torch|vllm|nvidia|triton)" || true
+          df -h /
+
+      - name: Build the tiny model
+        run: .venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
+
+      - name: SDK wiring test
+        run: .venv/bin/pytest --cpu-integration -m cpu_integration -s tests/test_cpu_integration.py
+
+  cookbook:
+    # Cookbook recipes run unchanged (CLI args only) for two steps each.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COOKBOOK: git+https://github.com/thinking-machines-lab/tinker-cookbook@1c03a20fdda98156ccbec15728c0e2764b5a0bc3
+      TINKER_BASE_URL: http://127.0.0.1:10610
+      TINKER_API_KEY: tml-cookbook
+      C: model_name=Qwen/Qwen3-0.6B renderer_name=qwen3 max_steps=2 behavior_if_log_dir_exists=delete
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.9.21'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ github.job }}-v1
+
+      - name: Install server with the vLLM CPU wheel
+        run: |
+          uv venv --python 3.12
+          uv pip install --torch-backend cpu -e ".[dev]" "$VLLM_CPU_WHEEL"
+          uv pip uninstall torchcodec
+
+      - name: Install the cookbook
+        run: |
+          uv venv --python 3.12 /tmp/cb
+          VIRTUAL_ENV=/tmp/cb uv pip install --torch-backend cpu tinker==0.32.0 "tinker_cookbook[math-rl] @ $COOKBOOK"
+
+      - name: Build the tiny model
+        run: .venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
+
+      - name: Start the server
+        run: |
+          nohup .venv/bin/tuft launch --config config/tuft_config.cookbook.yaml > server.log 2>&1 &
+          timeout 600 bash -c 'until curl -sf localhost:10610/api/v1/readyz; do sleep 5; done'
+
+      - name: chat_sl
+        timeout-minutes: 15
+        if: ${{ !cancelled() }}
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.chat_sl.train $C log_path=/tmp/r/sl dataset=no_robots batch_size=2 max_length=256 eval_every=0 infrequent_eval_every=0
+
+      - name: math_rl
+        timeout-minutes: 15
+        if: ${{ !cancelled() }}
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.math_rl.train $C log_path=/tmp/r/rl env=arithmetic groups_per_batch=2 group_size=2 max_tokens=5 eval_every=0
+
+      - name: guess_number
+        timeout-minutes: 15
+        if: ${{ !cancelled() }}
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.multiplayer_rl.guess_number.train $C log_path=/tmp/r/gn batch_size=2 group_size=2 max_tokens=16 eval_every=0
+
+      # Not run: on_policy_distillation and dpo. Both send concurrent prompt-logprob
+      # requests (teacher logprobs, SamplerNLLEvaluator), and vLLM 0.28's CPU LoRA
+      # logits path (punica_cpu.add_lora_logits) indexes per-sequence LoRA ids
+      # against per-prompt-token rows, so the engine dies with an einsum shape error.
+
+      - name: Server log
+        if: always()
+        run: tail -n 100 server.log; df -h /; free -g
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cookbook-server-log
+          path: server.log

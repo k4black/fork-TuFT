@@ -574,6 +574,27 @@ async def test_checkpoint_views_reflect_metadata(request, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_info_reads_arch_and_tokenizer_id(tmp_path) -> None:
+    model_dir = tmp_path / "qwen-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "qwen3"}')
+    state = await _build_state(tmp_path, cpu_model_path=str(model_dir))
+    run = await state.create_model(
+        _create_session(state),
+        model_owner="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=types.LoraConfig(rank=2),
+        user_metadata=None,
+    )
+    info = state.get_model_info(run.training_run_id, user_id="tester")
+    assert (info.model_data.arch, info.model_data.tokenizer_id) == ("qwen3", "Qwen/Qwen3-0.6B")
+
+    state.config.supported_models[0].tokenizer_id = "org/tokenizer"
+    info = state.get_model_info(run.training_run_id, user_id="tester")
+    assert info.model_data.tokenizer_id == "org/tokenizer"
+
+
+@pytest.mark.asyncio
 async def test_unnamed_save_skips_legacy_sampler_name(request, tmp_path) -> None:
     state = await _build_state(tmp_path, request.config.getoption("--gpu"))
     training = await state.create_model(

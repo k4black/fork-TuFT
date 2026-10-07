@@ -741,11 +741,15 @@ class TrainingController:
         return record
 
     def get_model_info(self, model_id: str, user_id: str) -> types.GetInfoResponse:
+        from .backends.vllm_lora_compat import load_model_config_json
+
         record = self.get_run_record(model_id=model_id, user_id=user_id)
+        cfg = self._model_config_for(record.base_model)
+        hf_config = (load_model_config_json(cfg.model_path) if cfg else None) or {}
         model_data = types.ModelData(
-            arch="toy-transformer",
+            arch=hf_config.get("model_type"),
             model_name=record.base_model,
-            tokenizer_id=record.base_model,
+            tokenizer_id=(cfg.tokenizer_id if cfg else None) or record.base_model,
         )
         return types.GetInfoResponse(
             model_data=model_data,

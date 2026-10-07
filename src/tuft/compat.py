@@ -24,8 +24,8 @@ version-adaptive (see the module-level capability probes below):
   (``server.optim_step`` reads either).
 
 Not implemented, rejected with 400: non-Adam optimizers (0.29.1), and the
-sampling fields ``topk_sample_logprobs`` (0.29), ``target_prompt_logprobs``
-(0.30) and ``prompt_alt_tokens_k`` (0.31).
+sampling fields ``target_prompt_logprobs`` (0.30) and ``prompt_alt_tokens_k``
+(0.31). ``topk_sample_logprobs`` (0.29) is served up to k=20.
 """
 
 from __future__ import annotations
@@ -485,6 +485,24 @@ def serialize_forward_backward_output_proto(response: ForwardBackwardOutput) -> 
     return proto.SerializeToString()
 
 
+def _write_topk(msg: Any, entries: list[list[tuple[int, float]] | None]) -> None:
+    """Fill a TopkLogprobs message: dense N*K matrices, empty cells 0 / -99999.0."""
+    k = max((len(e) for e in entries if e), default=0)
+    if k == 0:
+        return
+    n = len(entries)
+    token_ids = np.zeros((n, k), dtype=np.int32)
+    logprobs = np.full((n, k), -99999.0, dtype=np.float32)
+    for i, entry in enumerate(entries):
+        for j, (tid, lp) in enumerate(entry or []):
+            token_ids[i, j] = tid
+            logprobs[i, j] = max(lp, -99999.0)  # -inf (masked by top-k/top-p) -> sentinel
+    msg.token_ids = token_ids.tobytes()
+    msg.logprobs = logprobs.tobytes()
+    msg.k = k
+    setattr(msg, _TOPK_LENGTH_FIELD, n)
+
+
 def serialize_sample_response_proto(response: SampleResponse) -> bytes:
     """Serialize a SampleResponse to protobuf wire format.
 
@@ -507,6 +525,10 @@ def serialize_sample_response_proto(response: SampleResponse) -> bytes:
         logprobs = seq.logprobs
         if logprobs is not None:
             proto_seq.logprobs = np.array(logprobs, dtype=np.float32).tobytes()
+        # tinker >= 0.29 only; 0.25 has neither the field nor the proto message.
+        topk_sampled = getattr(seq, "topk_logprobs", None)
+        if topk_sampled is not None:
+            _write_topk(proto_seq.topk_sampled_logprobs, topk_sampled)
 
     # Prompt logprobs: float32 array with NaN for None positions
     prompt_lp = response.prompt_logprobs
@@ -518,28 +540,8 @@ def serialize_sample_response_proto(response: SampleResponse) -> bytes:
         proto.prompt_logprobs = lp_array.tobytes()
 
     # Top-k prompt logprobs: dense N*K matrices
-    topk_lp = response.topk_prompt_logprobs
-    if topk_lp is not None:
-        # Determine k from first non-None entry
-        k = 0
-        for entry in topk_lp:
-            if entry is not None:
-                k = max(k, len(entry))
-                break
-        if k > 0:
-            n = len(topk_lp)
-            token_ids = np.zeros((n, k), dtype=np.int32)
-            logprobs_matrix = np.full((n, k), -99999.0, dtype=np.float32)
-            for i, entry in enumerate(topk_lp):
-                if entry is not None:
-                    for j, (tid, lp) in enumerate(entry[:k]):
-                        token_ids[i, j] = tid
-                        logprobs_matrix[i, j] = lp
-            topk_msg = proto.topk_prompt_logprobs
-            topk_msg.token_ids = token_ids.tobytes()
-            topk_msg.logprobs = logprobs_matrix.tobytes()
-            topk_msg.k = k
-            setattr(topk_msg, _TOPK_LENGTH_FIELD, n)
+    if response.topk_prompt_logprobs is not None:
+        _write_topk(proto.topk_prompt_logprobs, response.topk_prompt_logprobs)
 
     return proto.SerializeToString()
 
