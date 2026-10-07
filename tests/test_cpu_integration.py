@@ -78,6 +78,16 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
         # The TuFTCPUWorker patch scales prompt logprobs by temperature.
         assert sample(0.5).prompt_logprobs != res.prompt_logprobs
 
+        topk = sampler.sample(
+            prompt, 1, types.SamplingParams(max_tokens=4), topk_sample_logprobs=3
+        ).result(timeout=TIMEOUT)
+        rows = topk.sequences[0].topk_logprobs
+        assert rows is not None and len(rows) == 4
+        for row in rows:
+            assert row is not None and len(row) == 3
+            assert [lp for _, lp in row] == sorted((lp for _, lp in row), reverse=True)
+        assert trainer.get_info().model_data.arch == "qwen3"
+
         state_path = trainer.save_state("cpu-state").result(timeout=TIMEOUT).path
         restored = service.create_lora_training_client(base_model="Qwen/Qwen3-0.6B", rank=8)
         restored.load_state(state_path).result(timeout=TIMEOUT)

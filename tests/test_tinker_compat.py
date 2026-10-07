@@ -28,6 +28,7 @@ from tuft.compat import (
     encode_payload_for_storage,
     sampled_sequence,
     serialize_forward_backward_output_proto,
+    serialize_sample_response_proto,
 )
 from tuft.config import AppConfig, ModelConfig
 from tuft.exceptions import SessionFinishedException
@@ -408,6 +409,26 @@ async def test_sample_response_uses_protobuf_when_requested(compatibility_app) -
 
 
 @pytest.mark.skipif(
+    "topk_sample_logprobs" not in types.SampleRequest.model_fields,
+    reason="topk_sample_logprobs only exists from tinker 0.29",
+)
+def test_topk_sampled_logprobs_round_trip_through_protobuf() -> None:
+    response = types.SampleResponse(
+        sequences=[
+            sampled_sequence(
+                stop_reason="length",
+                _tokens_list=[5, 6],
+                _logprobs_list=[-0.5, -0.25],
+                _topk_logprobs_list=[[(5, -0.5), (9, float("-inf"))], [(6, -0.25)]],
+            )
+        ],
+    )
+    decoded = deserialize_sample_response(serialize_sample_response_proto(response))
+    # -inf is clamped to the SDK's mask value; the short row is padded and trimmed back.
+    assert decoded.sequences[0].topk_logprobs == [[(5, -0.5), (9, -99999.0)], [(6, -0.25)]]
+
+
+@pytest.mark.skipif(
     "optim_params" not in types.OptimStepRequest.model_fields,
     reason="optimizer families only exist from tinker 0.29.1",
 )
@@ -441,7 +462,7 @@ async def test_non_adam_optimizer_is_rejected(compatibility_app) -> None:
     reason="topk_sample_logprobs only exists from tinker 0.29",
 )
 @pytest.mark.asyncio
-async def test_unsupported_sample_features_are_rejected(compatibility_app) -> None:
+async def test_topk_sample_logprobs_above_20_is_rejected(compatibility_app) -> None:
     app, _ = compatibility_app
     async with _client(app) as client:
         response = await client.post(
@@ -450,7 +471,7 @@ async def test_unsupported_sample_features_are_rejected(compatibility_app) -> No
                 "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
                 "sampling_params": {"max_tokens": 1},
                 "base_model": "test-model",
-                "topk_sample_logprobs": 2,
+                "topk_sample_logprobs": 21,
             },
             headers={"X-API-Key": "test-key"},
         )

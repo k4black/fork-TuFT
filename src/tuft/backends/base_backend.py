@@ -53,6 +53,7 @@ class BaseSamplingBackend(BaseBackend):
         include_prompt_logprobs: bool = False,
         topk_prompt_logprobs: int = 0,
         lora_id: Optional[str] = None,
+        topk_sample_logprobs: int = 0,
     ) -> types.SampleResponse:
         """Abstract method for sampling."""
 

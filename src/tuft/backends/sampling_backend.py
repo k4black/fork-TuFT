@@ -28,10 +28,17 @@ _get_tracer = lambda: get_tracer("tuft.sampling_backend")  # noqa: E731
 logger = getLogger(__name__)
 
 
+def _topk(logprob_dict: dict[int, Any], k: int) -> list[tuple[int, float]]:
+    """The k highest-ranked ``(token_id, logprob)`` pairs of one vLLM position."""
+    items = sorted(logprob_dict.items(), key=lambda x: x[1].rank)[:k]
+    return [(token_id, logprob.logprob) for token_id, logprob in items]
+
+
 def _build_sample_response(
     req_output: Any,
     include_prompt_logprobs: bool = False,
     topk_prompt_logprobs: int = 0,
+    topk_sample_logprobs: int = 0,
 ) -> types.SampleResponse:
     """Build a tinker 0.18.2 SampleResponse from a vLLM RequestOutput.
 
@@ -50,20 +57,24 @@ def _build_sample_response(
         for logprob_dict in req_output.prompt_logprobs[1:]:
             prompt_logprobs.append(next(iter(logprob_dict.values())).logprob)
             if topk_prompt_logprobs > 0:
-                logprob_items = sorted(logprob_dict.items(), key=lambda x: x[1].rank)
-                topk = logprob_items[:topk_prompt_logprobs]
-                topk_prompt_logprobs_list.append(
-                    [(token_id, logprob.logprob) for token_id, logprob in topk]
-                )
+                topk_prompt_logprobs_list.append(_topk(logprob_dict, topk_prompt_logprobs))
 
     # collect response sequences
     for seq_output in req_output.outputs:
+        # tinker 0.25 lacks the field, so pass it only when requested.
+        topk = (
+            {"_topk_logprobs_list": [_topk(d, topk_sample_logprobs) for d in seq_output.logprobs]}
+            if topk_sample_logprobs > 0
+            else {}
+        )
+        # vLLM puts the sampled token first in each position's dict.
         seq = sampled_sequence(
             stop_reason="length" if seq_output.finish_reason == "length" else "stop",
             _tokens_list=seq_output.token_ids,
             _logprobs_list=[
                 next(iter(logprob_dict.values())).logprob for logprob_dict in seq_output.logprobs
             ],
+            **topk,
         )
         sequences.append(seq)
 
@@ -298,6 +309,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         include_prompt_logprobs: bool = False,
         topk_prompt_logprobs: int = 0,
         lora_id: Optional[str] = None,
+        topk_sample_logprobs: int = 0,
     ) -> types.SampleResponse:
         """Sampling using vLLM engine."""
         with _get_tracer().start_as_current_span("sampling_backend.sample") as span:
@@ -331,7 +343,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     "temperature": sampling_params.temperature,
                     "n": num_samples,
                     "prompt_logprobs": (topk_prompt_logprobs if include_prompt_logprobs else None),
-                    "logprobs": 0,
+                    "logprobs": topk_sample_logprobs,
                 }
                 # Avoid prefix cache reads when computing prompt logprobs
                 # (cached prompt chunks would otherwise skip logit computation
@@ -370,6 +382,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     req_output=req_output,
                     include_prompt_logprobs=include_prompt_logprobs,
                     topk_prompt_logprobs=topk_prompt_logprobs,
+                    topk_sample_logprobs=topk_sample_logprobs,
                 )
             except Exception as e:
                 span.record_exception(e)
@@ -632,6 +645,7 @@ class DPSamplingBackend(BaseSamplingBackend):
         include_prompt_logprobs: bool = False,
         topk_prompt_logprobs: int = 0,
         lora_id: Optional[str] = None,
+        topk_sample_logprobs: int = 0,
     ) -> types.SampleResponse:
         """Route sampling to a DP instance via round-robin."""
         instance = self._next_instance()
@@ -642,6 +656,7 @@ class DPSamplingBackend(BaseSamplingBackend):
             include_prompt_logprobs=include_prompt_logprobs,
             topk_prompt_logprobs=topk_prompt_logprobs,
             lora_id=lora_id,
+            topk_sample_logprobs=topk_sample_logprobs,
         )
 
     async def add_adapter(self, lora_id: str, adapter_path: Path) -> None:
@@ -951,6 +966,7 @@ class DummySamplingBackend(BaseSamplingBackend):
         include_prompt_logprobs: bool = False,
         topk_prompt_logprobs: int = 0,
         lora_id: Optional[str] = None,
+        topk_sample_logprobs: int = 0,
     ) -> types.SampleResponse:
         """Return a fixed dummy response."""
         prompt_tokens = prompt.to_ints()
@@ -958,10 +974,21 @@ class DummySamplingBackend(BaseSamplingBackend):
         sequences: list[types.SampledSequence] = []
         for _ in range(num_samples):
             generated = self._generate_tokens(prompt_tokens, max_tokens)
+            topk = (
+                {
+                    "_topk_logprobs_list": [
+                        [(tok + j, round(-0.3 - j * 0.1, 4)) for j in range(topk_sample_logprobs)]
+                        for tok in generated
+                    ]
+                }
+                if topk_sample_logprobs > 0
+                else {}
+            )
             seq = sampled_sequence(
                 stop_reason="length",
                 _tokens_list=generated,
                 _logprobs_list=[-0.3 for _ in generated],
+                **topk,
             )
             sequences.append(seq)
         prompt_logprobs = None
