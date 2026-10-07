@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from .auth import AuthenticationDB, User
 from .checkpoints import CheckpointRecord
 from .config import AppConfig, ModelCapability
 from .exceptions import (
+    CheckpointMetadataReadException,
     SessionFinishedException,
     SessionNotFoundException,
     UserMismatchException,
@@ -193,7 +195,7 @@ class ServerState:
         for ckpt in records:
             expired = ckpt.expires_at is not None and ckpt.expires_at <= now
             if expired and str(ckpt.adapter_path) not in held:
-                await self._drop_checkpoint(ckpt)
+                await self._drop_checkpoint(ckpt, expired=True)
             elif ckpt.transient:
                 transient.setdefault(ckpt.training_run_id, []).append(ckpt)
         for run_id, saves in transient.items():
@@ -201,16 +203,44 @@ class ServerState:
             keep = self.config.sampler_checkpoints_keep if run and not run.released else 0
             saves.sort(key=lambda c: (c.created_at, c.checkpoint_id), reverse=True)
             for ckpt in saves[keep:]:
-                await self.sampling._evict(lambda r, p=str(ckpt.adapter_path): r.model_path == p)
-                await self._drop_checkpoint(ckpt)
+                await self._drop_checkpoint(ckpt, expired=False)
 
-    async def _drop_checkpoint(self, ckpt: CheckpointRecord) -> None:
-        try:
-            self.training.delete_checkpoint(
-                ckpt.training_run_id, ckpt.owner_name, ckpt.checkpoint_id
-            )
-        except Exception:
-            logger.exception("Failed to delete checkpoint %s", ckpt.tinker_path)
+    async def _drop_checkpoint(self, ckpt: CheckpointRecord, *, expired: bool) -> None:
+        """Delete ``ckpt`` if the sweep's reason still holds on disk.
+
+        A save or release of an in-memory run holds its lock, so they cannot
+        interleave. ponytail: a sampler load racing a genuine expiry may still
+        get 404; add a per-checkpoint lock if that matters.
+        """
+        run = self.training.training_runs.get(ckpt.training_run_id)
+        adapter = str(ckpt.adapter_path)
+        async with run._execution_lock if run is not None else contextlib.nullcontext():
+            try:
+                assert self.config.checkpoint_dir is not None
+                try:
+                    fresh = CheckpointRecord.from_tinker_path(
+                        ckpt.tinker_path, self.config.checkpoint_dir
+                    )
+                except (FileNotFoundError, CheckpointMetadataReadException):
+                    return  # already gone
+                if fresh.created_at != ckpt.created_at:
+                    return  # replaced by a newer save under the same name
+                if expired:
+                    if fresh.expires_at is None or fresh.expires_at > _now():
+                        return
+                    if any(
+                        r.model_path == adapter for r in self.sampling.sampling_sessions.values()
+                    ):
+                        return
+                elif not fresh.transient:
+                    return
+                else:
+                    await self.sampling._evict(lambda r: r.model_path == adapter)
+                self.training.delete_checkpoint(
+                    ckpt.training_run_id, ckpt.owner_name, ckpt.checkpoint_id
+                )
+            except Exception:
+                logger.exception("Failed to delete checkpoint %s", ckpt.tinker_path)
 
     async def _sweep_once(self) -> None:
         ttl = timedelta(minutes=self.config.session_heartbeat_ttl_minutes)

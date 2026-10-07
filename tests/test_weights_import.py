@@ -112,3 +112,15 @@ def test_check_shapes(tmp_path) -> None:
         check({f"{q_proj}.lora_B.weight": torch.zeros(32, 4)})
     with pytest.raises(InvalidRequestException, match="no linear module"):
         check({"base_model.model.model.layers.0.nope.lora_A.weight": torch.zeros(4, 16)})
+    with pytest.raises(InvalidRequestException, match="lora_A and lora_B"):
+        check({f"{q_proj}.lora_A.weight": torch.zeros(4, 16)})
+    with pytest.raises(InvalidRequestException, match="lora_A and lora_B"):
+        check({})
+    (adapter / "adapter_model.safetensors").write_bytes(b"not safetensors")
+    with pytest.raises(InvalidRequestException, match="Unreadable"):
+        weights_import.check_shapes(adapter, model_dir, rank=4)
+
+
+def test_fetch_hf_rejects_traversal(tmp_path) -> None:
+    with pytest.raises(InvalidRequestException, match=r"\.\."):
+        weights_import.fetch("hf://org/repo/../../etc", None, tmp_path / "a", [])

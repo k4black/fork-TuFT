@@ -14,7 +14,13 @@ from .exceptions import (
     CheckpointAccessDeniedException,
     CheckpointIncompatibleException,
     CheckpointMetadataReadException,
+    InvalidRequestException,
 )
+
+
+def is_path_component(name: str) -> bool:
+    """True for a run or checkpoint name that stays one directory under its parent."""
+    return bool(name) and name not in (".", "..") and not any(c in name for c in "/\\")
 
 
 def compute_tree_size(path: Path) -> int:
@@ -407,10 +413,9 @@ class CheckpointRecord(BaseModel):
             json.JSONDecodeError: If metadata.json cannot be parsed as JSON.
         """
         parsed = types.ParsedCheckpointTinkerPath.from_tinker_path(path)
-        checkpoint_path = (
-            checkpoint_root_dir / parsed.training_run_id / parsed.checkpoint_id.split("/", 1)[-1]
-        )
-        if not checkpoint_path.resolve().is_relative_to(checkpoint_root_dir.resolve()):
+        name = parsed.checkpoint_id.split("/", 1)[-1]
+        checkpoint_path = checkpoint_root_dir / parsed.training_run_id / name
+        if not (is_path_component(parsed.training_run_id) and is_path_component(name)):
             raise FileNotFoundError(f"Checkpoint path escapes the checkpoint root: {path}")
         record = cls(
             checkpoint_id=parsed.checkpoint_id.split("/", 1)[-1],
@@ -451,6 +456,10 @@ class CheckpointRecord(BaseModel):
         exist_ok: bool = True,
     ) -> "CheckpointRecord":
         """Create a CheckpointRecord from a training run."""
+        if not (is_path_component(training_run_id) and is_path_component(checkpoint_name)):
+            raise InvalidRequestException(
+                f"Invalid checkpoint name {checkpoint_name!r}: use one path segment."
+            )
         checkpoint_dir = checkpoint_root_dir / training_run_id / checkpoint_name
         if not exist_ok and checkpoint_dir.exists():
             raise FileExistsError(f"Checkpoint directory already exists: {checkpoint_dir}")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -1743,10 +1744,61 @@ async def test_listings_read_disk_without_run_record(request, tmp_path) -> None:
     assert [c.checkpoint_id for c in state.list_user_checkpoints("tester")] == ["t"]
     [listed_run] = state.list_training_runs(user_id="tester").training_runs
     assert listed_run.training_run_id == run_id
-    with pytest.raises(UserMismatchException):
+    with pytest.raises(UnknownModelException):
         state.list_checkpoints(run_id, "other")
     with pytest.raises(UnknownModelException):
-        state.list_checkpoints("missing", "tester")
+        state.list_checkpoints("*", "tester")
+
+
+@pytest.mark.asyncio
+async def test_disk_listing_skips_other_owners_checkpoints(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    mine = await _sampler_save(state, run_id, "mine")
+    other_run = await state.create_model(
+        _create_session(state, "other"),
+        model_owner="other",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=types.LoraConfig(rank=4),
+        user_metadata=None,
+    )
+    theirs = await state.save_checkpoint(
+        other_run.training_run_id, user_id="other", name="theirs", checkpoint_type="sampler"
+    )
+    shutil.copytree(theirs.path, mine.path.parent / "theirs")
+    state.training.training_runs.clear()
+
+    assert [c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")] == ["mine"]
+
+
+@pytest.mark.asyncio
+async def test_save_rejects_names_outside_the_run(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_bytes(b"x")
+
+    for name in ["../outside", str(outside), "a/b", ".."]:
+        with pytest.raises(InvalidRequestException, match="one path segment"):
+            await _sampler_save(state, run_id, name)
+    assert (outside / "keep").exists()
+
+
+@pytest.mark.asyncio
+async def test_sweep_rechecks_before_delete(request, tmp_path, monkeypatch) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    ckpt = await _sampler_save(state, run_id, "c", ttl_seconds=3600)
+    [snapshot] = state.training.disk_checkpoints("*/*/metadata.json")
+    state.set_checkpoint_ttl(run_id, "tester", "c", None)
+    assert snapshot.expires_at is not None
+    later = snapshot.expires_at + timedelta(hours=2)
+    monkeypatch.setattr("tuft.state._now", lambda: later)
+
+    await state._drop_checkpoint(snapshot, expired=True)
+
+    assert ckpt.path.exists()
 
 
 @pytest.mark.asyncio
@@ -1812,7 +1864,8 @@ async def test_copy_weights_imports_hf_adapter(request, tmp_path, monkeypatch) -
     }
 
     def fake_snapshot_download(repo, *, local_dir, **kwargs):
-        Path(local_dir, "adapter_config.json").write_text(json.dumps(adapter_config))
+        text = adapter_config.get("raw") or json.dumps(adapter_config)
+        Path(local_dir, "adapter_config.json").write_text(text)
         Path(local_dir, "adapter_model.safetensors").write_bytes(b"w")
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
@@ -1829,5 +1882,11 @@ async def test_copy_weights_imports_hf_adapter(request, tmp_path, monkeypatch) -
         await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
     adapter_config.update(lora_alpha=8, base_model_name_or_path="other/model")
     with pytest.raises(InvalidRequestException, match="matches no configured"):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    adapter_config.update(base_model_name_or_path="Qwen/Qwen3-0.6B", r="4")
+    with pytest.raises(InvalidRequestException, match="must be an integer"):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    adapter_config["raw"] = "{not json"
+    with pytest.raises(InvalidRequestException, match="Unreadable adapter_config"):
         await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
     assert [p.name for p in tmp_path.iterdir() if (p / "import").exists()] == [copy.training_run_id]

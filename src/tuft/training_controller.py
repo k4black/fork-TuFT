@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import glob
 import itertools
 import json
 import logging
@@ -25,6 +26,7 @@ from .checkpoints import (
     CheckpointMetadata,
     CheckpointRecord,
     compute_tree_size,
+    is_path_component,
     read_adapter_target_modules,
     read_adapter_target_parameters,
 )
@@ -693,9 +695,15 @@ class TrainingController:
                 )
         return records
 
-    def _disk_run(self, model_id: str) -> TrainingRunRecord | None:
-        """Rebuild a released run from its checkpoints on disk (no Redis after a restart)."""
-        checkpoints = self.disk_checkpoints(f"{model_id}/*/metadata.json")
+    def _disk_run(self, model_id: str, user_id: str) -> TrainingRunRecord | None:
+        """Rebuild the user's released run from its checkpoints on disk (no Redis)."""
+        if not is_path_component(model_id):
+            return None
+        checkpoints = [
+            c
+            for c in self.disk_checkpoints(f"{glob.escape(model_id)}/*/metadata.json")
+            if c.training_run_id == model_id and c.owner_name == user_id
+        ]
         if not checkpoints:
             return None
         metadata = checkpoints[0].metadata
@@ -717,7 +725,7 @@ class TrainingController:
         """The user's runs: in memory, plus runs only on disk."""
         assert self.config.checkpoint_dir is not None
         disk_runs = [
-            self._disk_run(d.name)
+            self._disk_run(d.name, user_id)
             for d in self.config.checkpoint_dir.iterdir()
             if d.is_dir() and d.name not in self.training_runs
         ]
@@ -725,7 +733,7 @@ class TrainingController:
         return [r for r in runs if r.model_owner == user_id]
 
     def _listing_run(self, model_id: str, user_id: str) -> TrainingRunRecord:
-        record = self.training_runs.get(model_id) or self._disk_run(model_id)
+        record = self.training_runs.get(model_id) or self._disk_run(model_id, user_id)
         if record is None:
             raise UnknownModelException(model_name=model_id)
         if record.model_owner != user_id:
@@ -1031,7 +1039,12 @@ class TrainingController:
     ) -> tuple[TrainingRunRecord, Path]:
         """Match an imported adapter to a configured model and its LoRA geometry, else 400."""
         adapter = checkpoint.adapter_path
-        config = json.loads((adapter / "adapter_config.json").read_text(encoding="utf-8"))
+        try:
+            config = json.loads((adapter / "adapter_config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise InvalidRequestException(f"Unreadable adapter_config.json: {exc}") from exc
+        if not isinstance(config, dict):
+            raise InvalidRequestException("adapter_config.json must hold a JSON object.")
         base = config.get("base_model_name_or_path")
         model_config = next(
             (m for m in self.config.supported_models if base in (m.model_name, str(m.model_path))),
@@ -1042,12 +1055,14 @@ class TrainingController:
                 f"Adapter base model {base!r} matches no configured model_name or model_path."
             )
         rank = config.get("r")
+        if not isinstance(rank, int):
+            raise InvalidRequestException(f"Adapter LoRA rank {rank!r} must be an integer.")
         if model_config.training_backend == "fsdp":
             from .backends.fsdp_training_backend import _get_rank_slots_from_config
 
             rank_ok = rank in _get_rank_slots_from_config(model_config)
         else:
-            rank_ok = isinstance(rank, int) and 1 <= rank <= model_config.max_lora_rank
+            rank_ok = 1 <= rank <= model_config.max_lora_rank
         if not rank_ok:
             raise InvalidRequestException(f"Adapter LoRA rank {rank} is not supported here.")
         modules = read_adapter_target_modules(adapter)

@@ -55,9 +55,11 @@ def _fetch_hf(rest: str, token: str | None, adapter_dir: Path) -> None:
     """``org/repo[@rev][/subdir]``; only the request token is used, never the server's."""
     from huggingface_hub import snapshot_download
 
-    parts = rest.split("/")
+    parts = [part for part in rest.split("/") if part]
+    if any(part in (".", "..") or "\\" in part for part in parts):
+        raise InvalidRequestException(f"hf://{rest} must not hold . or .. segments.")
     repo, _, revision = "/".join(parts[:2]).partition("@")
-    subdir = "".join(f"{part}/" for part in parts[2:] if part)
+    subdir = "".join(f"{part}/" for part in parts[2:])
     with tempfile.TemporaryDirectory() as tmp:
         snapshot_download(
             repo,
@@ -67,8 +69,9 @@ def _fetch_hf(rest: str, token: str | None, adapter_dir: Path) -> None:
             local_dir=tmp,
         )
         for name in ADAPTER_FILES:
-            if (Path(tmp) / subdir / name).is_file():
-                shutil.move(Path(tmp) / subdir / name, adapter_dir / name)
+            source = (Path(tmp) / subdir / name).resolve()
+            if source.is_relative_to(Path(tmp).resolve()) and source.is_file():
+                shutil.copyfile(source, adapter_dir / name)
 
 
 def _fetch_s3(rest: str, adapter_dir: Path, s3_prefixes: list[str]) -> None:
@@ -94,7 +97,12 @@ def check_shapes(adapter_dir: Path, model_path: Path, rank: int) -> None:
 
     with torch.device("meta"):
         model = AutoModelForCausalLM.from_config(AutoConfig.from_pretrained(model_path))
-    with safe_open(adapter_dir / "adapter_model.safetensors", "pt") as weights:
+    try:
+        handle = safe_open(adapter_dir / "adapter_model.safetensors", "pt")
+    except Exception as exc:
+        raise InvalidRequestException(f"Unreadable adapter_model.safetensors: {exc}") from exc
+    pairs: dict[str, set[str]] = {}
+    with handle as weights:
         for key in weights.keys():
             match = _LORA_KEY.fullmatch(key)
             try:
@@ -112,3 +120,8 @@ def check_shapes(adapter_dir: Path, model_path: Path, rank: int) -> None:
                 raise InvalidRequestException(
                     f"Adapter tensor {key} has shape {shape}; the base model needs {expected}."
                 )
+            pairs.setdefault(match[1], set()).add(match[2])
+    if not pairs or any(halves != {"A", "B"} for halves in pairs.values()):
+        raise InvalidRequestException(
+            "adapter_model.safetensors must hold a lora_A and lora_B tensor per module."
+        )
