@@ -47,6 +47,7 @@ def get_vllm_version():
 def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
     """Patch vLLM model runner to apply temperature scaling to prompt logprobs."""
     version = get_vllm_version()
+    cpu = current_platform.is_cpu()
 
     def _get_prompt_logprobs_dict_v21(
         self,
@@ -118,7 +119,19 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
             req_idx = self.input_batch.req_id_to_index[req_id]
             offset = self.query_start_loc.np[req_idx].item()
             prompt_hidden_states = hidden_states[offset : offset + num_logits]
-            logits = self.model.compute_logits(prompt_hidden_states)
+            # PATCH START: the LoRA logits mapping has one row per request, which
+            # the CPU kernel cannot match to prompt rows. Map only this request;
+            # its single row broadcasts over all prompt rows.
+            punica = getattr(self.model.logits_processor, "punica_wrapper", None) if cpu else None
+            if punica is None:
+                logits = self.model.compute_logits(prompt_hidden_states)
+            else:
+                saved = punica._sampler_indices[0].item(), punica.indices_len[1]
+                punica._sampler_indices[0] = punica._sampler_indices[req_idx].item()
+                punica.indices_len[1] = 1
+                logits = self.model.compute_logits(prompt_hidden_states)
+                punica._sampler_indices[0], punica.indices_len[1] = saved
+            # PATCH END
 
             # PATCH START
             temp = request.sampling_params.temperature

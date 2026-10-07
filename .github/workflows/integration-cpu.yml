@@ -104,10 +104,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: /tmp/cb/bin/python -m tinker_cookbook.recipes.multiplayer_rl.guess_number.train $C log_path=/tmp/r/gn batch_size=2 group_size=2 max_tokens=16 eval_every=0
 
-      # Not run: on_policy_distillation and dpo. Both send concurrent prompt-logprob
-      # requests (teacher logprobs, SamplerNLLEvaluator), and vLLM 0.28's CPU LoRA
-      # logits path (punica_cpu.add_lora_logits) indexes per-sequence LoRA ids
-      # against per-prompt-token rows, so the engine dies with an einsum shape error.
+      - name: on_policy_distillation
+        timeout-minutes: 15
+        if: ${{ !cancelled() }}
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.distillation.on_policy_distillation $C log_path=/tmp/r/kd teacher_model=Qwen/Qwen3-1.7B dataset=tulu3 groups_per_batch=2 group_size=2 max_tokens=16 lora_rank=32 eval_every=0
+
+      - name: dpo
+        timeout-minutes: 15
+        if: ${{ !cancelled() }}
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=256
 
       - name: Server log
         if: always()

@@ -49,9 +49,9 @@ guess_number) run unchanged on the current SDK in the CPU integration workflow.
 - [x] **CPU integration tests** — HF backend on CPU and vLLM on its CPU wheel with a
   `TuFTCPUWorker` twin of the prompt-logprobs patch; a tiny random Qwen3; an SDK wiring test and
   the pinned cookbook SL, RL and multi-turn recipes on every PR.
-- [ ] **DPO and distillation recipes on CPU** — vLLM's CPU LoRA logits kernel takes one LoRA index
-  per sequence, so batched prompt-logprob requests fail; fix or work around it, then add both
-  recipes to the CPU workflow.
+- [x] **DPO and distillation recipes on CPU** — the CPU branch of the prompt-logprobs patch maps
+  one request at a time onto vLLM's per-request LoRA logits kernel; both recipes run in the CPU
+  workflow.
 - [ ] **Keep as 400/404** — Dimuon optimizer, `assign_session_project`, `export_session_trace`,
   `get_audit_log`, `get_billing_usage`; noted in the compatibility table.
 

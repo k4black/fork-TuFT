@@ -335,7 +335,7 @@ export TUFT_TINY_MODEL=/tmp/tiny-qwen3 VLLM_CPU_KVCACHE_SPACE=1 TUFT_NO_GPU=1
 .venv/bin/pytest --cpu-integration -m cpu_integration -s tests/test_cpu_integration.py
 ```
 
-[`config/tuft_config.cookbook.yaml`](config/tuft_config.cookbook.yaml) serves the tiny model as `Qwen/Qwen3-0.6B` with `max_lora_rank: 32`, the cookbook default. Start it with `tuft launch --config config/tuft_config.cookbook.yaml` and point recipes at it with `TINKER_BASE_URL=http://127.0.0.1:10610 TINKER_API_KEY=tml-cookbook`. The workflow's `cookbook` job lists the recipe commands.
+[`config/tuft_config.cookbook.yaml`](config/tuft_config.cookbook.yaml) serves the tiny model as `Qwen/Qwen3-0.6B` with `max_lora_rank: 32`, the cookbook default, and as the sampling-only distillation teacher `Qwen/Qwen3-1.7B`. Start it with `tuft launch --config config/tuft_config.cookbook.yaml` and point recipes at it with `TINKER_BASE_URL=http://127.0.0.1:10610 TINKER_API_KEY=tml-cookbook`. The workflow's `cookbook` job lists the recipe commands.
 
 ## Branching and Development Rules
 
