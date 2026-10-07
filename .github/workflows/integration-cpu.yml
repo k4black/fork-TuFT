@@ -115,4 +115,10 @@ jobs:
 
       - name: Server log
         if: always()
-        run: tail -n 300 server.log; df -h /; free -g
+        run: tail -n 100 server.log; df -h /; free -g
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cookbook-server-log
+          path: server.log
