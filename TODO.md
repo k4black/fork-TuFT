@@ -28,25 +28,30 @@ Done when the cookbook core recipes (SL, RL, DPO, on-policy distillation, multi-
 guess_number) run unchanged on the current SDK in the CPU integration workflow.
 
 - [x] **Fixes** — `weights_info` returns the `train_*` flags; unnamed sampler saves named
-  `sampler-NNNN`; the HF backend rejects ranks above `max_lora_rank`.
+  `sampler-NNNN`; the HF backend rejects ranks above `max_lora_rank`; a run seeded by `load_state`
+  from another run's checkpoint saves it as its own, so a restart restores it
+  (agentscope-ai/TuFT#140).
 - [x] **Checkpoint TTL and disk GC** — honour `ttl_seconds` on saves and
   `PUT checkpoints/{id}/ttl`; `expires_at` in `metadata.json`; a sweep removes expired checkpoints;
   unnamed sampler saves keep the newest `sampler_checkpoints_keep` per live run and go on release.
-- [x] **`user_metadata` on saves** — stored and returned in checkpoint records.
+- [x] **`user_metadata` on saves** — stored and returned in checkpoint records; `get_session`
+  returns the session's `user_metadata`.
+- [x] **Checkpoint storage usage** — `get_current_checkpoint_storage_usage` returns one row for
+  the caller from on-disk checkpoint sizes.
 - [x] **Listings after a restart** — checkpoint and run listings read from disk without Redis.
 - [x] **`copy_weights` and adapter import** — hard-linked copy into a new non-trainable run;
   `source_path` also accepts `hf://<repo>` (request token only) and `s3://` under configured
   prefixes; safetensors only, validated against the base model (config and tensor shapes); imports
   train on both backends.
-- [ ] **`topk_sample_logprobs`** — top-k logprobs at generated positions through vLLM and the
+- [x] **`topk_sample_logprobs`** — top-k logprobs at generated positions through vLLM and the
   proto encoder.
-- [ ] **Model metadata** — `get_info.model_data.arch` from the model config; optional
+- [x] **Model metadata** — `get_info.model_data.arch` from the model config; optional
   `tokenizer_id` per model for local paths and aliases.
-- [ ] **Adapter capability reporting** — `trainable`, `sampleable`, supported ranks and alpha rules
+- [x] **Adapter capability reporting** — `trainable`, `sampleable`, supported ranks and alpha rules
   in `get_server_capabilities`.
 - [x] **CPU integration tests** — HF backend on CPU and vLLM on its CPU wheel with a
   `TuFTCPUWorker` twin of the prompt-logprobs patch; a tiny random Qwen3; an SDK wiring test and
-  the pinned cookbook SL, RL and multi-turn recipes on every PR.
+  the pinned cookbook SL, RL, multi-turn, DPO and on-policy distillation recipes on every PR.
 - [x] **DPO and distillation recipes on CPU** — the CPU branch of the prompt-logprobs patch maps
   one request at a time onto vLLM's per-request LoRA logits kernel; both recipes run in the CPU
   workflow.
@@ -86,7 +91,7 @@ Identity, quotas and routing belong to the control plane (Phase 9).
 - [ ] **Audio inputs** — investigation; needs preprocessing and model support beyond vision.
 - [ ] **Mixed-adapter forwards** — several adapters in one training forward on one base.
 - [ ] **Faster adapter sync** — delta or in-memory transport instead of a full adapter stage per
-  save.
+  save (SkyRL syncs LoRA in memory).
 - [ ] **Token-budget batching** — length sorting and a padded-token budget with coordinated FSDP
   microsteps.
 - [ ] **Sharded model init** — meta init and distributed materialization when the base model
@@ -107,8 +112,7 @@ Identity, quotas and routing belong to the control plane (Phase 9).
 - [ ] **External export** — `save_weights_external` and `get_external_weights_urls` in the HF
   adapter layout.
 - [ ] **Reproducible adapter init** — `LoraConfig.seed` on both backends, including reused FSDP slots.
-- [ ] **Telemetry and storage usage** — keep SDK telemetry events; per-step training metrics;
-  `get_current_checkpoint_storage_usage`.
+- [ ] **Telemetry** — keep SDK telemetry events; per-step training metrics.
 
 ### Phase 9: Control plane (P2, after Phase 7)
 Many workers behind one control plane. Mechanics (pinning policy, scale-down choice, pool
@@ -159,16 +163,16 @@ definition, schema) are decided in a design pass when the phase starts.
 
 | Capability | Hosted Tinker | OpenRL | SkyRL | Twinkle | This fork |
 |---|---|---|---|---|---|
-| Core train/sample/save/load | yes | SDK 0.29 | SDK 0.25 | SDK 0.16 via translation | SDK 0.25–0.32 |
+| Core train/sample/save/load | yes | SDK 0.29+, 47 methods unsupported | SDK 0.25+ | SDK 0.16.1 via translation | SDK 0.25–0.32 |
 | Client-defined custom losses | yes | no | partial | ? | yes |
 | Session finish, release, heartbeat 410 | yes | partial | partial | ? | yes |
 | Archive download | signed | roadmap | unsigned redirect | checkpoint service | signed, expiring |
-| Checkpoint TTL and expiry | yes | roadmap | no | ? | Phase 6 |
-| Import external adapters | no | no | no | no | Phase 6 |
-| copy_weights, external export | yes | no | export only | ? | copy Phase 6, export Phase 8 |
-| Top-k sample and target prompt logprobs | yes | no | no | ? | top-k Phase 6, target Phase 8 |
+| Checkpoint TTL and expiry | yes | roadmap | no | ? | yes |
+| Import external adapters | no | no | no | no | yes |
+| copy_weights, external export | yes | no | export only | ? | copy yes, export Phase 8 |
+| Top-k sample and target prompt logprobs | yes | no | top-k prompt only | ? | top-k yes, target Phase 8 |
 | Backend readiness probe | ? | API health only | API health only | ? | yes |
-| Compat matrix in CI | n/a | yes | no | no | yes |
+| Compat matrix in CI | n/a | yes | no | no | yes, plus cookbook recipes on CPU |
 | User-free worker | ? | yes | yes | no (token-aware) | Phase 7 |
 | Worker stats and drain | ? | no | sample drain | queue limits | Phase 7 |
 | Helm / Kubernetes-native | n/a | yes (DRA) | no | no (Ray Serve) | Phase 7 |
@@ -180,14 +184,15 @@ definition, schema) are decided in a design pass when the phase starts.
 | Multiple LoRA ranks in one runtime | ? | padded to max rank | one rank and alpha | backend-dependent | yes (rank pools) |
 | CPU-offloaded inactive adapters | ? | no | yes | ? | Phase 8 |
 | Mixed-adapter training forward | ? | no | no | no | Phase 8 |
+| In-memory adapter sync to samplers | ? | ? | yes | ? | Phase 8 |
 | Multi-node FSDP | yes | no | yes | framework-level | Phase 8 |
 | Tensor / pipeline / expert parallelism | yes | no | Megatron | Megatron | Phase 8 |
 | MoE training | yes | roadmap | Megatron MoE | expert-parallel adapters | routed-expert LoRA |
-| Sequence packing, sequence parallelism | ? | chunked logprobs only | yes | yes | Phase 8 |
+| Sequence packing, sequence parallelism | long-context tiers | chunked logprobs only | yes | yes | Phase 8 |
 | Hybrid LoRA with full-weight modules | train_unembed only | no | no | yes | Phase 8 |
-| Vision inputs | yes | no | yes | ? | Phase 8 |
+| Vision and audio inputs | vision and audio | no | vision | ? | Phase 8 |
 | Full fine-tuning | no | yes | yes | yes | Phase 8 |
-| Exactly-once optimizer steps across crashes | ? | no | no | no | Phase 10 |
+| Exactly-once optimizer steps across crashes | ? | no | in-process retry dedup | no | Phase 10 |
 | Elastic multi-node recovery | ? | no | no | no | Phase 10 |
 | Cluster provisioning on demand | ? | DRA scheduler | no | no | Phase 10 |
 
