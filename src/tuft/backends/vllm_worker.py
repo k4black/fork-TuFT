@@ -30,6 +30,7 @@ from typing import Any
 import torch
 import vllm
 from packaging.version import InvalidVersion, parse as parse_version
+from vllm.platforms import current_platform
 from vllm.v1.outputs import LogprobsTensors
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.gpu_worker import Worker as VLLMGPUWorker
@@ -171,3 +172,12 @@ class TuFTGPUWorker(VLLMGPUWorker):
     def apply_patches(self, *args: Any, **kwargs: Any) -> None:
         """Apply necessary patches to vLLM inside the worker process."""
         patch_vllm_prompt_logprobs(self.model_runner)
+
+
+if current_platform.is_cpu():
+    from vllm.v1.worker.cpu_worker import CPUWorker
+
+    class TuFTCPUWorker(CPUWorker):
+        """vLLM CPU worker with the same patches, for GPU-less CI."""
+
+        apply_patches = TuFTGPUWorker.apply_patches

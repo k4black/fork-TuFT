@@ -9,6 +9,13 @@ from ..checkpoints import CheckpointRecord
 from ..config import ModelConfig
 
 
+def gpu_request(num_gpus: float) -> float:
+    """``num_gpus`` for a Ray actor: 0 when the cluster has no GPUs (CPU-only runs)."""
+    import ray
+
+    return num_gpus if ray.cluster_resources().get("GPU", 0) else 0
+
+
 class BaseBackend(ABC):
     """Base class for all backends."""
 

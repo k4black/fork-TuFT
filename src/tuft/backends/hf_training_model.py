@@ -16,6 +16,7 @@ from tinker.types import LoraConfig as TinkerLoraConfig
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM
 
+from tuft.backends.base_backend import gpu_request
 from tuft.backends.lora_modules import (
     MODULE_MAP,
     find_unmatched_target_modules,
@@ -409,7 +410,8 @@ class HFTrainingModel:
                     end_idx = min(start_idx + micro_batch_size, batch_size)
                     micro_data = data[start_idx:end_idx]
 
-                    torch.cuda.reset_peak_memory_stats()
+                    if torch.cuda.is_available():
+                        torch.cuda.reset_peak_memory_stats()
                     self.logger.debug(
                         f"[GPU-micro_batch_{micro_idx}] before_forward: "
                         f"allocated={torch.cuda.memory_allocated() / 1e9:.2f}GB, "
@@ -675,7 +677,7 @@ class HFTrainingModel:
             ray.remote(cls)
             .options(
                 name="training_model_" + config.model_name,
-                num_gpus=num_gpus,
+                num_gpus=gpu_request(num_gpus),
                 resources=config.actor_resources("training", num_gpus),
             )
             .remote(config)

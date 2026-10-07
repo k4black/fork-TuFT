@@ -18,7 +18,7 @@ from ..checkpoints import read_adapter_files
 from ..compat import sampled_sequence
 from ..config import ModelConfig
 from ..telemetry.tracing import get_tracer
-from .base_backend import BaseSamplingBackend
+from .base_backend import BaseSamplingBackend, gpu_request
 from .vllm_engine import VLLMEngine, VLLMEngineConfig
 
 
@@ -183,7 +183,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             ray.remote(VLLMEngine)
             .options(
                 name="sampling_model_" + self.base_model,
-                num_gpus=config.sampling_memory_fraction,
+                num_gpus=gpu_request(config.sampling_memory_fraction),
                 resources=config.actor_resources("sampling", config.sampling_memory_fraction),
                 runtime_env=_runtime_env,
             )
@@ -233,7 +233,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             ray.remote(VLLMEngine)
             .options(
                 name=actor_name,
-                num_gpus=num_gpus,
+                num_gpus=gpu_request(num_gpus),
                 resources=config.actor_resources("sampling", num_gpus),
                 runtime_env=_runtime_env,
             )

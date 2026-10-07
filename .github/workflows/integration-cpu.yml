@@ -36,6 +36,9 @@ jobs:
         run: |
           uv venv --python 3.12
           uv pip install --torch-backend cpu -e ".[dev]" "$VLLM_CPU_WHEEL"
+          # torchcodec's native library fails to load on the runner and vLLM
+          # catches only ImportError; text-only tests never decode video.
+          uv pip uninstall torchcodec
           uv pip list | grep -iE "^(torch|vllm|nvidia|triton)" || true
           df -h /
 
