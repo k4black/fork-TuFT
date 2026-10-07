@@ -2,6 +2,8 @@
 # random Qwen3 (scripts/make_tiny_qwen3.py), on CPU or GPU.
 # Cookbook recipes default to lora_rank=32.
 checkpoint_dir: /tmp/tuft-cookbook/checkpoints
+# DPO samples from its first unnamed sampler save (the reference) for the whole run.
+sampler_checkpoints_keep: 100
 authorized_users:
   tml-cookbook: cookbook
 supported_models:
