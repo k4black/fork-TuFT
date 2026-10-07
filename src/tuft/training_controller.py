@@ -696,7 +696,8 @@ class TrainingController:
                     else "next_sampler_checkpoint"
                 )
                 counter = getattr(training_run, counter_attr)
-                checkpoint_name = name or f"checkpoint-{counter:04d}"
+                prefix = "checkpoint" if checkpoint_type == "training" else "sampler"
+                checkpoint_name = name or f"{prefix}-{counter:04d}"
                 checkpoint_id = f"{model_id}/{checkpoint_name}"
                 logger.info("Checkpoint save begin: %s", checkpoint_id)
 
@@ -1050,6 +1051,9 @@ class TrainingController:
             base_model=metadata.base_model,
             is_lora=True,
             lora_rank=metadata.lora_rank,
+            train_attn=metadata.train_attn,
+            train_mlp=metadata.train_mlp,
+            train_unembed=metadata.train_unembed,
         )
 
     def get_latest_checkpoint(self, model_id: str) -> CheckpointRecord | None:

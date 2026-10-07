@@ -563,8 +563,13 @@ async def test_checkpoint_views_reflect_metadata(request, tmp_path) -> None:
     assert metadata.checkpoint_type == "sampler"
     assert metadata.tinker_path.endswith(sampler_ckpt.checkpoint_id)
 
+    assert training_ckpt.checkpoint_id == "checkpoint-0001"
+    assert sampler_ckpt.checkpoint_id == "sampler-0001"
+
     info = state.get_weights_info(training_ckpt.tinker_checkpoint.tinker_path, user_id="tester")
     assert info.base_model == "Qwen/Qwen3-0.6B"
+    # create_training_client_from_state rebuilds LoraConfig from these; None means True.
+    assert (info.train_attn, info.train_mlp, info.train_unembed) == (True, True, False)
 
 
 @pytest.mark.asyncio
