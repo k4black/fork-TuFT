@@ -26,16 +26,16 @@ The route column names the main request. Methods that compose several requests l
 | `ServiceClient.create_training_client_from_state` | supported | POST /api/v1/load_weights | Also calls `weights_info` and `create_model`. |
 | `ServiceClient.create_training_client_from_state_with_optimizer` | supported | POST /api/v1/load_weights | Also calls `weights_info` and `create_model`. |
 | `ServiceClient.get_console_url` | client-side | - | Links to the Thinking Machines console. TuFT has no console. |
-| `ServiceClient.get_server_capabilities` | supported | GET /api/v1/get_server_capabilities | |
+| `ServiceClient.get_server_capabilities` | supported | GET /api/v1/get_server_capabilities | Each model also reports `capabilities`, `lora_ranks`, `lora_alpha` and `lora_alpha_ratio`. |
 | `ServiceClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
 | `TrainingClient.create_sampling_client` | supported | POST /api/v1/create_sampling_session | |
 | `TrainingClient.forward` | supported | POST /api/v1/forward_backward | Sends `forward_only=true`. |
 | `TrainingClient.forward_backward` | supported | POST /api/v1/forward_backward | |
 | `TrainingClient.forward_backward_custom` | supported | POST /api/v1/forward_backward | The SDK computes the custom loss between a forward and a backward call. |
 | `TrainingClient.get_console_url` | client-side | - | Links to the Thinking Machines console. |
-| `TrainingClient.get_info` | partial | POST /api/v1/get_info | `model_data.arch` is hard-coded to `toy-transformer`. |
+| `TrainingClient.get_info` | supported | POST /api/v1/get_info | `model_data.arch` is `model_type` from `config.json` under a local `model_path` (None for a Hub id); `tokenizer_id` is `ModelConfig.tokenizer_id`, else `model_name`. |
 | `TrainingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
-| `TrainingClient.get_tokenizer` | partial | POST /api/v1/get_info | Loads `tokenizer_id` from the HF Hub. TuFT sets it to the configured `model_name`. |
+| `TrainingClient.get_tokenizer` | supported | POST /api/v1/get_info | Loads `tokenizer_id` from the HF Hub. Set `ModelConfig.tokenizer_id` when `model_name` is not a Hub id. |
 | `TrainingClient.load_state` | supported | POST /api/v1/load_weights | |
 | `TrainingClient.load_state_with_optimizer` | supported | POST /api/v1/load_weights | |
 | `TrainingClient.optim_step` | supported | POST /api/v1/optim_step | |
@@ -51,7 +51,7 @@ The route column names the main request. Methods that compose several requests l
 | `SamplingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
 | `SamplingClient.get_tokenizer` | partial | GET /api/v1/samplers/{sampler_id} | Loads `base_model` from the HF Hub. TuFT sets it to the configured `model_name`. |
 | `SamplingClient.on_queue_state_change` | client-side | - | |
-| `SamplingClient.sample` | supported | POST /api/v1/asample | |
+| `SamplingClient.sample` | supported | POST /api/v1/asample | `topk_sample_logprobs` up to 20 (vLLM's `max_logprobs`), processed logprobs like the sampled-token ones. `prompt_alt_tokens_k` and `target_prompt_logprobs` return 400. |
 | `RestClient.assign_session_project` | unsupported | PUT /api/v1/sessions/{session_id}/project | |
 | `RestClient.delete_checkpoint` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id} | |
 | `RestClient.delete_checkpoint_from_tinker_path` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id} | |

@@ -180,6 +180,7 @@ class VLLMEngine:
     async def prepare(self) -> None:
         """Create the vLLM engine, apply worker patches, start the API server."""
         import vllm
+        from vllm.platforms import current_platform
 
         async with self._prepare_lock:
             if self._prepared:
@@ -194,7 +195,8 @@ class VLLMEngine:
 
             engine_args = vllm.AsyncEngineArgs(
                 model=self.config.model_path,
-                worker_cls="tuft.backends.vllm_worker.TuFTGPUWorker",
+                worker_cls="tuft.backends.vllm_worker."
+                + ("TuFTCPUWorker" if current_platform.is_cpu() else "TuFTGPUWorker"),
                 tensor_parallel_size=self.config.tensor_parallel_size,
                 seed=self.config.seed,
                 distributed_executor_backend="mp",

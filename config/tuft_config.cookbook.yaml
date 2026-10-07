@@ -1,0 +1,19 @@
+# Server profile for running tinker-cookbook recipes unchanged against a tiny
+# random Qwen3 (scripts/make_tiny_qwen3.py), on CPU or GPU. Both names point at
+# the same weights; the second one is the on-policy distillation teacher.
+# Cookbook recipes default to lora_rank=32.
+checkpoint_dir: /tmp/tuft-cookbook/checkpoints
+authorized_users:
+  tml-cookbook: cookbook
+supported_models:
+  - model_name: Qwen/Qwen3-0.6B
+    model_path: ${oc.env:TUFT_TINY_MODEL}
+    max_model_len: 2048
+    max_lora_rank: 32
+    sampling_enforce_eager: true
+  - model_name: Qwen/Qwen3-1.7B
+    model_path: ${oc.env:TUFT_TINY_MODEL}
+    max_model_len: 2048
+    max_lora_rank: 32
+    sampling_enforce_eager: true
+    capabilities: [sampling]

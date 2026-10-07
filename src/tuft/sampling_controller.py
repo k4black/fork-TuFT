@@ -395,6 +395,7 @@ class SamplingController:
                 include_prompt_logprobs=include_prompt_logprobs,
                 topk_prompt_logprobs=topk_prompt_logprobs,
                 lora_id=lora_id,
+                topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
             )
 
             duration = time.perf_counter() - start_time

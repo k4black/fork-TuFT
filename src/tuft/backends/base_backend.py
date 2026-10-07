@@ -9,6 +9,15 @@ from ..checkpoints import CheckpointRecord
 from ..config import ModelConfig
 
 
+def gpu_request(num_gpus: float) -> float:
+    """``num_gpus`` for a Ray actor: 0 when the cluster has no GPUs (CPU-only runs)."""
+    import ray
+
+    if not ray.is_initialized():
+        ray.init()  # what the first .remote() would do anyway
+    return num_gpus if ray.cluster_resources().get("GPU", 0) else 0
+
+
 class BaseBackend(ABC):
     """Base class for all backends."""
 
@@ -44,6 +53,7 @@ class BaseSamplingBackend(BaseBackend):
         include_prompt_logprobs: bool = False,
         topk_prompt_logprobs: int = 0,
         lora_id: Optional[str] = None,
+        topk_sample_logprobs: int = 0,
     ) -> types.SampleResponse:
         """Abstract method for sampling."""
 

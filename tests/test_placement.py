@@ -44,6 +44,8 @@ def test_training_actor_requests_configured_resource(monkeypatch, train_gpu_reso
 
     recorder = _RecordingRemote()
     monkeypatch.setattr(ray, "remote", recorder)
+    monkeypatch.setattr(ray, "is_initialized", lambda: True)
+    monkeypatch.setattr(ray, "cluster_resources", lambda: {"GPU": 8})
 
     HFTrainingModel.get_actor(_config(train_gpu_resource=train_gpu_resource))
 
@@ -57,6 +59,8 @@ def test_sampling_actor_requests_configured_resource_per_gpu(monkeypatch):
 
     recorder = _RecordingRemote()
     monkeypatch.setattr(ray, "remote", recorder)
+    monkeypatch.setattr(ray, "is_initialized", lambda: True)
+    monkeypatch.setattr(ray, "cluster_resources", lambda: {"GPU": 8})
     backend = VLLMSamplingBackend.__new__(VLLMSamplingBackend)
     backend.base_model = "test"
     backend._worker_venv_path = None
@@ -67,3 +71,14 @@ def test_sampling_actor_requests_configured_resource_per_gpu(monkeypatch):
     )
 
     assert recorder.options_kwargs["resources"] == {"infer_gpu": 2}
+    assert recorder.options_kwargs["num_gpus"] == 2
+
+
+def test_actors_request_no_gpus_on_a_cpu_cluster(monkeypatch):
+    import ray
+
+    from tuft.backends.base_backend import gpu_request
+
+    monkeypatch.setattr(ray, "is_initialized", lambda: True)
+    monkeypatch.setattr(ray, "cluster_resources", lambda: {"CPU": 4})
+    assert gpu_request(1) == 0

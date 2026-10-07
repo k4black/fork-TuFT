@@ -232,6 +232,28 @@ def test_topk_prompt_logprobs_round_trip(sdk_server: str) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    "topk_sample_logprobs" not in types.SampleRequest.model_fields,
+    reason="topk_sample_logprobs only exists from tinker 0.29",
+)
+def test_topk_sample_logprobs_round_trip(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        sampling_client = service_client.create_sampling_client(base_model=BASE_MODEL)
+        result = sampling_client.sample(
+            prompt=types.ModelInput.from_ints([21, 22, 23]),
+            num_samples=1,
+            sampling_params=types.SamplingParams(max_tokens=3),
+            topk_sample_logprobs=2,
+        ).result(timeout=CPU_TEST_TIMEOUT)
+        topk = result.sequences[0].topk_logprobs
+        assert topk is not None
+        assert [len(row or []) for row in topk] == [2, 2, 2]
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
 def test_pipelined_futures_resolve_out_of_order(sdk_server: str) -> None:
     """Several in-flight training futures resolve correctly when retrieved reordered."""
     service_client = _service_client(sdk_server)
