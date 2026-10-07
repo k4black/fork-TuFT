@@ -788,6 +788,37 @@ async def test_load_checkpoint_into_new_run_uses_destination_sequence_and_adapte
 
 
 @pytest.mark.asyncio
+async def test_load_checkpoint_survives_restore(request, tmp_path) -> None:
+    """agentscope-ai/TuFT#140: a run seeded by load_state restores the loaded weights."""
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    source, destination = [
+        await state.create_model(
+            session_id,
+            model_owner="tester",
+            base_model="Qwen/Qwen3-0.6B",
+            lora_config=types.LoraConfig(rank=4, train_unembed=False),
+            user_metadata=None,
+        )
+        for _ in range(2)
+    ]
+    checkpoint = await state.save_checkpoint(
+        source.training_run_id, user_id="tester", name="seed", checkpoint_type="training"
+    )
+    await state.load_checkpoint(
+        destination.training_run_id,
+        path=checkpoint.tinker_checkpoint.tinker_path,
+        user_id="tester",
+        optimizer=False,
+    )
+
+    restored = await state.training.restore_from_checkpoint(destination.training_run_id)
+    assert restored is not None
+    assert restored.training_run_id == destination.training_run_id
+    assert restored.checkpoint_type == "training"
+
+
+@pytest.mark.asyncio
 async def test_load_checkpoint_rejects_different_lora_rank(request, tmp_path) -> None:
     use_gpu = request.config.getoption("--gpu")
     state = await _build_state(tmp_path, use_gpu)

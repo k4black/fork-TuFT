@@ -502,6 +502,7 @@ class ServerState:
             path=path,
             optimizer=optimizer,
             seq_id=seq_id,
+            future_id=self.future_store.get_current_future_id(),
         )
 
     def delete_checkpoint(self, model_id: str, user_id: str, checkpoint_id: str) -> None:

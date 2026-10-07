@@ -769,8 +769,9 @@ class TrainingController:
         seq_id: int | None = None,
         ttl_seconds: int | None = None,
         user_metadata: dict[str, str] | None = None,
+        locked: bool = False,
     ) -> CheckpointRecord:
-        """Save a checkpoint for the given training run."""
+        """Save a checkpoint for the given training run; ``locked`` if the caller holds its lock."""
         expires_at = _expiry(ttl_seconds)
         training_run = self.get_run_record(model_id=model_id, user_id=user_id)
         # Without a live training backend a "checkpoint" would be metadata-only
@@ -892,6 +893,8 @@ class TrainingController:
 
                 return checkpoint
 
+            if locked:
+                return await _operation()
             return await self._with_sequence_guard(training_run, seq_id, _operation)
 
     async def load_checkpoint(
@@ -901,8 +904,9 @@ class TrainingController:
         path: str,
         optimizer: bool,
         seq_id: int | None = None,
+        future_id: int = 0,
     ) -> None:
-        """Load a checkpoint."""
+        """Load a checkpoint and save it under the destination run, so a restart restores it."""
         try:
             assert self.config.checkpoint_dir is not None
             checkpoint = CheckpointRecord.from_tinker_path(path, self.config.checkpoint_dir)
@@ -939,6 +943,15 @@ class TrainingController:
                 lora_id=destination_training_run.training_run_id,
                 checkpoint_record=checkpoint,
                 optimizer=optimizer,
+            )
+            await self.save_checkpoint(
+                model_id,
+                user_id,
+                None,
+                checkpoint.checkpoint_type,
+                future_id=future_id,
+                seq_id=seq_id,
+                locked=True,
             )
             logger.info("Checkpoint loaded: %s", checkpoint_id)
 
@@ -1418,9 +1431,8 @@ class TrainingController:
             return latest_ckpt
 
         if latest_ckpt is None:
-            # The run owns no checkpoint to restore from - it has not saved one
-            # yet, or it was seeded by load_weights from another run's
-            # checkpoint. Recreate the adapter so the run stays usable: without
+            # The run owns no checkpoint to restore from - it has not saved or
+            # loaded one yet. Recreate the adapter so the run stays usable: without
             # it the backend has no adapter under this id and every later
             # request fails with "Adapter not found" for good.
             try:
