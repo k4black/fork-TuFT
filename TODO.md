@@ -27,10 +27,8 @@ Vocabulary
 Done when the cookbook core recipes (SL, RL, DPO, on-policy distillation, multi-turn
 guess_number) run unchanged on the current SDK in the CPU integration workflow.
 
-- [x] **Fixes** — a unit test fails when the server env has tinker < 0.29 (stale local
-  `uv.lock`; the file is gitignored, so fresh `uv sync` already gets 0.32);
-  `weights_info` returns the `train_*` flags; unnamed sampler saves named `sampler-NNNN`; the HF
-  backend rejects ranks above `max_lora_rank`.
+- [x] **Fixes** — `weights_info` returns the `train_*` flags; unnamed sampler saves named
+  `sampler-NNNN`; the HF backend rejects ranks above `max_lora_rank`.
 - [x] **Checkpoint TTL and disk GC** — honour `ttl_seconds` on saves and
   `PUT checkpoints/{id}/ttl`; `expires_at` in `metadata.json`; a sweep removes expired checkpoints;
   unnamed sampler saves keep the newest `sampler_checkpoints_keep` per live run and go on release.

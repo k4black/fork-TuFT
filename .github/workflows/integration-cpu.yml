@@ -40,8 +40,6 @@ jobs:
           # torchcodec's native library fails to load on the runner and vLLM
           # catches only ImportError; text-only tests never decode video.
           uv pip uninstall torchcodec
-          uv pip list | grep -iE "^(torch|vllm|nvidia|triton)" || true
-          df -h /
 
       - name: Build the tiny model
         run: .venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
@@ -117,7 +115,7 @@ jobs:
 
       - name: Server log
         if: always()
-        run: tail -n 100 server.log; df -h /; free -g
+        run: tail -n 100 server.log
 
       - uses: actions/upload-artifact@v4
         if: failure()

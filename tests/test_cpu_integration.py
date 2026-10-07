@@ -1,8 +1,4 @@
-"""Real-server SDK wiring test on CPU: HF training backend + vLLM CPU wheel + tiny Qwen3.
-
-Run: python scripts/make_tiny_qwen3.py /tmp/tiny-qwen3
-     TUFT_TINY_MODEL=/tmp/tiny-qwen3 pytest --cpu-integration -m cpu_integration -s
-"""
+"""Real-server SDK wiring test on CPU: HF training backend, vLLM CPU wheel, tiny Qwen3."""
 
 from __future__ import annotations
 

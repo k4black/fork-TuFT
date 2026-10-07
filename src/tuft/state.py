@@ -221,12 +221,7 @@ class ServerState:
                 await self._drop_checkpoint(ckpt, expired=False)
 
     async def _drop_checkpoint(self, ckpt: CheckpointRecord, *, expired: bool) -> None:
-        """Delete ``ckpt`` if the sweep's reason still holds on disk.
-
-        A save or release of an in-memory run holds its lock, so they cannot
-        interleave. ponytail: a sampler load racing a genuine expiry may still
-        get 404; add a per-checkpoint lock if that matters.
-        """
+        """Recheck the deletion reason on disk under the run lock."""
         run = self.training.training_runs.get(ckpt.training_run_id)
         adapter = str(ckpt.adapter_path)
         async with run._execution_lock if run is not None else contextlib.nullcontext():
