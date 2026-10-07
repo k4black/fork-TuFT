@@ -651,13 +651,19 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> types.UntypedAPIFuture:
-        # tinker 0.29-0.31 sampling features this server does not implement.
-        for field in ("topk_sample_logprobs", "prompt_alt_tokens_k", "target_prompt_logprobs"):
+        # tinker 0.30-0.31 sampling features this server does not implement.
+        for field in ("prompt_alt_tokens_k", "target_prompt_logprobs"):
             if getattr(request, field, None):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"{field} is not supported",
                 )
+        # vLLM's default max_logprobs.
+        if not 0 <= (getattr(request, "topk_sample_logprobs", 0) or 0) <= 20:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="topk_sample_logprobs must be between 0 and 20",
+            )
         # tinker >= 0.26.2 requires one sequence id per requested sample on the
         # promise; the ids are session-scoped and stable per (session, seq, i).
         sample_sequence_ids = [

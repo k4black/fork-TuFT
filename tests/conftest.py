@@ -60,6 +60,12 @@ def _clear_redis_db(redis_url: str) -> None:
 def pytest_addoption(parser):
     parser.addoption("--gpu", action="store_true", default=False, help="run tests that require GPU")
     parser.addoption(
+        "--cpu-integration",
+        action="store_true",
+        default=False,
+        help="run cpu_integration tests (real vLLM CPU server, TUFT_TINY_MODEL)",
+    )
+    parser.addoption(
         "--no-persistence",
         action="store_true",
         default=False,
@@ -70,12 +76,15 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: mark test as requiring GPU")
     config.addinivalue_line("markers", "persistence: mark test as requiring persistence")
+    config.addinivalue_line("markers", "cpu_integration: real server on the vLLM CPU wheel")
 
 
 @pytest.fixture(autouse=True, scope="session")
 def set_cpu_env(request):
-    if not request.config.getoption("--gpu"):
+    if not (request.config.getoption("--gpu") or request.config.getoption("--cpu-integration")):
         os.environ["TUFT_CPU_TEST"] = "1"
+    if request.config.getoption("--cpu-integration"):
+        os.environ["TUFT_NO_GPU"] = "1"
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -191,6 +200,11 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "gpu" in item.keywords:
                 item.add_marker(skip_gpu)
+    if not config.getoption("--cpu-integration"):
+        skip_cpu = pytest.mark.skip(reason="need --cpu-integration option to run")
+        for item in items:
+            if "cpu_integration" in item.keywords:
+                item.add_marker(skip_cpu)
 
 
 def pytest_runtest_logstart(location):

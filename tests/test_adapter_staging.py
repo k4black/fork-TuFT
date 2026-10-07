@@ -290,3 +290,20 @@ def test_engine_output_unpickles_without_vllm(monkeypatch):
     response = _build_sample_response(pickle.loads(plain_bytes), include_prompt_logprobs=True)
     assert response.sequences[0].tokens == [7]
     assert response.prompt_logprobs == [None, -0.5]
+
+
+@pytest.mark.skipif(
+    "topk_sample_logprobs" not in types.SampleRequest.model_fields,
+    reason="topk_sample_logprobs only exists from tinker 0.29",
+)
+def test_topk_sample_logprobs_are_ordered_by_rank():
+    lp = lambda logprob, rank: SimpleNamespace(logprob=logprob, rank=rank)  # noqa: E731
+    # vLLM lists the sampled token first, here with rank 3 (outside the top 2).
+    position = {7: lp(-3.0, 3), 4: lp(-2.0, 2), 9: lp(-1.0, 1)}
+    output = SimpleNamespace(
+        prompt_logprobs=None,
+        outputs=[SimpleNamespace(token_ids=[7], finish_reason="length", logprobs=[position])],
+    )
+    seq = _build_sample_response(output, topk_sample_logprobs=2).sequences[0]
+    assert seq.logprobs == [-3.0]
+    assert seq.topk_logprobs == [[(9, -1.0), (4, -2.0)]]

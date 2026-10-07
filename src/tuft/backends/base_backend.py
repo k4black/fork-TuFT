@@ -9,6 +9,11 @@ from ..checkpoints import CheckpointRecord
 from ..config import ModelConfig
 
 
+def gpu_request(num_gpus: float) -> float:
+    """``num_gpus`` for a Ray actor: 0 when ``TUFT_NO_GPU=1`` (CPU-only runs)."""
+    return 0 if os.environ.get("TUFT_NO_GPU") == "1" else num_gpus
+
+
 class BaseBackend(ABC):
     """Base class for all backends."""
 
@@ -44,6 +49,7 @@ class BaseSamplingBackend(BaseBackend):
         include_prompt_logprobs: bool = False,
         topk_prompt_logprobs: int = 0,
         lora_id: Optional[str] = None,
+        topk_sample_logprobs: int = 0,
     ) -> types.SampleResponse:
         """Abstract method for sampling."""
 

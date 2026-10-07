@@ -46,9 +46,12 @@ guess_number) run unchanged on the current SDK in the CPU integration workflow.
   `tokenizer_id` per model for local paths and aliases.
 - [ ] **Adapter capability reporting** — `trainable`, `sampleable`, supported ranks and alpha rules
   in `get_server_capabilities`.
-- [ ] **CPU integration tests** — HF backend on CPU and vLLM on its CPU wheel with a
+- [x] **CPU integration tests** — HF backend on CPU and vLLM on its CPU wheel with a
   `TuFTCPUWorker` twin of the prompt-logprobs patch; a tiny random Qwen3; an SDK wiring test and
-  the pinned cookbook recipes on every PR.
+  the pinned cookbook SL, RL and multi-turn recipes on every PR.
+- [ ] **DPO and distillation recipes on CPU** — vLLM's CPU LoRA logits kernel takes one LoRA index
+  per sequence, so batched prompt-logprob requests fail; fix or work around it, then add both
+  recipes to the CPU workflow.
 - [ ] **Keep as 400/404** — Dimuon optimizer, `assign_session_project`, `export_session_trace`,
   `get_audit_log`, `get_billing_usage`; noted in the compatibility table.
 

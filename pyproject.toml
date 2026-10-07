@@ -22,8 +22,8 @@ dependencies = [
     # src/tuft/compat.py absorbs the drift within the range: 0.26.2 required
     # sample sequence identity and added loss_fn_config_v2, 0.28.0 renamed the
     # top-k prompt-logprobs field, and 0.29.1 renamed adam_params to
-    # optim_params. Non-Adam optimizers, top-k sample logprobs, prompt alt
-    # tokens and target prompt logprobs return 4xx. Bumping past 0.32 needs a
+    # optim_params. Non-Adam optimizers, prompt alt tokens and target
+    # prompt logprobs return 4xx. Bumping past 0.32 needs a
     # fresh pass.
     "tinker>=0.25,<0.33",
     "protobuf>=4.21.0",

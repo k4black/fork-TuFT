@@ -197,6 +197,9 @@ async def test_build_supported_models_reflects_capabilities(tmp_path) -> None:
     assert by_name[SAMPLE_ONLY].capabilities == ["sampling"]
     assert by_name[BOTH].capabilities == ["training", "sampling"]
     assert by_name[BOTH].max_context_length == 2048
+    assert (by_name[TRAIN_ONLY].trainable, by_name[TRAIN_ONLY].sampleable) == (True, False)
+    assert by_name[BOTH].lora_ranks == list(range(1, 17))
+    assert (by_name[BOTH].lora_alpha, by_name[BOTH].lora_alpha_ratio) == (None, 2.0)
 
 
 # =============================================================================
