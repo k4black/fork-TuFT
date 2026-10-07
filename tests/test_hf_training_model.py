@@ -169,3 +169,16 @@ async def test_load_state_restores_optimizer_into_a_different_run(tmp_path) -> N
     # A fresh AdamW has an empty state dict; the restored one carries the step.
     assert restored.state_dict()["state"], "optimizer state was silently dropped"
     assert restored.state_dict()["state"][0]["step"] == saved.state_dict()["state"][0]["step"]
+
+
+@pytest.mark.asyncio
+async def test_create_adapter_rejects_rank_above_max_lora_rank():
+    from tuft.backends.training_backend import HFTrainingBackend
+    from tuft.exceptions import InvalidRequestException
+
+    backend = HFTrainingBackend.__new__(HFTrainingBackend)
+    backend.config = SimpleNamespace(max_lora_rank=16)  # type: ignore[assignment]
+
+    with pytest.raises(InvalidRequestException) as excinfo:
+        await backend.create_adapter("run", types.LoraConfig(rank=32))
+    assert excinfo.value.status_code == 400

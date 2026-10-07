@@ -76,6 +76,9 @@ class _FakeState:
         if self.finished:
             raise SessionFinishedException(session_id)
 
+    async def run_sample(self, **_: Any) -> None:
+        return None
+
     async def run_forward(self, *args: Any, backward: bool, **kwargs: Any):
         self.backward = backward
         self.data = args[2]
@@ -453,6 +456,26 @@ async def test_unsupported_sample_features_are_rejected(compatibility_app) -> No
         )
     assert response.status_code == 400
     assert "topk_sample_logprobs" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_sdk_029_default_sample_fields_are_accepted(compatibility_app) -> None:
+    # SDK 0.29+ always sends these zero defaults. No skip: a server env with
+    # tinker < 0.29 (a stale uv.lock) answers 422 and must fail here.
+    app, _ = compatibility_app
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/asample",
+            json={
+                "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
+                "sampling_params": {"max_tokens": 1},
+                "base_model": "test-model",
+                "topk_sample_logprobs": 0,
+                "prompt_alt_tokens_k": 0,
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+    assert response.status_code == 202
 
 
 def test_openapi_documents_the_protobuf_request_body() -> None:

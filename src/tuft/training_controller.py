@@ -696,12 +696,21 @@ class TrainingController:
                     else "next_sampler_checkpoint"
                 )
                 counter = getattr(training_run, counter_attr)
-                checkpoint_name = name or f"checkpoint-{counter:04d}"
+                prefix = "checkpoint" if checkpoint_type == "training" else "sampler"
+                assert self.config.checkpoint_dir is not None
+                run_dir = self.config.checkpoint_dir / training_run.training_run_id
+                # Runs from before sampler-NNNN hold sampler saves named checkpoint-NNNN.
+                while not name and (
+                    f"{prefix}-{counter:04d}" in training_run.checkpoints
+                    or f"{prefix}-{counter:04d}" in training_run.sampler_checkpoints
+                    or (run_dir / f"{prefix}-{counter:04d}").exists()
+                ):
+                    counter += 1
+                checkpoint_name = name or f"{prefix}-{counter:04d}"
                 checkpoint_id = f"{model_id}/{checkpoint_name}"
                 logger.info("Checkpoint save begin: %s", checkpoint_id)
 
                 setattr(training_run, counter_attr, counter + 1)
-                assert self.config.checkpoint_dir is not None
                 checkpoint = CheckpointRecord.from_training_run(
                     training_run_id=training_run.training_run_id,
                     checkpoint_name=checkpoint_name,
@@ -1050,6 +1059,9 @@ class TrainingController:
             base_model=metadata.base_model,
             is_lora=True,
             lora_rank=metadata.lora_rank,
+            train_attn=metadata.train_attn,
+            train_mlp=metadata.train_mlp,
+            train_unembed=metadata.train_unembed,
         )
 
     def get_latest_checkpoint(self, model_id: str) -> CheckpointRecord | None:

@@ -563,8 +563,37 @@ async def test_checkpoint_views_reflect_metadata(request, tmp_path) -> None:
     assert metadata.checkpoint_type == "sampler"
     assert metadata.tinker_path.endswith(sampler_ckpt.checkpoint_id)
 
+    assert training_ckpt.checkpoint_id == "checkpoint-0001"
+    assert sampler_ckpt.checkpoint_id == "sampler-0001"
+
     info = state.get_weights_info(training_ckpt.tinker_checkpoint.tinker_path, user_id="tester")
     assert info.base_model == "Qwen/Qwen3-0.6B"
+    # create_training_client_from_state rebuilds LoraConfig from these; None means True.
+    assert (info.train_attn, info.train_mlp, info.train_unembed) == (True, True, False)
+
+
+@pytest.mark.asyncio
+async def test_unnamed_save_skips_legacy_sampler_name(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    training = await state.create_model(
+        _create_session(state),
+        model_owner="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=types.LoraConfig(rank=2),
+        user_metadata=None,
+    )
+    # A run saved before sampler-NNNN names its sampler saves checkpoint-NNNN.
+    legacy = await state.save_checkpoint(
+        training.training_run_id,
+        user_id="tester",
+        name="checkpoint-0001",
+        checkpoint_type="sampler",
+    )
+    saved = await state.save_checkpoint(
+        training.training_run_id, user_id="tester", name=None, checkpoint_type="training"
+    )
+    assert saved.checkpoint_id == "checkpoint-0002"
+    assert legacy.metadata.checkpoint_type == "sampler"
 
 
 @pytest.mark.asyncio
