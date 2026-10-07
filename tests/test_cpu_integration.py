@@ -94,5 +94,15 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
         sampler2 = restored.save_weights_and_get_sampling_client()
         out = sampler2.sample(prompt, 1, types.SamplingParams(max_tokens=4)).result(timeout=TIMEOUT)
         assert len(out.sequences[0].tokens) == 4
+
+        sampler_path = trainer.save_weights_for_sampler("cpu-sampler").result(timeout=TIMEOUT).path
+        copied = service.copy_weights(sampler_path).result(timeout=TIMEOUT)
+        assert copied.startswith("tinker://") and copied != sampler_path
+        out = (
+            service.create_sampling_client(model_path=copied)
+            .sample(prompt, 1, types.SamplingParams(max_tokens=4))
+            .result(timeout=TIMEOUT)
+        )
+        assert len(out.sequences[0].tokens) == 4
     finally:
         service.holder.close()
