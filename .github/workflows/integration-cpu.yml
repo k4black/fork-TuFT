@@ -46,16 +46,19 @@ jobs:
         run: .venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
 
       - name: vLLM CPU smoke
+        # vLLM spawns its engine process, which re-imports the script from a file.
         run: |
-          .venv/bin/python - <<'EOF'
+          cat > /tmp/smoke.py <<'EOF'
           import os, time
           from vllm import LLM, SamplingParams
-          t = time.time()
-          llm = LLM(os.environ["TUFT_TINY_MODEL"], enforce_eager=True, max_model_len=512,
-                    enable_lora=True, max_lora_rank=8)
-          print("load_s", round(time.time() - t, 1))
-          out = llm.generate(["Hello"], SamplingParams(max_tokens=4, logprobs=2, prompt_logprobs=1))
-          seq = out[0].outputs[0]
-          print(seq.token_ids, seq.logprobs, out[0].prompt_logprobs)
-          assert len(seq.token_ids) == 4
+          if __name__ == "__main__":
+              t = time.time()
+              llm = LLM(os.environ["TUFT_TINY_MODEL"], enforce_eager=True, max_model_len=512,
+                        enable_lora=True, max_lora_rank=8)
+              print("load_s", round(time.time() - t, 1))
+              out = llm.generate(["Hello"], SamplingParams(max_tokens=4, logprobs=2, prompt_logprobs=1))
+              seq = out[0].outputs[0]
+              print(seq.token_ids, seq.logprobs, out[0].prompt_logprobs)
+              assert len(seq.token_ids) == 4
           EOF
+          .venv/bin/python /tmp/smoke.py
