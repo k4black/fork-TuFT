@@ -538,6 +538,41 @@ def test_worker_load_checkpoint_validates_supplied_geometry_before_weights(tmp_p
         )
 
 
+def test_worker_load_checkpoint_reads_imported_safetensors(tmp_path):
+    """Without adapter.pt the worker loads PEFT keys from adapter_model.safetensors."""
+    import torch
+    from safetensors.torch import save_file
+
+    from tuft.backends.fsdp_engine import FSDPModelConfig
+    from tuft.backends.fsdp_training_backend import (
+        AdapterInfo,
+        MultiAdapterFSDPWorker,
+        SlotPoolConfig,
+    )
+
+    worker = MultiAdapterFSDPWorker(
+        FSDPModelConfig(path="/tmp/model", max_model_len=1024),
+        SlotPoolConfig(rank_slots={8: 1}, target_modules=["q_proj"]),
+    )
+    worker._adapters["adapter_r8_0"] = AdapterInfo(
+        name="adapter_r8_0", rank=8, lora_alpha=16, target_modules=["q_proj"]
+    )
+    param = torch.nn.Parameter(torch.zeros(2, 2))
+    worker.module = MagicMock()
+    worker.module.named_parameters.return_value = [
+        ("base_model.model.q_proj.lora_A.adapter_r8_0.weight", param)
+    ]
+    worker._activate_adapter = MagicMock()
+    save_file(
+        {"base_model.model.q_proj.lora_A.weight": torch.ones(2, 2)},
+        tmp_path / "adapter_model.safetensors",
+    )
+
+    worker.load_checkpoint("adapter_r8_0", tmp_path, ["q_proj"], optimizer=False)
+
+    assert torch.equal(param.data, torch.ones(2, 2))
+
+
 def test_slot_pool_config_get_lora_alpha():
     """SlotPoolConfig.get_lora_alpha returns rank * lora_alpha_ratio."""
     from tuft.backends.fsdp_training_backend import SlotPoolConfig

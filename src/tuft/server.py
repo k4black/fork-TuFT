@@ -76,6 +76,15 @@ class TtlBody(BaseModel):
     ttl_seconds: int | None = None
 
 
+class CopyWeightsBody(BaseModel):
+    # Local model: tinker 0.25 has no CopyWeightsRequest. model_seq_id is unused.
+    session_id: str
+    model_seq_id: int | None = None
+    source_path: str
+    ttl_seconds: int | None = None
+    weights_access_token: str | None = None
+
+
 def _normalize_checkpoint_id(raw: str) -> str:
     if "/" not in raw:
         return raw
@@ -648,6 +657,21 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
                 "optimizer": request.optimizer,
             },
         )
+
+    @app.post("/api/v1/copy_weights")
+    async def copy_weights(
+        body: CopyWeightsBody,
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> dict[str, str]:
+        checkpoint = await state.copy_weights(
+            body.session_id,
+            user.user_id,
+            body.source_path,
+            body.ttl_seconds,
+            body.weights_access_token,
+        )
+        return {"tinker_path": checkpoint.tinker_path}
 
     @app.post(
         "/api/v1/asample",

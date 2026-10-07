@@ -483,6 +483,21 @@ class ServerState:
             public=public,
         )
 
+    async def copy_weights(
+        self,
+        session_id: str,
+        user_id: str,
+        source_path: str,
+        ttl_seconds: int | None,
+        weights_access_token: str | None,
+    ) -> CheckpointRecord:
+        session = self.sessions.require(session_id, user_id)
+        if session.finished_at is not None:
+            raise SessionFinishedException(session_id)
+        return await self.training.copy_weights(
+            session_id, user_id, source_path, ttl_seconds, weights_access_token
+        )
+
     def set_checkpoint_ttl(
         self, model_id: str, user_id: str, checkpoint_id: str, ttl_seconds: int | None
     ) -> None:

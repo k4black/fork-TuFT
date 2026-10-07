@@ -843,7 +843,12 @@ class MultiAdapterFSDPWorker:
                 f"{sorted(checkpoint_parameters or [])} into a slot targeting "
                 f"parameters {sorted(expected_parameters)}."
             )
-        state = torch.load(path / "adapter.pt", map_location="cpu", weights_only=True)
+        if (path / "adapter.pt").exists():
+            state = torch.load(path / "adapter.pt", map_location="cpu", weights_only=True)
+        else:  # imported PEFT adapter (copy_weights from hf:// or s3://)
+            from safetensors.torch import load_file
+
+            state = load_file(path / "adapter_model.safetensors")
         # Build a slot-name-independent lookup: canonicalize saved keys so a checkpoint
         # saved under ANY slot name loads into the current slot. Without this, a slot
         # name mismatch (common after restart + create_adapter fallback) would silently

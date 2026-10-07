@@ -36,7 +36,7 @@ guess_number) run unchanged on the current SDK in the CPU integration workflow.
   unnamed sampler saves keep the newest `sampler_checkpoints_keep` per live run and go on release.
 - [x] **`user_metadata` on saves** — stored and returned in checkpoint records.
 - [x] **Listings after a restart** — checkpoint and run listings read from disk without Redis.
-- [ ] **`copy_weights` and adapter import** — hard-linked copy into a new non-trainable run;
+- [x] **`copy_weights` and adapter import** — hard-linked copy into a new non-trainable run;
   `source_path` also accepts `hf://<repo>` (request token only) and `s3://` under configured
   prefixes; safetensors only, validated against the base model (config and tensor shapes); imports
   train on both backends.

@@ -19,7 +19,7 @@ The route column names the main request. Methods that compose several requests l
 | Method | Status | Route | Note |
 |---|---|---|---|
 | `ServiceClient.close` | supported | POST /api/v1/sessions/{session_id}/finish | Marks the session finished and releases its runs; later heartbeats get 410. |
-| `ServiceClient.copy_weights` | unsupported | POST /api/v1/copy_weights | |
+| `ServiceClient.copy_weights` | supported | POST /api/v1/copy_weights | `tinker://` copies hard-link the files and keep the kind. `hf://org/repo[@rev][/subdir]` (request token only) and `s3://` (under `import_s3_prefixes`) import safetensors adapters as sampler checkpoints. The adapter must match a configured model (`base_model_name_or_path`), a supported rank, the server alpha rule (PEFT's usual `lora_alpha == r` needs `lora_alpha_ratio: 1`) and the targets of some `train_attn/train_mlp/train_unembed` combination, so a `q_proj,v_proj`-only adapter is rejected. The copy lives in a new released run: load it into a new run to train. |
 | `ServiceClient.create_lora_training_client` | supported | POST /api/v1/create_model | |
 | `ServiceClient.create_rest_client` | client-side | - | |
 | `ServiceClient.create_sampling_client` | supported | POST /api/v1/create_sampling_session | |
@@ -37,7 +37,7 @@ The route column names the main request. Methods that compose several requests l
 | `TrainingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
 | `TrainingClient.get_tokenizer` | partial | POST /api/v1/get_info | Loads `tokenizer_id` from the HF Hub. TuFT sets it to the configured `model_name`. |
 | `TrainingClient.load_state` | supported | POST /api/v1/load_weights | |
-| `TrainingClient.load_state_with_optimizer` | supported | POST /api/v1/load_weights | |
+| `TrainingClient.load_state_with_optimizer` | supported | POST /api/v1/load_weights | 400 for a sampler checkpoint: it holds no optimizer state. |
 | `TrainingClient.optim_step` | supported | POST /api/v1/optim_step | |
 | `TrainingClient.save_state` | supported | POST /api/v1/save_weights | Stores `ttl_seconds` and `user_metadata`. A save under an existing name replaces it; `overwrite` is ignored. |
 | `TrainingClient.save_weights_and_get_sampling_client` | supported | POST /api/v1/create_sampling_session | Calls `save_weights_for_sampler` first. The server keeps the newest `sampler_checkpoints_keep` unnamed saves per live run and deletes all of them on release; older clients get 404. |

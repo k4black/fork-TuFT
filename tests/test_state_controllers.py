@@ -1759,3 +1759,75 @@ async def test_resave_replaces_checkpoint_directory(request, tmp_path) -> None:
     await _sampler_save(state, run_id, "same")
 
     assert not (ckpt.path / "stale.bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_copy_weights_links_tinker_checkpoint(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    run_id = await _create_run(state, session_id)
+    source = await state.save_checkpoint(
+        run_id, user_id="tester", name="t", checkpoint_type="training"
+    )
+    weights = source.adapter_path / "adapter_model.safetensors"
+    weights.parent.mkdir(parents=True, exist_ok=True)
+    weights.write_bytes(b"w")
+    source_metadata = source.metadata_path.read_text()
+
+    copy = await state.copy_weights(session_id, "tester", source.tinker_path, 3600, None)
+
+    assert (copy.adapter_path / weights.name).stat().st_ino == weights.stat().st_ino
+    assert source.metadata_path.read_text() == source_metadata
+    assert copy.checkpoint_type == "training" and copy.expires_at is not None
+    assert state.training.training_runs[copy.training_run_id].released is True
+    new_run_id = await _create_run(state, session_id)
+    await state.load_checkpoint(new_run_id, "tester", copy.tinker_path, optimizer=True)
+    with pytest.raises(CheckpointAccessDeniedException):
+        await state.copy_weights(
+            _create_session(state, "other"), "other", source.tinker_path, None, None
+        )
+
+
+@pytest.mark.asyncio
+async def test_load_sampler_checkpoint_with_optimizer_is_rejected(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    run_id = await _create_run(state, _create_session(state))
+    sampler = await _sampler_save(state, run_id, "s")
+    with pytest.raises(InvalidRequestException, match="no optimizer state"):
+        await state.load_checkpoint(run_id, "tester", sampler.tinker_path, optimizer=True)
+
+
+@pytest.mark.asyncio
+async def test_copy_weights_imports_hf_adapter(request, tmp_path, monkeypatch) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    targets = state.training._effective_lora_targets(
+        "Qwen/Qwen3-0.6B", types.LoraConfig(rank=4, train_mlp=False)
+    )
+    adapter_config = {
+        "base_model_name_or_path": "Qwen/Qwen3-0.6B",
+        "r": 4,
+        "lora_alpha": 8,
+        "target_modules": targets.modules,
+    }
+
+    def fake_snapshot_download(repo, *, local_dir, **kwargs):
+        Path(local_dir, "adapter_config.json").write_text(json.dumps(adapter_config))
+        Path(local_dir, "adapter_model.safetensors").write_bytes(b"w")
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr("tuft.weights_import.check_shapes", lambda *args: None)
+
+    copy = await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+
+    metadata = copy.metadata
+    assert (copy.checkpoint_type, metadata.lora_rank, metadata.lora_alpha) == ("sampler", 4, 8)
+    assert (metadata.train_attn, metadata.train_mlp) == (True, False)
+    assert metadata.target_modules == targets.modules
+    adapter_config["lora_alpha"] = 4
+    with pytest.raises(CheckpointIncompatibleException):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    adapter_config.update(lora_alpha=8, base_model_name_or_path="other/model")
+    with pytest.raises(InvalidRequestException, match="matches no configured"):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    assert [p.name for p in tmp_path.iterdir() if (p / "import").exists()] == [copy.training_run_id]
