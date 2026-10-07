@@ -788,7 +788,7 @@ async def test_load_checkpoint_into_new_run_uses_destination_sequence_and_adapte
 
 
 @pytest.mark.asyncio
-async def test_load_checkpoint_survives_restore(request, tmp_path) -> None:
+async def test_load_checkpoint_survives_restore(request, tmp_path, monkeypatch) -> None:
     """agentscope-ai/TuFT#140: a run seeded by load_state restores the loaded weights."""
     state = await _build_state(tmp_path, request.config.getoption("--gpu"))
     session_id = _create_session(state)
@@ -812,10 +812,22 @@ async def test_load_checkpoint_survives_restore(request, tmp_path) -> None:
         optimizer=False,
     )
 
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    original_load_state = backend.load_state
+    loaded = []
+
+    async def recording_load_state(*, lora_id, checkpoint_record, optimizer):
+        loaded.append((lora_id, checkpoint_record.path))
+        await original_load_state(
+            lora_id=lora_id, checkpoint_record=checkpoint_record, optimizer=optimizer
+        )
+
+    monkeypatch.setattr(backend, "load_state", recording_load_state)
+    await backend.remove_adapter(destination.training_run_id)
     restored = await state.training.restore_from_checkpoint(destination.training_run_id)
-    assert restored is not None
-    assert restored.training_run_id == destination.training_run_id
-    assert restored.checkpoint_type == "training"
+    assert restored is not None and restored.checkpoint_type == "training"
+    assert loaded == [(destination.training_run_id, restored.path)]
+    assert restored.path.parent == tmp_path / destination.training_run_id
 
 
 @pytest.mark.asyncio

@@ -71,7 +71,8 @@ class SamplingSessionRecord(BaseModel):
     model_path: str | None = None
     session_seq_id: int
     last_seq_id: int = -1
-    last_used_at: datetime | None = None
+    # Records persisted without it count as used at restore.
+    last_used_at: datetime = Field(default_factory=_now)
     history: list[SamplingHistoryEntry] = Field(default_factory=list)
     executor: SequenceExecutor = Field(default_factory=SequenceExecutor, exclude=True)
 

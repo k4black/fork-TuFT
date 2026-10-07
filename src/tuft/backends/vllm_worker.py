@@ -129,8 +129,10 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
                 saved = punica._sampler_indices[0].item(), punica.indices_len[1]
                 punica._sampler_indices[0] = punica._sampler_indices[req_idx].item()
                 punica.indices_len[1] = 1
-                logits = self.model.compute_logits(prompt_hidden_states)
-                punica._sampler_indices[0], punica.indices_len[1] = saved
+                try:
+                    logits = self.model.compute_logits(prompt_hidden_states)
+                finally:
+                    punica._sampler_indices[0], punica.indices_len[1] = saved
             # PATCH END
 
             # PATCH START
