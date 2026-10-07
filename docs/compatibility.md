@@ -33,7 +33,7 @@ The route column names the main request. Methods that compose several requests l
 | `TrainingClient.forward_backward` | supported | POST /api/v1/forward_backward | |
 | `TrainingClient.forward_backward_custom` | supported | POST /api/v1/forward_backward | The SDK computes the custom loss between a forward and a backward call. |
 | `TrainingClient.get_console_url` | client-side | - | Links to the Thinking Machines console. |
-| `TrainingClient.get_info` | supported | POST /api/v1/get_info | `model_data.arch` is `model_type` from the base model's `config.json`; `tokenizer_id` is `ModelConfig.tokenizer_id`, else `model_name`. |
+| `TrainingClient.get_info` | supported | POST /api/v1/get_info | `model_data.arch` is `model_type` from `config.json` under a local `model_path` (None for a Hub id); `tokenizer_id` is `ModelConfig.tokenizer_id`, else `model_name`. |
 | `TrainingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
 | `TrainingClient.get_tokenizer` | supported | POST /api/v1/get_info | Loads `tokenizer_id` from the HF Hub. Set `ModelConfig.tokenizer_id` when `model_name` is not a Hub id. |
 | `TrainingClient.load_state` | supported | POST /api/v1/load_weights | |

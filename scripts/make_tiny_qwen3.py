@@ -25,5 +25,6 @@ cfg = AutoConfig.from_pretrained(
 )
 cfg.layer_types = cfg.layer_types[:2]  # the base config lists all 28 layers
 torch.manual_seed(0)
-AutoModelForCausalLM.from_config(cfg, dtype=torch.bfloat16).save_pretrained(out)
+# float32: CPUs without bf16 units run the HF training backend far slower in bfloat16.
+AutoModelForCausalLM.from_config(cfg, dtype=torch.float32).save_pretrained(out)
 AutoTokenizer.from_pretrained(BASE).save_pretrained(out)
