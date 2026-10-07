@@ -1,0 +1,58 @@
+name: Integration tests (CPU)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  VLLM_CPU_WHEEL: https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0+cpu-cp38-abi3-manylinux_2_34_x86_64.whl
+  VLLM_CPU_KVCACHE_SPACE: '1'
+  RAY_ENABLE_UV_RUN_RUNTIME_ENV: '0'
+  TUFT_TINY_MODEL: /tmp/tiny-qwen3
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.9.21'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ github.job }}-v1
+
+      - name: Install server with the vLLM CPU wheel
+        # uv.lock is gitignored, so resolve from pyproject; vllm==0.28.0 and
+        # torch==2.13.0 accept the +cpu local versions.
+        run: |
+          uv venv --python 3.12
+          uv pip install --torch-backend cpu -e ".[dev]" "$VLLM_CPU_WHEEL"
+          uv pip list | grep -iE "^(torch|vllm|nvidia|triton)" || true
+          df -h /
+
+      - name: Build the tiny model
+        run: .venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
+
+      - name: vLLM CPU smoke
+        run: |
+          .venv/bin/python - <<'EOF'
+          import os, time
+          from vllm import LLM, SamplingParams
+          t = time.time()
+          llm = LLM(os.environ["TUFT_TINY_MODEL"], enforce_eager=True, max_model_len=512,
+                    enable_lora=True, max_lora_rank=8)
+          print("load_s", round(time.time() - t, 1))
+          out = llm.generate(["Hello"], SamplingParams(max_tokens=4, logprobs=2, prompt_logprobs=1))
+          seq = out[0].outputs[0]
+          print(seq.token_ids, seq.logprobs, out[0].prompt_logprobs)
+          assert len(seq.token_ids) == 4
+          EOF
