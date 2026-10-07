@@ -573,6 +573,30 @@ async def test_checkpoint_views_reflect_metadata(request, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_unnamed_save_skips_legacy_sampler_name(request, tmp_path) -> None:
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    training = await state.create_model(
+        _create_session(state),
+        model_owner="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=types.LoraConfig(rank=2),
+        user_metadata=None,
+    )
+    # A run saved before sampler-NNNN names its sampler saves checkpoint-NNNN.
+    legacy = await state.save_checkpoint(
+        training.training_run_id,
+        user_id="tester",
+        name="checkpoint-0001",
+        checkpoint_type="sampler",
+    )
+    saved = await state.save_checkpoint(
+        training.training_run_id, user_id="tester", name=None, checkpoint_type="training"
+    )
+    assert saved.checkpoint_id == "checkpoint-0002"
+    assert legacy.metadata.checkpoint_type == "sampler"
+
+
+@pytest.mark.asyncio
 async def test_load_checkpoint_restores_state(request, tmp_path) -> None:
     use_gpu = request.config.getoption("--gpu")
     state = await _build_state(tmp_path, use_gpu)
