@@ -71,8 +71,7 @@ class SamplingSessionRecord(BaseModel):
     model_path: str | None = None
     session_seq_id: int
     last_seq_id: int = -1
-    # Records persisted without it count as used at restore.
-    last_used_at: datetime = Field(default_factory=_now)
+    last_used_at: datetime | None = None
     history: list[SamplingHistoryEntry] = Field(default_factory=list)
     executor: SequenceExecutor = Field(default_factory=SequenceExecutor, exclude=True)
 
@@ -102,6 +101,8 @@ class SamplingController:
         record._history_by_seq_id = history_by_seq_id
         if history_by_seq_id:
             record.last_seq_id = max(record.last_seq_id, max(history_by_seq_id))
+        if record.last_used_at is None:
+            record.last_used_at = max((e.created_at for e in record.history), default=None)
 
     def _restore_from_redis(self) -> None:
         """Restore sampling sessions from Redis on startup."""
@@ -290,6 +291,7 @@ class SamplingController:
                     base_model=base_model_ref,
                     model_path=str(adapter_path) if adapter_path else None,
                     session_seq_id=session_seq_id,
+                    last_used_at=_now(),
                 )
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, self._save_session, sampling_session_id)

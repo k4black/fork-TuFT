@@ -243,7 +243,7 @@ class ServerState:
                     ):
                         return
                 elif not fresh.transient or any(
-                    r.model_path == adapter and self._recently_used(r)
+                    r.model_path == adapter and self._recently_used(r, fresh.created_at)
                     for r in self.sampling.sampling_sessions.values()
                 ):
                     return
@@ -255,11 +255,11 @@ class ServerState:
             except Exception:
                 logger.exception("Failed to delete checkpoint %s", ckpt.tinker_path)
 
-    def _recently_used(self, record: SamplingSessionRecord) -> bool:
-        """A sampling session was used within its model's adapter_idle_ttl_minutes."""
+    def _recently_used(self, record: SamplingSessionRecord, saved_at: datetime) -> bool:
+        """Sampled within adapter_idle_ttl_minutes; a never-sampled session counts from saved_at."""
         model = self.config.get_model_config(record.base_model)
         ttl = model.adapter_idle_ttl_minutes if model else 0
-        return ttl > 0 and record.last_used_at > _now() - timedelta(minutes=ttl)
+        return ttl > 0 and (record.last_used_at or saved_at) > _now() - timedelta(minutes=ttl)
 
     async def _sweep_once(self) -> None:
         ttl = timedelta(minutes=self.config.session_heartbeat_ttl_minutes)

@@ -310,6 +310,7 @@ class TestSamplingSessionPersistence:
         assert restored.history[0].prompt_hash == "abc123"
         assert restored.history[1].seq_id == 2
         assert restored.history[1].prompt_token_count == 20
+        assert restored.last_used_at == history[1].created_at
 
 
 # =============================================================================
