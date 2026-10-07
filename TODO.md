@@ -26,7 +26,6 @@ Vocabulary
 ### Phase 6: Tinker API parity (P1)
 Done when the cookbook core recipes (SL, RL, DPO, on-policy distillation, multi-turn
 guess_number) run unchanged on the current SDK in the CPU integration workflow.
-Design: [docs/design/2026-10-07-phase6-tinker-parity.md](docs/design/2026-10-07-phase6-tinker-parity.md).
 
 - [x] **Fixes** — a unit test fails when the server env has tinker < 0.29 (stale local
   `uv.lock`; the file is gitignored, so fresh `uv sync` already gets 0.32);
