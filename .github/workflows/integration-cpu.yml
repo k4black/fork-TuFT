@@ -98,11 +98,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: /tmp/cb/bin/python -m tinker_cookbook.recipes.math_rl.train $C log_path=/tmp/r/rl env=arithmetic groups_per_batch=2 group_size=2 max_tokens=5 eval_every=0
 
-      - name: dpo
-        timeout-minutes: 15
-        if: ${{ !cancelled() }}
-        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=256
-
       - name: guess_number
         timeout-minutes: 15
         if: ${{ !cancelled() }}
@@ -112,6 +107,11 @@ jobs:
         timeout-minutes: 15
         if: ${{ !cancelled() }}
         run: /tmp/cb/bin/python -m tinker_cookbook.recipes.distillation.on_policy_distillation $C log_path=/tmp/r/kd teacher_model=Qwen/Qwen3-1.7B dataset=tulu3 groups_per_batch=2 group_size=2 max_tokens=16 lora_rank=32 eval_every=0
+
+      - name: dpo
+        timeout-minutes: 15
+        if: ${{ !cancelled() }}
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=256
 
       - name: Server log
         if: always()
