@@ -577,7 +577,7 @@ class ServerState:
         await self.sampling.evict_model(model_id, user_id=user_id)
 
     def get_session_overview(self, session_id: str, user_id: str) -> types.GetSessionResponse:
-        self.sessions.require(session_id, user_id)
+        record = self.sessions.require(session_id, user_id)
         training_run_ids = [
             run_id
             for run_id, run in self.training.training_runs.items()
@@ -588,7 +588,11 @@ class ServerState:
             for sid, record in self.sampling.sampling_sessions.items()
             if record.session_id == session_id
         ]
-        return types.GetSessionResponse(training_run_ids=training_run_ids, sampler_ids=sampler_ids)
+        return types.GetSessionResponse(
+            training_run_ids=training_run_ids,
+            sampler_ids=sampler_ids,
+            user_metadata=record.user_metadata,  # tinker < 0.32 ignores it
+        )
 
     def list_sessions(
         self, user_id: str, *, limit: int | None = None, offset: int = 0

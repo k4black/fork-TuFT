@@ -465,3 +465,50 @@ def test_copy_weights_then_resume(sdk_server: str) -> None:
         assert resumed.model_id != training_client.model_id
     finally:
         service_client.holder.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    "user_metadata" not in types.GetSessionResponse.model_fields,
+    reason="GetSessionResponse.user_metadata needs tinker 0.32+",
+)
+def test_get_session_returns_user_metadata(sdk_server: str) -> None:
+    service_client = ServiceClient(
+        user_metadata={"team": "rl"}, api_key=API_KEY, base_url=sdk_server
+    )
+    try:
+        session = (
+            service_client.create_rest_client()
+            .get_session(service_client.holder.get_session_id())
+            .result(timeout=CPU_TEST_TIMEOUT)
+        )
+        assert session.user_metadata == {"team": "rl"}
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not hasattr(types, "CurrentCheckpointStorageUsageResponse"),
+    reason="get_current_checkpoint_storage_usage needs tinker 0.32+",
+)
+def test_checkpoint_storage_usage(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        rest_client = service_client.create_rest_client()
+
+        def usage():
+            response = rest_client.get_current_checkpoint_storage_usage()
+            [row] = response.result(timeout=CPU_TEST_TIMEOUT).data
+            return row
+
+        before = usage()
+        training_client = service_client.create_lora_training_client(
+            base_model=BASE_MODEL, rank=8, train_unembed=False
+        )
+        training_client.save_state("usage-e2e").result(timeout=CPU_TEST_TIMEOUT)
+        after = usage()
+        assert after.checkpoint_count == before.checkpoint_count + 1
+        assert after.size_bytes > before.size_bytes
+    finally:
+        service_client.holder.close()
