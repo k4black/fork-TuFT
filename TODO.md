@@ -24,40 +24,31 @@ Vocabulary
 ## Open work
 
 ### Phase 6: Tinker API parity (P1)
-Done when the cookbook core recipes (SL, RL, DPO, distillation, multi-turn) run unchanged on the
-current SDK.
+Done when the cookbook core recipes (SL, RL, DPO, on-policy distillation, multi-turn
+guess_number) run unchanged on the current SDK in the CPU integration workflow.
 
-- [ ] **Checkpoint TTL and disk GC** — honour `ttl_seconds` on `save_state` and
-  `save_weights_for_sampler` and `PUT checkpoints/{id}/ttl`; store `expires_at` in `metadata.json`;
-  a sweep removes expired records, files and staged copies; cap or make transient the unnamed
-  `checkpoint-NNNN` sampler saves; report `get_current_checkpoint_storage_usage`.
-- [ ] **`copy_weights`** — storage-only copy of a checkpoint into a new non-trainable run with
-  the same checkpoint kind. Also the import path for external adapters: `source_path` accepts
-  `hf://<repo>` and `s3://<bucket>/<key>` PEFT adapters, `weights_access_token` carries an HF token
-  or presigned URL (worker env as fallback); the adapter is validated against the base model, rank,
-  alpha and target modules and rejected on mismatch; the response is a `tinker://` path usable by
-  `create_sampling_client` and `create_training_client_from_state`.
-- [ ] **External export** — `save_weights_external` and `get_external_weights_urls` in the HF
-  adapter layout the cookbook `weights/` module reads.
+- [x] **Fixes** — a unit test fails when the server env has tinker < 0.29 (stale local
+  `uv.lock`; the file is gitignored, so fresh `uv sync` already gets 0.32);
+  `weights_info` returns the `train_*` flags; unnamed sampler saves named `sampler-NNNN`; the HF
+  backend rejects ranks above `max_lora_rank`.
+- [ ] **Checkpoint TTL and disk GC** — honour `ttl_seconds` on saves and
+  `PUT checkpoints/{id}/ttl`; `expires_at` in `metadata.json`; a sweep removes expired checkpoints;
+  unnamed sampler saves keep the newest `sampler_checkpoints_keep` per live run and go on release.
+- [ ] **`user_metadata` on saves** — stored and returned in checkpoint records.
+- [ ] **Listings after a restart** — checkpoint and run listings read from disk without Redis.
+- [ ] **`copy_weights` and adapter import** — hard-linked copy into a new non-trainable run;
+  `source_path` also accepts `hf://<repo>` (request token only) and `s3://` under configured
+  prefixes; safetensors only, validated against the base model (config and tensor shapes); imports
+  train on both backends.
 - [ ] **`topk_sample_logprobs`** — top-k logprobs at generated positions through vLLM and the
   proto encoder.
-- [ ] **`target_prompt_logprobs`** — score chosen token ids at prompt positions, including sparse
-  CSR input.
-- [ ] **`prompt_alt_tokens_k`** — k alternative draws per prompt position from the same prefill.
-- [ ] **Model metadata** — `get_info.model_data.arch` from the model config; a resolvable
-  `tokenizer_id` for local paths and aliases so `get_tokenizer` works.
-- [ ] **Telemetry and per-step metrics** — keep SDK telemetry events; expose per-step training
-  metrics for W&B or MLflow.
-- [ ] **Save-request fields dropped today** — `user_metadata` on saves, returned in checkpoint
-  records; `LoraConfig.seed` for reproducible adapter init on both backends, including reused FSDP
-  slots.
-- [ ] **Adapter capability reporting** — advertise supported ranks (`fsdp_rank_slots`), target
-  geometry and alpha rules in `get_server_capabilities` so clients fail before submitting.
-- [ ] **CPU mode for tests** — the HF backend on CPU with a tiny model, compared against a plain
-  transformers forward; vLLM on its CPU backend with a `TuFTCPUWorker` twin of the prompt-logprobs
-  patch and a `device: cpu` engine mode, so sampling, LoRA and logprob paths run without a GPU.
-- [ ] **Restart durability on a persistent volume** — `create_training_client_from_state` after
-  a server restart with checkpoints on a PVC.
+- [ ] **Model metadata** — `get_info.model_data.arch` from the model config; optional
+  `tokenizer_id` per model for local paths and aliases.
+- [ ] **Adapter capability reporting** — `trainable`, `sampleable`, supported ranks and alpha rules
+  in `get_server_capabilities`.
+- [ ] **CPU integration tests** — HF backend on CPU and vLLM on its CPU wheel with a
+  `TuFTCPUWorker` twin of the prompt-logprobs patch; a tiny random Qwen3; an SDK wiring test and
+  the pinned cookbook recipes on every PR.
 - [ ] **Keep as 400/404** — Dimuon optimizer, `assign_session_project`, `export_session_trace`,
   `get_audit_log`, `get_billing_usage`; noted in the compatibility table.
 
@@ -110,6 +101,13 @@ Identity, quotas and routing belong to the control plane (Phase 9).
 - [ ] **Tensor, pipeline and expert parallelism** — a Megatron-style backend for models that do not
   fit FSDP well (large MoE); only with a target model (SkyRL and Twinkle have Megatron paths).
 - [ ] **Full fine-tuning** — optional; the Tinker API is LoRA-only.
+- [ ] **`target_prompt_logprobs` and `prompt_alt_tokens_k`** — score chosen ids and draw k
+  alternatives at prompt positions inside the prompt-logprobs patch, including sparse CSR input.
+- [ ] **External export** — `save_weights_external` and `get_external_weights_urls` in the HF
+  adapter layout.
+- [ ] **Reproducible adapter init** — `LoraConfig.seed` on both backends, including reused FSDP slots.
+- [ ] **Telemetry and storage usage** — keep SDK telemetry events; per-step training metrics;
+  `get_current_checkpoint_storage_usage`.
 
 ### Phase 9: Control plane (P2, after Phase 7)
 Many workers behind one control plane. Mechanics (pinning policy, scale-down choice, pool
@@ -166,8 +164,8 @@ definition, schema) are decided in a design pass when the phase starts.
 | Archive download | signed | roadmap | unsigned redirect | checkpoint service | signed, expiring |
 | Checkpoint TTL and expiry | yes | roadmap | no | ? | Phase 6 |
 | Import external adapters | no | no | no | no | Phase 6 |
-| copy_weights, external export | yes | no | export only | ? | Phase 6 |
-| Top-k sample and target prompt logprobs | yes | no | no | ? | Phase 6 |
+| copy_weights, external export | yes | no | export only | ? | copy Phase 6, export Phase 8 |
+| Top-k sample and target prompt logprobs | yes | no | no | ? | top-k Phase 6, target Phase 8 |
 | Backend readiness probe | ? | API health only | API health only | ? | yes |
 | Compat matrix in CI | n/a | yes | no | no | yes |
 | User-free worker | ? | yes | yes | no (token-aware) | Phase 7 |
