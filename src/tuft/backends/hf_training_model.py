@@ -48,11 +48,25 @@ _get_tracer = lambda: get_tracer("tuft.hf_training_model")  # noqa: E731
 
 OPTIMIZER_STATE_FILENAME = "optimizer.pt"
 
-# Tokens per lm_head chunk: [2048, 248k] bf16 logits take ~1 GB.
-_LM_HEAD_CHUNK_TOKENS = 2048
+# Tokens per lm_head or MLP chunk: [2048, 248k] bf16 logits take ~1 GB.
+_CHUNK_TOKENS = 2048
 # ponytail: one threshold for every model size; derive it from free GPU memory if needed.
 # At 64k tokens a 9B model's checkpointed layer inputs reach ~20 GB.
 _OFFLOAD_MIN_TOKENS = 64 * 1024
+
+
+def _tile_mlps(model: torch.nn.Module) -> None:
+    """Run position-wise decoder MLPs over checkpointed sequence chunks on long inputs."""
+    for layer in model.get_decoder().layers:
+        forward = layer.mlp.forward
+
+        def tiled(x: torch.Tensor, forward=forward) -> torch.Tensor:
+            if x.shape[:-1].numel() < _OFFLOAD_MIN_TOKENS:
+                return forward(x)
+            chunks = x.split(_CHUNK_TOKENS, dim=-2)
+            return torch.cat([checkpoint(forward, c, use_reentrant=False) for c in chunks], dim=-2)
+
+        layer.mlp.forward = tiled
 
 
 def _chunked_target_logprobs(
@@ -70,8 +84,8 @@ def _chunked_target_logprobs(
         logits = lm_head(h)
         return _compute_target_logprobs(logits / temperature if temperature else logits, y)
 
-    flat = hidden.reshape(-1, hidden.size(-1)).split(_LM_HEAD_CHUNK_TOKENS)
-    flat_labels = labels.reshape(-1).split(_LM_HEAD_CHUNK_TOKENS)
+    flat = hidden.reshape(-1, hidden.size(-1)).split(_CHUNK_TOKENS)
+    flat_labels = labels.reshape(-1).split(_CHUNK_TOKENS)
     chunks = [
         checkpoint(chunk_logprobs, h, y, use_reentrant=False)
         for h, y in zip(flat, flat_labels, strict=True)
@@ -709,6 +723,7 @@ class HFTrainingModel:
         )
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable({"use_reentrant": False})
+        _tile_mlps(model)
         default_modules = get_default_target_modules(str(config.model_path))
         if default_modules is not None:
             peft_config = LoraConfig(target_modules=default_modules)
@@ -723,6 +738,8 @@ class HFTrainingModel:
         if lora_id not in self.adapter_optimizer:
             raise ValueError(f"Adapter {lora_id} not found.")
         self.model.set_adapter(lora_id)
+        # from_pretrained and load_adapter leave eval mode, which disables gradient checkpointing.
+        self.model.train()
 
     @classmethod
     def get_actor(cls, config: ModelConfig) -> "ActorProxy":

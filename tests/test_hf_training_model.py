@@ -187,12 +187,9 @@ async def test_create_adapter_rejects_rank_above_max_lora_rank():
     assert excinfo.value.status_code == 400
 
 
-def test_chunked_target_logprobs_match_full_logits(monkeypatch):
+def _tiny_qwen3_5():
     import torch
-    from peft import LoraConfig, get_peft_model
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
-
-    from tuft.backends import hf_training_model
 
     torch.manual_seed(0)
     config = Qwen3_5TextConfig(
@@ -209,9 +206,35 @@ def test_chunked_target_logprobs_match_full_logits(monkeypatch):
         linear_num_value_heads=2,
         layer_types=["linear_attention"] * 3 + ["full_attention"],
     )
+    return Qwen3_5ForCausalLM(config).float()
+
+
+def test_activate_adapter_keeps_gradient_checkpointing_on(tmp_path):
+    from tuft.backends.hf_training_model import HFTrainingModel
+
+    _tiny_qwen3_5().save_pretrained(tmp_path)
+    model = HFTrainingModel.__new__(HFTrainingModel)
+    config = SimpleNamespace(model_path=tmp_path, attn_implementation=None)
+    model.model = model._init_peft_model(config)  # type: ignore[arg-type]
+    model.adapter_optimizer = {"default": None}  # type: ignore[assignment]
+    model.model.eval()  # as after load_adapter
+
+    model._activate_adapter("default")
+
+    # HF checkpoints a layer only when both flags are set.
+    layers = model.model.get_decoder().layers
+    assert all(layer.training and layer.gradient_checkpointing for layer in layers)
+
+
+def test_long_context_path_matches_full_logits(monkeypatch):
+    import torch
+    from peft import LoraConfig, get_peft_model
+
+    from tuft.backends import hf_training_model
+
     model = get_peft_model(
-        Qwen3_5ForCausalLM(config).float(),
-        LoraConfig(target_modules=["q_proj", "lm_head"], init_lora_weights=False),
+        _tiny_qwen3_5(),
+        LoraConfig(target_modules=["q_proj", "gate_proj", "lm_head"], init_lora_weights=False),
     )
     ids = torch.randint(0, 128, (2, 7))
     labels = torch.randint(0, 128, (2, 7))
@@ -221,8 +244,10 @@ def test_chunked_target_logprobs_match_full_logits(monkeypatch):
     expected = torch.log_softmax(logits, -1).gather(-1, labels[..., None]).squeeze(-1)
     expected_grads = torch.autograd.grad(expected.sum(), lora)
 
-    # Several chunks plus a partial last one.
-    monkeypatch.setattr(hf_training_model, "_LM_HEAD_CHUNK_TOKENS", 3)
+    # Tiled MLPs and lm_head over several chunks plus a partial last one.
+    monkeypatch.setattr(hf_training_model, "_CHUNK_TOKENS", 3)
+    monkeypatch.setattr(hf_training_model, "_OFFLOAD_MIN_TOKENS", 4)
+    hf_training_model._tile_mlps(model)
     hidden = model.get_decoder()(input_ids=ids, use_cache=False).last_hidden_state
     actual = hf_training_model._chunked_target_logprobs(
         hidden, model.get_output_embeddings(), labels, 0.7
