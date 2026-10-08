@@ -160,19 +160,36 @@ class HFTrainingModel:
         self.micro_batch_size = config.micro_batch_size
         self._device = next(self.model.parameters()).device
         self.sampling_adapters: OrderedDict[str, None] = OrderedDict()  # colocate "hf", LRU
+        self._pinned: dict[str, torch.Tensor] = {}  # colocate "sleep" host copies, reused
         if config.colocate == "sleep":
             self._move(torch.device("cpu"))  # vLLM starts in the sampling phase
 
     def _move(self, device: torch.device) -> None:
-        """Move the model and optimizer state, then release cached GPU memory."""
-        self.model.to(device)
-        for optimizer in self.adapter_optimizer.values():
-            for state in optimizer.state.values():
+        """Move weights, grads, buffers and optimizer state; CPU copies go to pinned buffers."""
+        if not torch.cuda.is_available():
+            return  # CPU-only: everything already lives on the CPU
+
+        def to(key: str, t: torch.Tensor) -> torch.Tensor:
+            if device.type != "cpu":
+                return t.to(device, non_blocking=True)
+            buf = self._pinned.get(key)
+            if buf is None or buf.shape != t.shape or buf.dtype != t.dtype:
+                buf = self._pinned[key] = torch.empty_like(t, device="cpu").pin_memory()
+            return buf.copy_(t, non_blocking=True)
+
+        for name, param in self.model.named_parameters():
+            param.data = to(name, param.data)
+            if param.grad is not None:  # forward_backward, sample, optim_step keeps grads
+                param.grad = to("grad." + name, param.grad)
+        for name, buffer in self.model.named_buffers():
+            buffer.data = to(name, buffer.data)
+        for lora_id, optimizer in self.adapter_optimizer.items():
+            for i, state in enumerate(optimizer.state.values()):
                 for key, value in state.items():
                     if key != "step" and torch.is_tensor(value):  # AdamW keeps step on CPU
-                        state[key] = value.to(device)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+                        state[key] = to(f"opt.{lora_id}.{i}.{key}", value)
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
     async def offload(self) -> None:
         self._move(torch.device("cpu"))

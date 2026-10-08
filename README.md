@@ -439,7 +439,8 @@ docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
 
 - `"sleep"` switches lazily. Requests of the current phase run together. A switch waits for them
   to finish and holds back new requests of that phase. An SL loop never switches; an RL step
-  switches twice. vLLM frees GPU memory in sleep only on CUDA.
+  switches twice. vLLM frees GPU memory in sleep only on CUDA. Host RAM must hold about twice the
+  model size: vLLM's offloaded weights plus the trainer's pinned copy.
 - OpenAI-compatible endpoints: `"hf"` has none. In `"sleep"`, a request sent during a training
   phase waits for the next sampling phase.
 
