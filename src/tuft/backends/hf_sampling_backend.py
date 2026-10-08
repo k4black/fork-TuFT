@@ -30,6 +30,7 @@ class HFSamplingBackend(BaseSamplingBackend):
     async def add_adapter(self, lora_id: str, adapter_path: Path) -> None:
         if not adapter_path.exists():
             raise ValueError(f"LoRA adapter path {adapter_path} does not exist.")
+        # The training actor reads this path itself: same node or a shared checkpoint_dir.
         self._paths[lora_id] = adapter_path
 
     async def remove_adapter(self, lora_id: str) -> None:
@@ -73,6 +74,8 @@ class HFSamplingBackend(BaseSamplingBackend):
 
 # ---- actor side: called by HFTrainingModel under its lock ----
 
+PROMPT_CHUNK = 1024  # prompt positions per lm_head call for prompt logprobs
+
 
 @lru_cache
 def _tokenizer(model_path: str) -> Any:
@@ -83,8 +86,8 @@ def _tokenizer(model_path: str) -> Any:
 
 def remove_sampling_adapter(m: Any, lora_id: str) -> None:
     if lora_id in m.sampling_adapters:
-        del m.sampling_adapters[lora_id]
         m.model.delete_adapter(lora_id)
+        del m.sampling_adapters[lora_id]
 
 
 def _use_sampling_adapter(m: Any, lora_id: str, adapter_path: str) -> None:
@@ -99,14 +102,23 @@ def _use_sampling_adapter(m: Any, lora_id: str, adapter_path: str) -> None:
     m.model.set_adapter(lora_id, inference_mode=True)
 
 
-def _position(row: torch.Tensor, token: int, k: int) -> dict[int, SimpleNamespace]:
-    """One position in vLLM's logprobs shape: the chosen token first, then the top k."""
-    lp = row[token]
-    out = {token: SimpleNamespace(logprob=lp.item(), rank=int((row > lp).sum()) + 1)}
-    if k:
-        values, ids = row.topk(k)
-        for rank, (tid, value) in enumerate(zip(ids.tolist(), values.tolist(), strict=True), 1):
-            out.setdefault(tid, SimpleNamespace(logprob=value, rank=rank))
+def _ranked(rows: torch.Tensor, tokens: torch.Tensor, k: int) -> list[torch.Tensor]:
+    """Per row, on device: the token's logprob, its rank, and the top-k values and ids."""
+    chosen = rows.gather(-1, tokens[:, None])
+    rank = (rows > chosen).sum(-1) + 1
+    top = rows.topk(k)
+    return [tokens, chosen.squeeze(-1), rank, top.values, top.indices]
+
+
+def _positions(ranked: list[torch.Tensor]) -> list[dict[int, SimpleNamespace]]:
+    """vLLM's logprobs shape, the chosen token first; one device-to-host copy."""
+    tokens, chosen, rank, values, ids = (t.tolist() for t in ranked)
+    out = []
+    for token, lp, r, top_values, top_ids in zip(tokens, chosen, rank, values, ids, strict=True):
+        position = {token: SimpleNamespace(logprob=lp, rank=r)}
+        for top_rank, (tid, value) in enumerate(zip(top_ids, top_values, strict=True), 1):
+            position.setdefault(tid, SimpleNamespace(logprob=value, rank=top_rank))
+        out.append(position)
     return out
 
 
@@ -153,9 +165,17 @@ def generate(
     stop_strs = [s for s in stop if isinstance(s, str)]
     stop_ids = {s for s in stop if isinstance(s, int)}
     for eos in (model.generation_config.eos_token_id, model.config.eos_token_id):
-        stop_ids.update(eos if isinstance(eos, list) else [] if eos is None else [eos])
+        if isinstance(eos, list):
+            stop_ids.update(eos)
+        elif eos is not None:
+            stop_ids.add(eos)
+    # A stop string spans at most 4 tokens per character (byte-level BPE).
+    window = 4 * max(map(len, stop_strs), default=0)
+    tokenizer = _tokenizer(str(m.config.model_path)) if stop_strs else None
     device = next(model.parameters()).device
     gen = torch.Generator(device).manual_seed(seed) if seed is not None else None
+    base = model.get_base_model()
+    head = base.get_output_embeddings()
     try:
         if lora_id is not None:
             assert adapter_path is not None
@@ -165,47 +185,57 @@ def generate(
             adapters = model.disable_adapter()
         model.eval()  # also turns off gradient checkpointing, so the KV cache works
         with adapters:
-            # ponytail: full-prompt logits in fp32 for prompt logprobs; chunk if long prompts OOM.
-            out = model(
-                input_ids=torch.tensor([prompt], device=device),
-                use_cache=True,
-                logits_to_keep=0 if prompt_logprobs is not None else 1,
+            # The decoder, not the LM: full-prompt logits would not fit for long prompts.
+            out = base.get_decoder()(
+                input_ids=torch.tensor([prompt], device=device), use_cache=True
             )
+            hidden = out.last_hidden_state[0]
             prompt_positions: list = [None]
             if prompt_logprobs is not None:
-                scaled = out.logits[0, :-1].float()
-                if temperature >= 1e-5:  # matches the TuFT vLLM worker patch
-                    scaled = scaled / temperature
-                rows = scaled.log_softmax(-1)
-                for row, token in zip(rows, prompt[1:], strict=True):
-                    prompt_positions.append(_position(row, token, prompt_logprobs))
+                targets = torch.tensor(prompt[1:], device=device)
+                for i in range(0, len(prompt) - 1, PROMPT_CHUNK):
+                    j = min(i + PROMPT_CHUNK, len(prompt) - 1)
+                    rows = head(hidden[i:j]).float()
+                    if temperature >= 1e-5:  # matches the TuFT vLLM worker patch
+                        rows = rows / temperature
+                    ranked = _ranked(rows.log_softmax(-1), targets[i:j], prompt_logprobs)
+                    prompt_positions += _positions(ranked)
             cache = out.past_key_values
             cache.batch_repeat_interleave(num_samples)
-            logits = out.logits[:, -1].float().repeat(num_samples, 1)
-            seqs = [
-                SimpleNamespace(token_ids=[], logprobs=[], finish_reason=None)
-                for _ in range(num_samples)
-            ]
-            for _ in range(max_tokens):
+            logits = head(hidden[-1:]).float().repeat(num_samples, 1)
+            steps: list[list[torch.Tensor]] = []
+            lengths: list[int | None] = [None] * num_samples
+            reasons = ["length"] * num_samples
+            token_ids: list[list[int]] = [[] for _ in range(num_samples)]
+            for step in range(max_tokens):
                 tokens, rows = _pick(logits, temperature, top_k, top_p, gen)
-                for seq, token, row in zip(seqs, tokens.tolist(), rows, strict=True):
-                    if seq.finish_reason is not None:
+                steps.append(_ranked(rows, tokens, logprobs))
+                for i, token in enumerate(tokens.tolist()):  # one sync per step
+                    if lengths[i] is not None:
                         continue
-                    seq.token_ids.append(token)
-                    seq.logprobs.append(_position(row, token, logprobs))
-                    text = (
-                        _tokenizer(str(m.config.model_path)).decode(seq.token_ids)
-                        if stop_strs
-                        else ""
-                    )
-                    if token in stop_ids or any(s in text for s in stop_strs):
-                        seq.finish_reason = "stop"
-                    elif len(seq.token_ids) == max_tokens:
-                        seq.finish_reason = "length"
-                if all(seq.finish_reason is not None for seq in seqs):
+                    token_ids[i].append(token)
+                    tail = tokenizer.decode(token_ids[i][-window:]) if tokenizer else ""
+                    if token in stop_ids or any(s in tail for s in stop_strs):
+                        lengths[i], reasons[i] = step + 1, "stop"
+                if all(n is not None for n in lengths) or step + 1 == max_tokens:
                     break
                 out = model(input_ids=tokens[:, None], past_key_values=cache, use_cache=True)
                 logits = out.logits[:, -1].float()
+            # [steps, n, ...] -> one host copy, then per sequence.
+            stacked = [torch.stack(parts, 1).cpu() for parts in zip(*steps, strict=True)]
+            per_seq = [
+                _positions([t[i] for t in stacked]) if steps else [] for i in range(num_samples)
+            ]
     finally:
         model.train(was_training)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()  # free the KV cache before the next training step
+    seqs = [
+        SimpleNamespace(
+            token_ids=ids,
+            logprobs=positions[: len(ids)],
+            finish_reason=reason,
+        )
+        for ids, positions, reason in zip(token_ids, per_seq, reasons, strict=True)
+    ]
     return SimpleNamespace(prompt_logprobs=prompt_positions, outputs=seqs)
