@@ -82,6 +82,10 @@ class BaseSamplingBackend(BaseBackend):
             from ..backends.sampling_backend import DummySamplingBackend
 
             return DummySamplingBackend(config)
+        if config.colocate == "hf":
+            from ..backends.hf_sampling_backend import HFSamplingBackend
+
+            return HFSamplingBackend(config)
         if config.data_parallel_size > 1:
             from ..backends.sampling_backend import DPSamplingBackend
 

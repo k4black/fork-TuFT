@@ -128,6 +128,8 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         # At most this many sessions stay staged (vLLM's default max_cpu_loras).
         self._max_staged = config.max_loras
         self._idle_ttl = config.adapter_idle_ttl_minutes * 60
+        if config.colocate == "sleep":
+            self._idle_ttl = 0  # the sweep would unload while the engine sleeps
         self._sweep_task: Optional[asyncio.Task] = None
         self._counter = 1
         self._lock = asyncio.Lock()
@@ -173,6 +175,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             tool_call_parser=config.tool_call_parser,
             reasoning_parser=config.reasoning_parser,
             bundle_indices=bundle_indices,
+            enable_sleep_mode=config.colocate == "sleep",
         )
 
     def _create_colocated_engine(self, config: ModelConfig):
@@ -344,6 +347,8 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     "n": num_samples,
                     "prompt_logprobs": (topk_prompt_logprobs if include_prompt_logprobs else None),
                     "logprobs": topk_sample_logprobs,
+                    # tinker returns token ids only; string stops need the text.
+                    "detokenize": False,
                 }
                 # Avoid prefix cache reads when computing prompt logprobs
                 # (cached prompt chunks would otherwise skip logit computation
@@ -369,6 +374,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     ]
                     if str_stops:
                         params["stop"] = str_stops
+                        params["detokenize"] = True
                     if int_stops:
                         params["stop_token_ids"] = int_stops
 

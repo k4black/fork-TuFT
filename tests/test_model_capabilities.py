@@ -137,6 +137,18 @@ def test_colocate_requires_both_capabilities() -> None:
         )
 
 
+@pytest.mark.parametrize("mode", [True, "sleep", "hf"])
+def test_colocate_requires_hf_training_backend(mode) -> None:
+    with pytest.raises(ValidationError, match="training_backend='hf'"):
+        ModelConfig(
+            model_name="colo",
+            model_path=Path(CPU_MODEL_PATH),
+            max_model_len=2048,
+            training_backend="fsdp",
+            colocate=mode,
+        )
+
+
 def test_config_signature_ignores_capability_changes(tmp_path) -> None:
     """Toggling capabilities and restarting must not be flagged as config drift."""
     both = AppConfig(

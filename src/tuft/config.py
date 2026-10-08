@@ -180,9 +180,12 @@ class ModelConfig(BaseModel):
     train_gpu_resource: str | None = None
     infer_gpu_resource: str | None = None
 
-    # whether to colocate sampling and training on the same device
-    # only for local testing purposes
-    colocate: bool = False
+    # Share one GPU between training and sampling (single model only):
+    #   true:    trainer and vLLM both resident, vLLM gets sampling_memory_fraction
+    #   "sleep": as true, but vLLM sleeps during training and the trainer moves to
+    #            CPU during sampling, so one weight copy is resident at a time
+    #   "hf":    no vLLM; the training actor samples with HF generate
+    colocate: bool | Literal["sleep", "hf"] = False
     sampling_memory_fraction: float = 0.2  # fraction of GPU memory for sampling
     # Max context length for sampling (vLLM) only; if unset, max_model_len is used.
     # Can be set smaller (e.g. 2048) in testing to reduce GPU memory and startup time.
@@ -224,6 +227,8 @@ class ModelConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_colocate(self) -> "ModelConfig":
+        if self.colocate and self.training_backend != "hf":
+            raise ValueError("Colocate option requires training_backend='hf'.")
         if self.colocate and self.tensor_parallel_size != 1:
             raise ValueError("Colocate option is only supported for tensor_parallel_size=1.")
         if self.colocate and self.data_parallel_size > 1:

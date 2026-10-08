@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from tinker import types
 
 from .backends import BaseSamplingBackend
+from .backends.gpu_phase import GpuPhase, use_phase
 from .checkpoints import CheckpointRecord
 from .config import SAMPLING_CAPABILITY, AppConfig, ModelConfig
 from .exceptions import (
@@ -89,6 +90,7 @@ class SamplingController:
         self._base_backends: Dict[str, BaseSamplingBackend] = self._create_backends(
             config.supported_models
         )
+        self.phases: Dict[str, GpuPhase] = {}  # colocate "sleep" models, set by ServerState
         self._restore_from_redis()
 
     def _build_key(self, session_id: str) -> str:
@@ -272,9 +274,10 @@ class SamplingController:
                         raise UnknownModelException(model_name=base_model_ref)
                     adapter_path = parsed_checkpoint.adapter_path
                     sampling_backend = self._base_backends[base_model_ref]
-                    await sampling_backend.add_adapter(
-                        lora_id=sampling_session_id, adapter_path=adapter_path
-                    )
+                    async with use_phase(self.phases, base_model_ref, "sample"):
+                        await sampling_backend.add_adapter(
+                            lora_id=sampling_session_id, adapter_path=adapter_path
+                        )
                     # TODO: remove adapter when session is deleted
                 elif base_model:
                     base_model_ref = base_model
@@ -393,15 +396,16 @@ class SamplingController:
             include_prompt_logprobs = bool(request.prompt_logprobs)
             topk_prompt_logprobs = request.topk_prompt_logprobs or 0
 
-            response = await backend.sample(
-                prompt=prompt,
-                num_samples=num_samples,
-                sampling_params=sampling_params,
-                include_prompt_logprobs=include_prompt_logprobs,
-                topk_prompt_logprobs=topk_prompt_logprobs,
-                lora_id=lora_id,
-                topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
-            )
+            async with use_phase(self.phases, backend.base_model, "sample"):
+                response = await backend.sample(
+                    prompt=prompt,
+                    num_samples=num_samples,
+                    sampling_params=sampling_params,
+                    include_prompt_logprobs=include_prompt_logprobs,
+                    topk_prompt_logprobs=topk_prompt_logprobs,
+                    lora_id=lora_id,
+                    topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
+                )
 
             duration = time.perf_counter() - start_time
             logger.info("Sampling completed for %s", sampling_session_id)
@@ -443,9 +447,10 @@ class SamplingController:
                 base_model = record.base_model
                 if record.model_path and base_model in self._base_backends:
                     try:
-                        await self._base_backends[base_model].remove_adapter(
-                            record.sampling_session_id
-                        )
+                        async with use_phase(self.phases, base_model, "sample"):
+                            await self._base_backends[base_model].remove_adapter(
+                                record.sampling_session_id
+                            )
                     except Exception:
                         logger.exception(
                             "Failed to remove adapter for evicted session %s", sampling_id

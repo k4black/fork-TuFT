@@ -82,6 +82,8 @@ class VLLMEngineConfig:
 
     # Ray placement-group bundle indices ("" outside standalone TP mode).
     bundle_indices: str = ""
+    # Colocate "sleep"; vLLM supports it on CUDA only, elsewhere sleep/wake are no-ops.
+    enable_sleep_mode: bool = False
 
 
 def _plain_output(output: Any) -> SimpleNamespace:
@@ -221,6 +223,8 @@ class VLLMEngine:
             )
             if self.config.quantization:
                 engine_args.quantization = self.config.quantization
+            if self.config.enable_sleep_mode and current_platform.is_sleep_mode_available():
+                engine_args.enable_sleep_mode = True
 
             self.async_llm = vllm.AsyncLLMEngine.from_engine_args(engine_args)
             # Apply TuFT's worker-side patches (prompt-logprobs temperature
@@ -339,6 +343,13 @@ class VLLMEngine:
 
     async def unstage_adapter(self, lora_id: str) -> None:
         shutil.rmtree(self._staged_adapter_dir(lora_id), ignore_errors=True)
+
+    async def sleep(self) -> None:
+        """Offload weights to CPU and drop the KV cache once running requests finish."""
+        await self.async_llm.sleep(level=1, mode="wait")
+
+    async def wake_up(self) -> None:
+        await self.async_llm.wake_up()
 
     async def add_lora(self, lora_request: Any) -> int:
         """Register a LoRA adapter with the engine (direct generate path)."""

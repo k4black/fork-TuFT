@@ -2,9 +2,10 @@ import asyncio
 import logging
 import os
 import shutil
+from collections import OrderedDict
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Any, Callable, Dict
 
 import ray
 import torch
@@ -17,6 +18,7 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM
 
 from tuft.backends.base_backend import gpu_request
+from tuft.backends.hf_sampling_backend import generate as hf_generate, remove_sampling_adapter
 from tuft.backends.lora_modules import (
     MODULE_MAP,
     find_unmatched_target_modules,
@@ -156,6 +158,36 @@ class HFTrainingModel:
         self._lock = asyncio.Lock()
         self.logger = logging.getLogger()
         self.micro_batch_size = config.micro_batch_size
+        self._device = next(self.model.parameters()).device
+        self.sampling_adapters: OrderedDict[str, None] = OrderedDict()  # colocate "hf", LRU
+        if config.colocate == "sleep":
+            self._move(torch.device("cpu"))  # vLLM starts in the sampling phase
+
+    def _move(self, device: torch.device) -> None:
+        """Move the model and optimizer state, then release cached GPU memory."""
+        self.model.to(device)
+        for optimizer in self.adapter_optimizer.values():
+            for state in optimizer.state.values():
+                for key, value in state.items():
+                    if key != "step" and torch.is_tensor(value):  # AdamW keeps step on CPU
+                        state[key] = value.to(device)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    async def offload(self) -> None:
+        self._move(torch.device("cpu"))
+
+    async def onload(self) -> None:
+        self._move(self._device)
+
+    async def generate(self, **kwargs: Any) -> Any:
+        """Colocate "hf" sampling; see ``hf_sampling_backend.generate``."""
+        async with self._lock:
+            return hf_generate(self, **kwargs)
+
+    async def remove_sampling_adapter(self, lora_id: str) -> None:
+        async with self._lock:
+            remove_sampling_adapter(self, lora_id)
 
     async def async_init(self) -> None:
         """Do nothing for now. Just used to make sure the actor is ready."""
@@ -672,7 +704,8 @@ class HFTrainingModel:
 
     @classmethod
     def get_actor(cls, config: ModelConfig) -> "ActorProxy":
-        num_gpus = 1 if not config.colocate else 1 - config.sampling_memory_fraction
+        shared = config.colocate in (True, "sleep")  # with a vLLM actor on the same GPU
+        num_gpus = 1 - config.sampling_memory_fraction if shared else 1
         return (
             ray.remote(cls)
             .options(
