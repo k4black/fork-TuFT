@@ -2,10 +2,9 @@ import asyncio
 import logging
 import os
 import shutil
-from collections import OrderedDict
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Callable, Dict
 
 import ray
 import torch
@@ -18,7 +17,6 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM
 
 from tuft.backends.base_backend import gpu_request
-from tuft.backends.hf_sampling_backend import generate as hf_generate, remove_sampling_adapter
 from tuft.backends.lora_modules import (
     MODULE_MAP,
     find_unmatched_target_modules,
@@ -159,17 +157,15 @@ class HFTrainingModel:
         self.logger = logging.getLogger()
         self.micro_batch_size = config.micro_batch_size
         self._device = next(self.model.parameters()).device
-        self.sampling_adapters: OrderedDict[str, None] = OrderedDict()  # colocate "hf", LRU
-        self._pinned: dict[str, torch.Tensor] = {}  # colocate "sleep" host copies, reused
-        self._pin = True  # False once pinning fails (e.g. RLIMIT_MEMLOCK)
+        self._pinned: dict[str, torch.Tensor] = {}  # colocate "sleep": reused host copies
+        self._pin = True  # False once pinning fails (RLIMIT_MEMLOCK)
         if config.colocate == "sleep":
             self._move(torch.device("cpu"))  # vLLM starts in the sampling phase
 
     def _move(self, device: torch.device) -> None:
-        """Move weights, grads, buffers and optimizer state; CPU copies go to pinned buffers."""
+        """Move weights, grads, buffers and optimizer state; host copies are pinned."""
         if not torch.cuda.is_available():
-            return  # CPU-only: everything already lives on the CPU
-
+            return
         used: dict[str, torch.Tensor] = {}
 
         def to(key: str, t: torch.Tensor) -> torch.Tensor:
@@ -190,7 +186,7 @@ class HFTrainingModel:
 
         for name, param in self.model.named_parameters():
             param.data = to(name, param.data)
-            if param.grad is not None:  # forward_backward, sample, optim_step keeps grads
+            if param.grad is not None:  # grads survive a sample between fb and optim_step
                 param.grad = to("grad." + name, param.grad)
         for name, buffer in self.model.named_buffers():
             buffer.data = to(name, buffer.data)
@@ -200,7 +196,7 @@ class HFTrainingModel:
                     if key != "step" and torch.is_tensor(value):  # AdamW keeps step on CPU
                         state[key] = to(f"opt.{lora_id}.{i}.{key}", value)
         if device.type == "cpu":
-            self._pinned = used  # drops buffers of removed adapters and optimizers
+            self._pinned = used  # drop buffers of removed adapters
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
 
@@ -209,15 +205,6 @@ class HFTrainingModel:
 
     async def onload(self) -> None:
         self._move(self._device)
-
-    async def generate(self, **kwargs: Any) -> Any:
-        """Colocate "hf" sampling; see ``hf_sampling_backend.generate``."""
-        async with self._lock:
-            return hf_generate(self, **kwargs)
-
-    async def remove_sampling_adapter(self, lora_id: str) -> None:
-        async with self._lock:
-            remove_sampling_adapter(self, lora_id)
 
     async def async_init(self) -> None:
         """Do nothing for now. Just used to make sure the actor is ready."""
@@ -734,8 +721,7 @@ class HFTrainingModel:
 
     @classmethod
     def get_actor(cls, config: ModelConfig) -> "ActorProxy":
-        shared = config.colocate in (True, "sleep")  # with a vLLM actor on the same GPU
-        num_gpus = 1 - config.sampling_memory_fraction if shared else 1
+        num_gpus = 1 if not config.colocate else 1 - config.sampling_memory_fraction
         return (
             ray.remote(cls)
             .options(

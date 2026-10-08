@@ -21,7 +21,7 @@ pytestmark = pytest.mark.cpu_integration
 TIMEOUT = 600
 
 
-@pytest.fixture(scope="module", params=[False, True, "sleep", "hf"], ids=lambda m: f"colocate={m}")
+@pytest.fixture(scope="module", params=[False, True, "sleep"], ids=lambda m: f"colocate={m}")
 def cpu_server_endpoint(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory):
     model_path = Path(os.environ["TUFT_TINY_MODEL"])
     config = ServerFixtureConfig(

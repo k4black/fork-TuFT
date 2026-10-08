@@ -137,7 +137,7 @@ def test_colocate_requires_both_capabilities() -> None:
         )
 
 
-@pytest.mark.parametrize("mode", [True, "sleep", "hf"])
+@pytest.mark.parametrize("mode", [True, "sleep"])
 def test_colocate_requires_hf_training_backend(mode) -> None:
     with pytest.raises(ValidationError, match="training_backend='hf'"):
         ModelConfig(

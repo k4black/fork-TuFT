@@ -191,7 +191,7 @@ class ServerState:
         """Put any async initialization logic here"""
         # vLLM sizes its memory from what is free, so let the trainer load first.
         for model in self.config.supported_models:
-            if model.colocate in (True, "sleep"):
+            if model.colocate:
                 await self.training.training_backends[model.model_name].async_init()
         await self.sampling.async_init()
         await self._restore_from_checkpoints()

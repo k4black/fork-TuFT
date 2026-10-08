@@ -214,11 +214,10 @@ def create_oai_router() -> APIRouter:
                     )
 
                 # Ensure LoRA is loaded on ALL DP instances via the vLLM OpenAI API
-                # Colocate "sleep": vLLM must be awake to load an adapter or admit a request.
-                phase = state.sampling.phases
+                phases = state.sampling.phases  # colocate "sleep": vLLM must be awake
                 if resolved.lora_adapter_path and resolved.lora_id:
                     try:
-                        async with use_phase(phase, resolved.base_model, "sample"):
+                        async with use_phase(phases, resolved.base_model, "sample"):
                             await backend.ensure_oai_lora_loaded(
                                 resolved.lora_id, resolved.lora_adapter_path
                             )
@@ -238,9 +237,7 @@ def create_oai_router() -> APIRouter:
                 session_part = resolved.lora_id or "base"
                 response_id_prefix = f"{session_part}:sample"
 
-                # A later sleep waits for admitted requests; a stream vLLM admits after
-                # the sleep waits in its paused scheduler for the next wake.
-                async with use_phase(phase, resolved.base_model, "sample"):
+                async with use_phase(phases, resolved.base_model, "sample"):
                     return await proxy_request(
                         client=client,
                         backend_url=backend_url,

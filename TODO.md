@@ -97,9 +97,6 @@ Identity, quotas and routing belong to the control plane (Phase 9).
   microsteps.
 - [ ] **Sharded model init** — meta init and distributed materialization when the base model
   exceeds one GPU.
-- [ ] **Single-GPU modes** — run `scripts/bench_colocate.py` on a GPU for `colocate: true`,
-  `"sleep"` and `"hf"` with 1 and 4 runs; check that vLLM keeps LoRA adapters across level-1 sleep;
-  delete the modes that lose.
 - [ ] **Replication vs sharding** — benchmark replicated training when the model fits one GPU
   before adding mesh options.
 - [ ] **Sequence packing and sequence parallelism** — padding-free packed micro-batches and
