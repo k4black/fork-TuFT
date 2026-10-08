@@ -469,6 +469,17 @@ supported_models:
     sampling_memory_fraction: 0.3   # vLLM's share while awake; about 0.4 with colocate: true
 ```
 
+Long context on one GPU (for example Qwen3.5-9B at 262144 tokens):
+
+- Set `max_model_len: 262144`, `micro_batch_size: 1` and `colocate: sleep`. The trainer is on CPU
+  while vLLM is awake, so `sampling_memory_fraction: 0.85` gives the KV cache the rest of the card.
+- The HF trainer computes logprobs from hidden states in 2048-token lm_head chunks, so it never
+  holds `[seq, vocab]` logits. From 64k tokens per micro-batch it keeps the checkpointed layer
+  inputs in pinned host memory.
+- With `flash-attn` installed the trainer uses `flash_attention_2`, else `sdpa`. Qwen3.5 Gated
+  DeltaNet layers use the `fla` kernels when `fla-core` is installed, else a slow PyTorch loop.
+  `tuft-train` has both packages; `tuft-infer` has neither.
+
 The `tuft-infer` image's default entrypoint is the vLLM server, so start TuFT explicitly:
 
 ```bash

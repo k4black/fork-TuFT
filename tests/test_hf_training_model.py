@@ -40,8 +40,11 @@ async def test_forward_backward_empties_cuda_cache_once_after_all_micro_batches(
             self.embed = torch.nn.Embedding(16, 8)
             self.lm_head = torch.nn.Linear(8, 16, bias=False)
 
-        def forward(self, input_ids, **_kwargs):
-            return SimpleNamespace(logits=self.lm_head(self.embed(input_ids)))
+        def get_decoder(self):
+            return lambda input_ids, **_: SimpleNamespace(last_hidden_state=self.embed(input_ids))
+
+        def get_output_embeddings(self):
+            return self.lm_head
 
     data = [
         types.Datum(
@@ -182,3 +185,50 @@ async def test_create_adapter_rejects_rank_above_max_lora_rank():
     with pytest.raises(InvalidRequestException) as excinfo:
         await backend.create_adapter("run", types.LoraConfig(rank=32))
     assert excinfo.value.status_code == 400
+
+
+def test_chunked_target_logprobs_match_full_logits(monkeypatch):
+    import torch
+    from peft import LoraConfig, get_peft_model
+    from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+    from tuft.backends import hf_training_model
+
+    torch.manual_seed(0)
+    config = Qwen3_5TextConfig(
+        vocab_size=128,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=4,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        linear_key_head_dim=8,
+        linear_value_head_dim=8,
+        linear_num_key_heads=2,
+        linear_num_value_heads=2,
+        layer_types=["linear_attention"] * 3 + ["full_attention"],
+    )
+    model = get_peft_model(
+        Qwen3_5ForCausalLM(config).float(),
+        LoraConfig(target_modules=["q_proj", "lm_head"], init_lora_weights=False),
+    )
+    ids = torch.randint(0, 128, (2, 7))
+    labels = torch.randint(0, 128, (2, 7))
+    lora = [p for p in model.parameters() if p.requires_grad]
+
+    logits = model(input_ids=ids).logits / 0.7
+    expected = torch.log_softmax(logits, -1).gather(-1, labels[..., None]).squeeze(-1)
+    expected_grads = torch.autograd.grad(expected.sum(), lora)
+
+    # Several chunks plus a partial last one.
+    monkeypatch.setattr(hf_training_model, "_LM_HEAD_CHUNK_TOKENS", 3)
+    hidden = model.get_decoder()(input_ids=ids, use_cache=False).last_hidden_state
+    actual = hf_training_model._chunked_target_logprobs(
+        hidden, model.get_output_embeddings(), labels, 0.7
+    )
+    actual_grads = torch.autograd.grad(actual.sum(), lora)
+
+    torch.testing.assert_close(actual, expected)
+    for a, e in zip(actual_grads, expected_grads, strict=True):
+        torch.testing.assert_close(a, e)
