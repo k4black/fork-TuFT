@@ -392,8 +392,8 @@ you can use the pre-built Docker image.
         tensor_parallel_size: 1
     ```
 
-    On a single GPU add `colocate: true` under each model, so training and sampling share the
-    device. Without it the vLLM actor waits for a second GPU and the server never becomes ready.
+    On a single GPU add `colocate: true` (see [Single-GPU modes](#single-gpu-modes)) under the
+    model, so training and sampling share the device. Without it the vLLM actor waits for a second GPU and the server never becomes ready.
 
 ### Fork images: split training and inference
 
@@ -424,6 +424,55 @@ Tags carry a `-cu12` / `-cu13` suffix; the bare tag is CUDA 13.
 docker pull k4black/tuft-train:latest       # or :latest-cu12, :0.3.0, :dev
 docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
 ```
+
+### Single-GPU modes
+
+`colocate` puts training and sampling of one model on one GPU. Every mode needs
+`training_backend: hf`, `tensor_parallel_size: 1`, `data_parallel_size: 1` and both capabilities.
+
+| `colocate` | On the GPU | Use it when |
+|---|---|---|
+| `false` | trainer and vLLM on separate GPUs | you have two GPUs or more |
+| `true` | trainer and vLLM at the same time; vLLM gets `sampling_memory_fraction` | the model fits twice; no switch cost |
+| `"sleep"` | one at a time: vLLM sleeps during training, the trainer moves to CPU during sampling | the model fits once and sampling speed matters |
+| `"hf"` | the trainer only; it also samples with HF transformers | memory is tightest, or you run the `tuft-train` image; slowest decoding |
+
+- `"sleep"` switches lazily. Requests of the current phase run together. A switch waits for them
+  to finish and holds back new requests of that phase. An SL loop never switches; an RL step
+  switches twice. vLLM frees GPU memory in sleep only on CUDA.
+- OpenAI-compatible endpoints: `"hf"` has none. In `"sleep"`, a request sent during a training
+  phase waits for the next sampling phase.
+
+```yaml
+supported_models:
+  - model_name: Qwen/Qwen3-8B
+    model_path: /data/Qwen3-8B
+    max_model_len: 8192
+    colocate: sleep                 # or true, or hf
+    sampling_memory_fraction: 0.8   # vLLM's share; about 0.4 with colocate: true
+```
+
+```bash
+# "hf": the training image, no vLLM
+docker run --gpus all --shm-size=32g --rm -p 10610:10610 -v <host_dir>:/data \
+    k4black/tuft-train:latest tuft launch --port 10610 --config /data/tuft_config.yaml
+# true or "sleep": the inference image; its default entrypoint is the vLLM server
+docker run --gpus all --shm-size=32g --rm -p 10610:10610 -v <host_dir>:/data \
+    --entrypoint tuft k4black/tuft-infer:latest launch --port 10610 --config /data/tuft_config.yaml
+```
+
+[`scripts/bench_colocate.py`](scripts/bench_colocate.py) drives a running server with the tinker
+SDK: K concurrent runs of N steps (forward_backward, optim_step,
+save_weights_and_get_sampling_client, a grouped sample with prompt logprobs). It prints a markdown
+row with per-phase times, tokens/s and peak GPU memory (from `nvidia-smi`), and writes JSON.
+Restart the server with a new `checkpoint_dir` for each mode.
+
+```bash
+python scripts/bench_colocate.py --model Qwen/Qwen3-8B --label sleep --runs 1 --steps 5 --json sleep-k1.json
+python scripts/bench_colocate.py --model Qwen/Qwen3-8B --label sleep --runs 4 --steps 5 --json sleep-k4.json
+```
+
+Measured numbers for each mode will follow.
 
 ## Deployment
 
