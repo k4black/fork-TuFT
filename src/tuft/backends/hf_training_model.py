@@ -161,6 +161,7 @@ class HFTrainingModel:
         self._device = next(self.model.parameters()).device
         self.sampling_adapters: OrderedDict[str, None] = OrderedDict()  # colocate "hf", LRU
         self._pinned: dict[str, torch.Tensor] = {}  # colocate "sleep" host copies, reused
+        self._pin = True  # False once pinning fails (e.g. RLIMIT_MEMLOCK)
         if config.colocate == "sleep":
             self._move(torch.device("cpu"))  # vLLM starts in the sampling phase
 
@@ -169,12 +170,22 @@ class HFTrainingModel:
         if not torch.cuda.is_available():
             return  # CPU-only: everything already lives on the CPU
 
+        used: dict[str, torch.Tensor] = {}
+
         def to(key: str, t: torch.Tensor) -> torch.Tensor:
             if device.type != "cpu":
                 return t.to(device, non_blocking=True)
+            if not self._pin:
+                return t.to("cpu")
             buf = self._pinned.get(key)
             if buf is None or buf.shape != t.shape or buf.dtype != t.dtype:
-                buf = self._pinned[key] = torch.empty_like(t, device="cpu").pin_memory()
+                try:
+                    buf = torch.empty_like(t, device="cpu").pin_memory()
+                except RuntimeError:
+                    self.logger.warning("Cannot pin host memory; offloading to pageable memory.")
+                    self._pin = False
+                    return t.to("cpu")
+            used[key] = buf
             return buf.copy_(t, non_blocking=True)
 
         for name, param in self.model.named_parameters():
@@ -188,6 +199,8 @@ class HFTrainingModel:
                 for key, value in state.items():
                     if key != "step" and torch.is_tensor(value):  # AdamW keeps step on CPU
                         state[key] = to(f"opt.{lora_id}.{i}.{key}", value)
+        if device.type == "cpu":
+            self._pinned = used  # drops buffers of removed adapters and optimizers
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
 
