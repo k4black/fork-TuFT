@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from tuft.backends.gpu_phase import GpuPhase
 
 
@@ -46,3 +48,23 @@ async def test_switch_waits_for_holders_and_blocks_new_entrants() -> None:
         "end s3",
     ]
     assert gpu.phase == "sample"
+
+
+async def test_failed_switch_is_retried() -> None:
+    calls: list[str] = []
+
+    async def to_train() -> None:
+        calls.append("to_train")
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+
+    async def to_sample() -> None:
+        calls.append("to_sample")
+
+    gpu = GpuPhase(to_train, to_sample)
+    with pytest.raises(RuntimeError):
+        async with gpu.use("train"):
+            pass
+    async with gpu.use("sample"):
+        pass
+    assert calls == ["to_train", "to_sample"]

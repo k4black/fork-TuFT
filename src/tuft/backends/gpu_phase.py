@@ -19,7 +19,7 @@ class GpuPhase:
         to_sample: Callable[[], Awaitable[None]],
         phase: Phase = "sample",
     ) -> None:
-        self.phase: Phase = phase
+        self.phase: Phase | None = phase
         self._switch = {"train": to_train, "sample": to_sample}
         self._pending: Phase | None = None
         self._holders = 0
@@ -35,6 +35,9 @@ class GpuPhase:
                         await self._cond.wait_for(lambda: self._holders == 0)
                         await self._switch[phase]()
                         self.phase = phase
+                    except BaseException:
+                        self.phase = None  # half switched: the next entrant switches again
+                        raise
                     finally:
                         self._pending = None
                         self._cond.notify_all()
