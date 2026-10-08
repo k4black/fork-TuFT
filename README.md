@@ -392,8 +392,8 @@ you can use the pre-built Docker image.
         tensor_parallel_size: 1
     ```
 
-    On a single GPU add `colocate: true` (see [Single-GPU modes](#single-gpu-modes)) under the
-    model, so training and sampling share the device. Without it the vLLM actor waits for a second GPU and the server never becomes ready.
+    On a single GPU add `colocate: true` under each model, so training and sampling share the
+    device. Without it the vLLM actor waits for a second GPU and the server never becomes ready.
 
 ### Fork images: split training and inference
 
@@ -427,54 +427,63 @@ docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
 
 ### Single-GPU modes
 
-`colocate` puts training and sampling of one model on one GPU. Every mode needs
-`training_backend: hf`, `tensor_parallel_size: 1`, `data_parallel_size: 1` and both capabilities.
+`colocate` puts training and sampling of one model on one GPU. It needs `training_backend: hf`,
+`tensor_parallel_size: 1`, `data_parallel_size: 1` and both capabilities.
 
 | `colocate` | On the GPU | Use it when |
 |---|---|---|
 | `false` | trainer and vLLM on separate GPUs | you have two GPUs or more |
-| `true` | trainer and vLLM at the same time; vLLM gets `sampling_memory_fraction` | the model fits twice; no switch cost |
-| `"sleep"` | one at a time: vLLM sleeps during training, the trainer moves to CPU during sampling | the model fits once and sampling speed matters |
-| `"hf"` | the trainer only; it also samples with HF transformers | memory is tightest, or you run the `tuft-train` image; slowest decoding |
+| `true` | trainer and vLLM at the same time; vLLM gets `sampling_memory_fraction` | the model fits twice |
+| `"sleep"` | one at a time: vLLM sleeps while training runs, the trainer moves to CPU while sampling runs | the largest model on one card |
 
-- `"sleep"` switches lazily. Requests of the current phase run together. A switch waits for them
-  to finish and holds back new requests of that phase. An SL loop never switches; an RL step
-  switches twice. vLLM frees GPU memory in sleep only on CUDA. Host RAM must hold about twice the
-  model size: vLLM's offloaded weights plus the trainer's pinned copy. In docker, pass
-  `--ulimit memlock=-1` so the trainer can pin it; otherwise it falls back to slower pageable copies.
-- OpenAI-compatible endpoints: `"hf"` has none. In `"sleep"`, a request sent during a training
-  phase waits for the next sampling phase.
+- `"sleep"` switches lazily: requests of the current phase run together, and a switch waits for
+  them and holds back new ones. An SL loop never switches; an RL step switches twice, and
+  concurrent runs share the switches.
+- vLLM frees GPU memory in sleep only on CUDA. Host RAM must hold about twice the model size
+  (vLLM's offloaded weights plus the trainer's pinned copy). In docker pass `--ulimit memlock=-1`,
+  else the trainer falls back to slower pageable copies.
+- In `"sleep"`, an OpenAI-compatible request sent while training runs waits for the next sampling
+  phase.
+
+One H100 80GB, Qwen3 with LoRA rank 32, per RL step: forward_backward on 16×512 tokens,
+optim_step, sampler save, and a group of 16 samples (256 prompt + 512 generated tokens). K is
+the number of concurrent runs.
+
+| Model | `colocate` | Step, K=1 | Step, K=3 | Peak GPU memory |
+|---|---|---|---|---|
+| Qwen3-1.7B | `true` | 5.3 s | 11.2 s | ~39 GB |
+| Qwen3-1.7B | `"sleep"` | 5.7 s | 13.2 s | |
+| Qwen3-8B | `true` | 9.5 s | 18.0 s | ~54 GB |
+| Qwen3-8B | `"sleep"` | 15.1 s | 22.0 s | ~26 GB with `sampling_memory_fraction: 0.3` |
+
+Sampling throughput is the same in both modes. vLLM sleep and wake take under 0.5 s; the rest of
+a switch is the trainer moving its weights through pinned memory. Qwen3-8B in `"sleep"` fits a
+32 GB card at this batch; 24 GB does not, since the trainer alone reaches ~23.7 GB.
 
 ```yaml
 supported_models:
   - model_name: Qwen/Qwen3-8B
     model_path: /data/Qwen3-8B
     max_model_len: 8192
-    colocate: sleep                 # or true, or hf
-    sampling_memory_fraction: 0.8   # vLLM's share; about 0.4 with colocate: true
+    colocate: sleep                 # or true
+    sampling_memory_fraction: 0.3   # vLLM's share while awake; about 0.4 with colocate: true
 ```
 
+The `tuft-infer` image's default entrypoint is the vLLM server, so start TuFT explicitly:
+
 ```bash
-# "hf": the training image, no vLLM
-docker run --gpus all --shm-size=32g --rm -p 10610:10610 -v <host_dir>:/data \
-    k4black/tuft-train:latest tuft launch --port 10610 --config /data/tuft_config.yaml
-# true or "sleep": the inference image; its default entrypoint is the vLLM server
-docker run --gpus all --shm-size=32g --rm -p 10610:10610 -v <host_dir>:/data \
+docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v <host_dir>:/data \
     --entrypoint tuft k4black/tuft-infer:latest launch --port 10610 --config /data/tuft_config.yaml
 ```
 
-[`scripts/bench_colocate.py`](scripts/bench_colocate.py) drives a running server with the tinker
-SDK: K concurrent runs of N steps (forward_backward, optim_step,
-save_weights_and_get_sampling_client, a grouped sample with prompt logprobs). It prints a markdown
-row with per-phase times, tokens/s and peak GPU memory (from `nvidia-smi`), and writes JSON.
-Restart the server with a new `checkpoint_dir` for each mode.
+[`scripts/bench_colocate.py`](scripts/bench_colocate.py) runs the step above through a running
+server with the tinker SDK (K concurrent runs of N steps) and prints per-phase times, tokens/s and
+peak GPU memory from `nvidia-smi`; `--json` saves them. Use a new `checkpoint_dir` per mode.
 
 ```bash
-python scripts/bench_colocate.py --model Qwen/Qwen3-8B --label sleep --runs 1 --steps 5 --json sleep-k1.json
-python scripts/bench_colocate.py --model Qwen/Qwen3-8B --label sleep --runs 4 --steps 5 --json sleep-k4.json
+python scripts/bench_colocate.py --model Qwen/Qwen3-8B --label sleep --runs 3 --steps 5 \
+    --batch 16 --seq-len 512 --group 16 --prompt-len 256 --max-tokens 512 --rank 32
 ```
-
-Measured numbers for each mode will follow.
 
 ## Deployment
 
