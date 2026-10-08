@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..auth import User
+from ..backends.gpu_phase import use_phase
 from ..backends.sampling_backend import DPSamplingBackend
 from ..exceptions import (
     InvalidRequestException,
@@ -213,11 +214,14 @@ def create_oai_router() -> APIRouter:
                     )
 
                 # Ensure LoRA is loaded on ALL DP instances via the vLLM OpenAI API
+                # Colocate "sleep": vLLM must be awake to load an adapter or admit a request.
+                phase = state.sampling.phases
                 if resolved.lora_adapter_path and resolved.lora_id:
                     try:
-                        await backend.ensure_oai_lora_loaded(
-                            resolved.lora_id, resolved.lora_adapter_path
-                        )
+                        async with use_phase(phase, resolved.base_model, "sample"):
+                            await backend.ensure_oai_lora_loaded(
+                                resolved.lora_id, resolved.lora_adapter_path
+                            )
                     except Exception as exc:
                         raise ServerException(f"Failed to load LoRA adapter: {exc}") from exc
 
@@ -234,15 +238,18 @@ def create_oai_router() -> APIRouter:
                 session_part = resolved.lora_id or "base"
                 response_id_prefix = f"{session_part}:sample"
 
-                return await proxy_request(
-                    client=client,
-                    backend_url=backend_url,
-                    path=vllm_path,
-                    body=body,
-                    stream=stream,
-                    user_model_name=user_model_name,
-                    response_id_prefix=response_id_prefix,
-                )
+                # A later sleep waits for admitted requests; a stream vLLM admits after
+                # the sleep waits in its paused scheduler for the next wake.
+                async with use_phase(phase, resolved.base_model, "sample"):
+                    return await proxy_request(
+                        client=client,
+                        backend_url=backend_url,
+                        path=vllm_path,
+                        body=body,
+                        stream=stream,
+                        user_model_name=user_model_name,
+                        response_id_prefix=response_id_prefix,
+                    )
         except TuFTException as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

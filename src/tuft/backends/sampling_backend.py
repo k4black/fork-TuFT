@@ -128,8 +128,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         # At most this many sessions stay staged (vLLM's default max_cpu_loras).
         self._max_staged = config.max_loras
         self._idle_ttl = config.adapter_idle_ttl_minutes * 60
-        if config.colocate == "sleep":
-            self._idle_ttl = 0  # the sweep would unload while the engine sleeps
+        self._asleep = False  # colocate "sleep": the sweep must not unload then
         self._sweep_task: Optional[asyncio.Task] = None
         self._counter = 1
         self._lock = asyncio.Lock()
@@ -528,6 +527,8 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 # Re-check under the lock: a request may have landed meanwhile.
                 if self._in_flight[lora_id] or self._last_used.get(lora_id, cutoff) >= cutoff:
                     continue
+                if self._asleep:  # unloading writes GPU memory vLLM has released
+                    return
                 logger.info("Unloading LoRA adapter %s, idle for %.0fs", lora_id, self._idle_ttl)
                 await self._remove_adapter_locked(lora_id)
 
@@ -555,6 +556,16 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             return
         await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
         self._last_used.pop(lora_id, None)
+
+    async def sleep(self) -> None:
+        async with self._lock:
+            await self.engine.sleep.remote()  # type: ignore[attr-defined]
+            self._asleep = True
+
+    async def wake_up(self) -> None:
+        async with self._lock:
+            await self.engine.wake_up.remote()  # type: ignore[attr-defined]
+            self._asleep = False
 
     async def shutdown(self) -> None:
         """Shut down the vLLM engine Ray actor and release GPU resources."""

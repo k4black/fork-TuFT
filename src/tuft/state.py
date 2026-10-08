@@ -180,7 +180,7 @@ class ServerState:
                 name = model.model_name
                 phase = sleep_phase(
                     self.training.training_backends[name].model,  # type: ignore[attr-defined]
-                    self.sampling._base_backends[name].engine,  # type: ignore[attr-defined]
+                    self.sampling._base_backends[name],
                 )
                 self.training.phases[name] = self.sampling.phases[name] = phase
         self.auth_db = AuthenticationDB(self.config.authorized_users)
