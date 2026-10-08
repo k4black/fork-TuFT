@@ -111,7 +111,7 @@ def _ranked(rows: torch.Tensor, tokens: torch.Tensor, k: int) -> list[torch.Tens
 
 
 def _positions(ranked: list[torch.Tensor]) -> list[dict[int, SimpleNamespace]]:
-    """vLLM's logprobs shape, the chosen token first; one device-to-host copy."""
+    """vLLM's logprobs shape, the chosen token first; one host copy per tensor."""
     tokens, chosen, rank, values, ids = (t.tolist() for t in ranked)
     out = []
     for token, lp, r, top_values, top_ids in zip(tokens, chosen, rank, values, ids, strict=True):
@@ -186,6 +186,7 @@ def generate(
         model.eval()  # also turns off gradient checkpointing, so the KV cache works
         with adapters:
             # The decoder, not the LM: full-prompt logits would not fit for long prompts.
+            # Nested LMs (qwen3_5) return the text model; text-only positions follow the cache.
             out = base.get_decoder()(
                 input_ids=torch.tensor([prompt], device=device), use_cache=True
             )
@@ -221,7 +222,7 @@ def generate(
                     break
                 out = model(input_ids=tokens[:, None], past_key_values=cache, use_cache=True)
                 logits = out.logits[:, -1].float()
-            # [steps, n, ...] -> one host copy, then per sequence.
+            # [steps, n, ...] -> one host copy per tensor, then per sequence.
             stacked = [torch.stack(parts, 1).cpu() for parts in zip(*steps, strict=True)]
             per_seq = [
                 _positions([t[i] for t in stacked]) if steps else [] for i in range(num_samples)

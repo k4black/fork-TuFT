@@ -536,7 +536,10 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         with _get_tracer().start_as_current_span("sampling_backend.remove_adapter") as span:
             span.set_attribute("tuft.lora_id", lora_id)
             async with self._lock:
-                await self._remove_adapter_locked(lora_id)
+                if not self._asleep:
+                    await self._remove_adapter_locked(lora_id)
+                elif lora_id in self._last_used:  # the sweep or the LRU cap unloads it later
+                    self._last_used[lora_id] = 0.0
                 # Final, unlike the sweep: no re-add for this id later.
                 self._adapter_paths.pop(lora_id, None)
 

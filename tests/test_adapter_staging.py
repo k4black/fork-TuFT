@@ -229,8 +229,8 @@ async def test_sweep_waits_while_the_engine_sleeps(tmp_path, monkeypatch):
     calls: list[tuple] = []
     backend = _backend(monkeypatch, calls, idle_ttl=60.0)
     await backend.add_adapter(SESSION_ID, _adapter_dir(tmp_path))
-    backend._last_used[SESSION_ID] -= 61
     backend._asleep = True
+    await backend.remove_adapter(SESSION_ID)  # deferred: no engine call while asleep
     await backend._sweep_idle_adapters()
     assert SESSION_ID in backend.lora_adapters
     backend._asleep = False

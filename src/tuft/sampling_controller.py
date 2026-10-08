@@ -447,10 +447,9 @@ class SamplingController:
                 base_model = record.base_model
                 if record.model_path and base_model in self._base_backends:
                     try:
-                        async with use_phase(self.phases, base_model, "sample"):
-                            await self._base_backends[base_model].remove_adapter(
-                                record.sampling_session_id
-                            )
+                        await self._base_backends[base_model].remove_adapter(
+                            record.sampling_session_id
+                        )
                     except Exception:
                         logger.exception(
                             "Failed to remove adapter for evicted session %s", sampling_id
