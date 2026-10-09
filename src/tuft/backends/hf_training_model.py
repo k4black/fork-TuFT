@@ -10,6 +10,7 @@ import ray
 import torch
 from opentelemetry.trace import StatusCode
 from peft import LoraConfig, get_peft_model
+from peft.tuners.lora import Linear as LoraLinear
 from ray.actor import ActorProxy
 from tinker import types
 from tinker.types import LoraConfig as TinkerLoraConfig
@@ -48,25 +49,34 @@ _get_tracer = lambda: get_tracer("tuft.hf_training_model")  # noqa: E731
 
 OPTIMIZER_STATE_FILENAME = "optimizer.pt"
 
-# Tokens per lm_head or MLP chunk: [2048, 248k] bf16 logits take ~1 GB.
+# Tokens per lm_head or tiled-module chunk: [2048, 248k] bf16 logits take ~1 GB.
 _CHUNK_TOKENS = 2048
 # ponytail: one threshold for every model size; derive it from free GPU memory if needed.
-# At 64k tokens a 9B model's checkpointed layer inputs reach ~20 GB.
+# At 64k tokens a 9B model's checkpointed layer inputs reach ~20 GB. Also gates tiling.
 _OFFLOAD_MIN_TOKENS = 64 * 1024
 
 
-def _tile_mlps(model: torch.nn.Module) -> None:
-    """Run position-wise decoder MLPs over checkpointed sequence chunks on long inputs."""
-    for layer in model.get_decoder().layers:
-        forward = layer.mlp.forward
+def _tile_long_inputs(model: torch.nn.Module) -> None:
+    """Run position-wise modules (decoder MLPs, LoRA linears) over checkpointed sequence
+    chunks on long inputs, so no full-sequence intermediate (fp32 LoRA copies) is kept."""
+    mlps = [layer.mlp for layer in model.get_decoder().layers]
+    for module in [*mlps, *(m for m in model.modules() if isinstance(m, LoraLinear))]:
+        if "forward" in vars(module):  # already tiled
+            continue
+        forward = module.forward
 
-        def tiled(x: torch.Tensor, forward=forward) -> torch.Tensor:
+        def tiled(x: torch.Tensor, *args, forward=forward, **kwargs) -> torch.Tensor:
             if x.shape[:-1].numel() < _OFFLOAD_MIN_TOKENS:
-                return forward(x)
-            chunks = x.split(_CHUNK_TOKENS, dim=-2)
-            return torch.cat([checkpoint(forward, c, use_reentrant=False) for c in chunks], dim=-2)
+                return forward(x, *args, **kwargs)
+            return torch.cat(
+                [
+                    checkpoint(forward, c, *args, use_reentrant=False, **kwargs)
+                    for c in x.split(_CHUNK_TOKENS, dim=-2)
+                ],
+                dim=-2,
+            )
 
-        layer.mlp.forward = tiled
+        module.forward = tiled
 
 
 def _chunked_target_logprobs(
@@ -724,7 +734,6 @@ class HFTrainingModel:
         )
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable({"use_reentrant": False})
-        _tile_mlps(model)
         default_modules = get_default_target_modules(str(config.model_path))
         if default_modules is not None:
             peft_config = LoraConfig(target_modules=default_modules)
@@ -741,6 +750,7 @@ class HFTrainingModel:
         self.model.set_adapter(lora_id)
         # from_pretrained and load_adapter leave eval mode, which disables gradient checkpointing.
         self.model.train()
+        _tile_long_inputs(self.model)  # adapters add LoRA linears after load
 
     @classmethod
     def get_actor(cls, config: ModelConfig) -> "ActorProxy":
@@ -751,6 +761,14 @@ class HFTrainingModel:
                 name="training_model_" + config.model_name,
                 num_gpus=gpu_request(num_gpus),
                 resources=config.actor_resources("training", num_gpus),
+                # Long contexts fragment the caching allocator; keep a value the user set.
+                runtime_env={
+                    "env_vars": {
+                        "PYTORCH_CUDA_ALLOC_CONF": os.environ.get(
+                            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+                        )
+                    }
+                },
             )
             .remote(config)
         )

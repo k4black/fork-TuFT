@@ -475,7 +475,8 @@ Long context on one GPU (for example Qwen3.5-9B at 262144 tokens):
   while vLLM is awake, so `sampling_memory_fraction: 0.85` gives the KV cache the rest of the card.
 - The HF trainer computes logprobs from hidden states in 2048-token lm_head chunks, so it never
   holds `[seq, vocab]` logits. From 64k tokens per micro-batch it keeps the checkpointed layer
-  inputs in host memory and runs each decoder MLP over 2048-token chunks.
+  inputs in host memory (about +30% forward_backward time at 131k tokens) and runs decoder MLPs
+  and LoRA linears over 2048-token chunks.
 - With `flash-attn` installed the trainer uses `flash_attention_2`, else `sdpa`. Qwen3.5 Gated
   DeltaNet layers use the `fla` kernels when `fla-core` is installed, else a slow PyTorch loop.
   Both images ship both packages. Neither ships `causal-conv1d` (no torch 2.13 wheel), so its

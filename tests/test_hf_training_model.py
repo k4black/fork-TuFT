@@ -244,10 +244,10 @@ def test_long_context_path_matches_full_logits(monkeypatch):
     expected = torch.log_softmax(logits, -1).gather(-1, labels[..., None]).squeeze(-1)
     expected_grads = torch.autograd.grad(expected.sum(), lora)
 
-    # Tiled MLPs and lm_head over several chunks plus a partial last one.
+    # Tiled MLPs, LoRA linears and lm_head over several chunks plus a partial last one.
     monkeypatch.setattr(hf_training_model, "_CHUNK_TOKENS", 3)
     monkeypatch.setattr(hf_training_model, "_OFFLOAD_MIN_TOKENS", 4)
-    hf_training_model._tile_mlps(model)
+    hf_training_model._tile_long_inputs(model)
     hidden = model.get_decoder()(input_ids=ids, use_cache=False).last_hidden_state
     actual = hf_training_model._chunked_target_logprobs(
         hidden, model.get_output_embeddings(), labels, 0.7
