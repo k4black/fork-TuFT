@@ -427,75 +427,17 @@ docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
 
 ### Single-GPU modes
 
-`colocate` puts training and sampling of one model on one GPU. It needs `training_backend: hf`,
-`tensor_parallel_size: 1`, `data_parallel_size: 1` and both capabilities.
-
-| `colocate` | On the GPU | Use it when |
-|---|---|---|
-| `false` | trainer and vLLM on separate GPUs | you have two GPUs or more |
-| `true` | trainer and vLLM at the same time; vLLM gets `sampling_memory_fraction` | the model fits twice |
-| `"sleep"` | one at a time: vLLM sleeps while training runs, the trainer moves to CPU while sampling runs | the largest model on one card |
-
-- `"sleep"` switches lazily: requests of the current phase run together, and a switch waits for
-  them and holds back new ones. An SL loop never switches; an RL step switches twice, and
-  concurrent runs share the switches.
-- vLLM frees GPU memory in sleep only on CUDA. Host RAM must hold about twice the model size
-  (vLLM's offloaded weights plus the trainer's pinned copy). In docker pass `--ulimit memlock=-1`,
-  else the trainer falls back to slower pageable copies.
-- In `"sleep"`, an OpenAI-compatible request sent while training runs waits for the next sampling
-  phase.
-
-One H100 80GB, Qwen3 with LoRA rank 32, per RL step: forward_backward on 16×512 tokens,
-optim_step, sampler save, and a group of 16 samples (256 prompt + 512 generated tokens). K is
-the number of concurrent runs.
-
-| Model | `colocate` | Step, K=1 | Step, K=3 | Peak GPU memory |
-|---|---|---|---|---|
-| Qwen3-1.7B | `true` | 5.3 s | 11.2 s | ~39 GB |
-| Qwen3-1.7B | `"sleep"` | 5.7 s | 13.2 s | |
-| Qwen3-8B | `true` | 9.5 s | 18.0 s | ~54 GB |
-| Qwen3-8B | `"sleep"` | 15.1 s | 22.0 s | ~26 GB with `sampling_memory_fraction: 0.3` |
-
-Sampling throughput is the same in both modes. vLLM sleep and wake take under 0.5 s; the rest of
-a switch is the trainer moving its weights through pinned memory. Qwen3-8B in `"sleep"` fits a
-32 GB card at this batch; 24 GB does not, since the trainer alone reaches ~23.7 GB.
-
-```yaml
-supported_models:
-  - model_name: Qwen/Qwen3-8B
-    model_path: /data/Qwen3-8B
-    max_model_len: 8192
-    colocate: sleep                 # or true
-    sampling_memory_fraction: 0.3   # vLLM's share while awake; about 0.4 with colocate: true
-```
-
-Long context on one GPU (for example Qwen3.5-9B at 262144 tokens):
-
-- Set `max_model_len: 262144`, `micro_batch_size: 1` and `colocate: sleep`. The trainer is on CPU
-  while vLLM is awake, so `sampling_memory_fraction: 0.85` gives the KV cache the rest of the card.
-- The HF trainer computes logprobs from hidden states in 2048-token lm_head chunks, so it never
-  holds `[seq, vocab]` logits. From 64k tokens per micro-batch it keeps the checkpointed layer
-  inputs in host memory (about +30% forward_backward time at 131k tokens) and runs decoder MLPs
-  and LoRA linears over 2048-token chunks.
-- With `flash-attn` installed the trainer uses `flash_attention_2`, else `sdpa`. Qwen3.5 Gated
-  DeltaNet layers use the `fla` kernels when `fla-core` is installed, else a slow PyTorch loop.
-  Both images ship both packages. Neither ships `causal-conv1d` (no torch 2.13 wheel), so its
-  short convolution runs in PyTorch.
-
-The `tuft-infer` image's default entrypoint is the vLLM server, so start TuFT explicitly:
+`colocate` puts training and sampling of one model on one GPU (`training_backend: hf`,
+`tensor_parallel_size: 1`, `data_parallel_size: 1`). `true` keeps the trainer and vLLM resident
+together; `"sleep"` alternates them: vLLM sleeps while training runs, the trainer moves to CPU
+while sampling runs. `sampling_memory_fraction` is vLLM's share of the GPU while awake. In
+`"sleep"`, host RAM must hold about twice the model plus offloaded activations; in docker pass
+`--ulimit memlock=-1`. Long context: from 64k tokens per micro-batch the trainer chunks its
+modules and offloads activations to host memory (~30% slower forward_backward).
 
 ```bash
 docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v <host_dir>:/data \
     --entrypoint tuft k4black/tuft-infer:latest launch --port 10610 --config /data/tuft_config.yaml
-```
-
-[`scripts/bench_colocate.py`](scripts/bench_colocate.py) runs the step above through a running
-server with the tinker SDK (K concurrent runs of N steps) and prints per-phase times, tokens/s and
-peak GPU memory from `nvidia-smi`; `--json` saves them. Use a new `checkpoint_dir` per mode.
-
-```bash
-python scripts/bench_colocate.py --model Qwen/Qwen3-8B --label sleep --runs 3 --steps 5 \
-    --batch 16 --seq-len 512 --group 16 --prompt-len 256 --max-tokens 512 --rank 32
 ```
 
 ## Deployment

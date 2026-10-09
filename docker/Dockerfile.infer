@@ -31,9 +31,7 @@ RUN pip3 list --format=freeze | grep -iE '^(torch|vllm|triton)==' \
     && uv pip install --system --no-cache --constraints /tmp/base-pins.txt \
         -r /opt/tuft/pyproject.toml --extra backend --extra persistence
 
-# Kernels for the colocated HF trainer: flash-attn (same pinned wheels as
-# Dockerfile.train) and fla for Qwen3.5 Gated DeltaNet layers. They pull another
-# nccl than vLLM ships, so vLLM's nccl is restored afterwards.
+# Colocated HF trainer kernels (wheels as in Dockerfile.train); then restore vLLM's nccl.
 RUN set -eu; \
     nccl="$(pip3 list --format=freeze | grep -iE '^nvidia-nccl-cu[0-9]+==' || true)"; \
     case "$(python3 -c 'import torch; print(torch.version.cuda)')" in \

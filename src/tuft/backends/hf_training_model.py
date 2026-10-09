@@ -49,16 +49,14 @@ _get_tracer = lambda: get_tracer("tuft.hf_training_model")  # noqa: E731
 
 OPTIMIZER_STATE_FILENAME = "optimizer.pt"
 
-# Tokens per lm_head or tiled-module chunk: [2048, 248k] bf16 logits take ~1 GB.
+# Tokens per chunk: [2048, 248k] bf16 logits take ~1 GB.
 _CHUNK_TOKENS = 2048
-# ponytail: one threshold for every model size; derive it from free GPU memory if needed.
-# At 64k tokens a 9B model's checkpointed layer inputs reach ~20 GB. Also gates tiling.
+# Long-context threshold for offload and tiling; fixed for every model size.
 _OFFLOAD_MIN_TOKENS = 64 * 1024
 
 
 def _tile_long_inputs(model: torch.nn.Module) -> None:
-    """Run position-wise modules (decoder MLPs, LoRA linears) over checkpointed sequence
-    chunks on long inputs, so no full-sequence intermediate (fp32 LoRA copies) is kept."""
+    """Run decoder MLPs and LoRA linears over checkpointed sequence chunks on long inputs."""
     mlps = [layer.mlp for layer in model.get_decoder().layers]
     for module in [*mlps, *(m for m in model.modules() if isinstance(m, LoraLinear))]:
         if "forward" in vars(module):  # already tiled
@@ -85,10 +83,7 @@ def _chunked_target_logprobs(
     labels: torch.Tensor,
     temperature: float | None = None,
 ) -> torch.Tensor:
-    """FP32 target logprobs from hidden states without the full [seq, vocab] logits.
-
-    Each chunk is checkpointed, so backward recomputes its logits instead of keeping them.
-    """
+    """FP32 target logprobs from hidden states via checkpointed lm_head chunks."""
 
     def chunk_logprobs(h: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         logits = lm_head(h)
@@ -609,14 +604,14 @@ class HFTrainingModel:
             and input_ids_padded.numel() >= _OFFLOAD_MIN_TOKENS
         )
         with grad_context:
-            # Long sequences keep the checkpointed layer inputs in host memory. Pageable:
-            # the pinned host allocator rounds blocks up and about doubles host RAM.
+            # Pageable: pinned host blocks round up and about double host RAM.
             with save_on_cpu(pin_memory=False) if offload else nullcontext():
                 hidden = self.model.get_decoder()(
                     input_ids=input_ids_padded,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     use_cache=False,
+                    return_dict=True,
                 ).last_hidden_state
 
             if loss_fn_config is None:
@@ -748,7 +743,7 @@ class HFTrainingModel:
         if lora_id not in self.adapter_optimizer:
             raise ValueError(f"Adapter {lora_id} not found.")
         self.model.set_adapter(lora_id)
-        # from_pretrained and load_adapter leave eval mode, which disables gradient checkpointing.
+        # load_adapter leaves eval mode, which disables gradient checkpointing.
         self.model.train()
         _tile_long_inputs(self.model)  # adapters add LoRA linears after load
 
@@ -761,7 +756,7 @@ class HFTrainingModel:
                 name="training_model_" + config.model_name,
                 num_gpus=gpu_request(num_gpus),
                 resources=config.actor_resources("training", num_gpus),
-                # Long contexts fragment the caching allocator; keep a value the user set.
+                # Long contexts fragment the allocator; keep a user-set value.
                 runtime_env={
                     "env_vars": {
                         "PYTORCH_CUDA_ALLOC_CONF": os.environ.get(
