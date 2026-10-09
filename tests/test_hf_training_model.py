@@ -40,8 +40,11 @@ async def test_forward_backward_empties_cuda_cache_once_after_all_micro_batches(
             self.embed = torch.nn.Embedding(16, 8)
             self.lm_head = torch.nn.Linear(8, 16, bias=False)
 
-        def forward(self, input_ids, **_kwargs):
-            return SimpleNamespace(logits=self.lm_head(self.embed(input_ids)))
+        def get_decoder(self):
+            return lambda input_ids, **_: SimpleNamespace(last_hidden_state=self.embed(input_ids))
+
+        def get_output_embeddings(self):
+            return self.lm_head
 
     data = [
         types.Datum(
@@ -182,3 +185,79 @@ async def test_create_adapter_rejects_rank_above_max_lora_rank():
     with pytest.raises(InvalidRequestException) as excinfo:
         await backend.create_adapter("run", types.LoraConfig(rank=32))
     assert excinfo.value.status_code == 400
+
+
+def _tiny_qwen3_5():
+    import torch
+    from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+    torch.manual_seed(0)
+    config = Qwen3_5TextConfig(
+        vocab_size=128,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=4,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        linear_key_head_dim=8,
+        linear_value_head_dim=8,
+        linear_num_key_heads=2,
+        linear_num_value_heads=2,
+        layer_types=["linear_attention"] * 3 + ["full_attention"],
+    )
+    return Qwen3_5ForCausalLM(config).float()
+
+
+def test_activate_adapter_keeps_gradient_checkpointing_on(tmp_path):
+    from tuft.backends.hf_training_model import HFTrainingModel
+
+    _tiny_qwen3_5().save_pretrained(tmp_path)
+    model = HFTrainingModel.__new__(HFTrainingModel)
+    config = SimpleNamespace(model_path=tmp_path, attn_implementation=None)
+    model.model = model._init_peft_model(config)  # type: ignore[arg-type]
+    model.adapter_optimizer = {"default": None}  # type: ignore[assignment]
+    model.model.eval()  # as after load_adapter
+
+    model._activate_adapter("default")
+
+    # HF checkpoints a layer only when both flags are set.
+    layers = model.model.get_decoder().layers  # pyright: ignore[reportCallIssue]
+    assert all(layer.training and layer.gradient_checkpointing for layer in layers)
+
+
+def test_long_context_path_matches_full_logits(monkeypatch):
+    import torch
+    from peft import LoraConfig, get_peft_model
+
+    from tuft.backends import hf_training_model
+
+    model = get_peft_model(
+        _tiny_qwen3_5(),
+        LoraConfig(target_modules=["q_proj", "gate_proj", "lm_head"], init_lora_weights=False),
+    )
+    ids = torch.randint(0, 128, (2, 7))
+    labels = torch.randint(0, 128, (2, 7))
+    lora = [p for p in model.parameters() if p.requires_grad]
+
+    logits = model(input_ids=ids).logits / 0.7
+    expected = torch.log_softmax(logits, -1).gather(-1, labels[..., None]).squeeze(-1)
+    expected_grads = torch.autograd.grad(expected.sum(), lora)
+
+    # Tiled MLPs, gated norms, LoRA linears and lm_head: several chunks, a partial last one.
+    monkeypatch.setattr(hf_training_model, "_CHUNK_TOKENS", 3)
+    monkeypatch.setattr(hf_training_model, "_TILE_ELEMENTS", 3 * 16)  # 3 tokens of hidden 16
+    monkeypatch.setattr(hf_training_model, "_OFFLOAD_MIN_TOKENS", 4)
+    hf_training_model._tile_long_inputs(model)
+    hidden = model.get_decoder()(input_ids=ids, use_cache=False).last_hidden_state  # pyright: ignore[reportCallIssue]
+    actual = hf_training_model._chunked_target_logprobs(
+        hidden,
+        model.get_output_embeddings(),  # pyright: ignore[reportCallIssue]
+        labels,
+        0.7,
+    )
+    actual_grads = torch.autograd.grad(actual.sum(), lora)
+
+    torch.testing.assert_close(actual, expected)
+    for a, e in zip(actual_grads, expected_grads, strict=True):
+        torch.testing.assert_close(a, e)

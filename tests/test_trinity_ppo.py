@@ -137,6 +137,12 @@ class _TinyModel(torch.nn.Module):
         self.forward_calls += 1
         return SimpleNamespace(logits=self.table(input_ids))
 
+    def get_decoder(self):
+        return lambda input_ids, **_: SimpleNamespace(last_hidden_state=self(input_ids).logits)
+
+    def get_output_embeddings(self):
+        return torch.nn.Identity()
+
 
 def _hf_model(network, micro_batch_size, monkeypatch):
     model = HFTrainingModel.__new__(HFTrainingModel)

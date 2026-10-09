@@ -103,7 +103,8 @@ model_owner: local-user
 #       each vLLM actor 1 infer_gpu per GPU (tensor_parallel_size). The names must
 #       match the `ray start --resources` labels: a resource no node provides
 #       leaves the actor pending in the Ray scheduler.
-#   - colocate: Colocate sampling and training on same device (default: false)
+#   - colocate: share one GPU between training and sampling: false (default),
+#       true or "sleep"; see README "Single-GPU modes"
 #   - sampling_memory_fraction: GPU memory fraction for sampling (default: 0.2)
 #   - quantization: Quantization method for sampling (default: none)
 #   - enable_auto_tool_choice: vLLM OpenAI API auto tool choice (qwenpaw ReAct)

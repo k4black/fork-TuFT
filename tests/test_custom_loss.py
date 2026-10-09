@@ -66,6 +66,12 @@ class TinyCausalLM(torch.nn.Module):
     def forward(self, input_ids, **_kwargs):
         return SimpleNamespace(logits=self.lm_head(self.embed(input_ids)))
 
+    def get_decoder(self):
+        return lambda input_ids, **_: SimpleNamespace(last_hidden_state=self.embed(input_ids))
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
 
 def _make_data(weights_rows: list[torch.Tensor] | None = None) -> list[types.Datum]:
     """Datums shaped exactly like the SDK's forward_backward_custom requests.
@@ -285,13 +291,13 @@ async def test_hf_forward_only_skips_autograd_graph(monkeypatch):
     """
     model, network = _build_hf_model(monkeypatch, micro_batch_size=4)
     saw_grad_mode: list[bool] = []
-    original_forward = network.forward
+    decoder = network.get_decoder()
 
-    def recording_forward(*args, **kwargs):
+    def recording_decoder(*args, **kwargs):
         saw_grad_mode.append(torch.is_grad_enabled())
-        return original_forward(*args, **kwargs)
+        return decoder(*args, **kwargs)
 
-    monkeypatch.setattr(network, "forward", recording_forward)
+    monkeypatch.setattr(network, "get_decoder", lambda: recording_decoder)
 
     await model.forward(_make_data(), "lora", "cross_entropy", None, backward=False)
     assert saw_grad_mode == [False]

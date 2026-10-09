@@ -136,6 +136,7 @@ def _backend(
     backend._in_flight = Counter()
     backend._max_staged = max_staged
     backend._idle_ttl = idle_ttl
+    backend._asleep = False
     backend._sweep_task = None
     backend._counter = 1
     backend._lock = asyncio.Lock()
@@ -222,6 +223,19 @@ async def test_sweep_skips_an_adapter_refreshed_while_it_runs(tmp_path, monkeypa
     assert SESSION_ID not in backend.lora_adapters
     assert ("unstage", OAI_NAME) not in calls  # refreshed after the snapshot
     assert backend._oai_loaded == {OAI_NAME}
+
+
+async def test_sweep_waits_while_the_engine_sleeps(tmp_path, monkeypatch):
+    calls: list[tuple] = []
+    backend = _backend(monkeypatch, calls, idle_ttl=60.0)
+    await backend.add_adapter(SESSION_ID, _adapter_dir(tmp_path))
+    backend._asleep = True
+    await backend.remove_adapter(SESSION_ID)  # deferred: no engine call while asleep
+    await backend._sweep_idle_adapters()
+    assert SESSION_ID in backend.lora_adapters
+    backend._asleep = False
+    await backend._sweep_idle_adapters()
+    assert SESSION_ID not in backend.lora_adapters
 
 
 async def test_swept_oai_name_reloads_on_the_next_request(tmp_path, monkeypatch):

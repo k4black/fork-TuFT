@@ -21,6 +21,7 @@ def guard():
         model_owner="tester",
     )
     controller.training_runs = {record.training_run_id: record}
+    controller.phases = {}
     return controller, record
 
 

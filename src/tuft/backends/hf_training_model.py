@@ -10,13 +10,18 @@ import ray
 import torch
 from opentelemetry.trace import StatusCode
 from peft import LoraConfig, get_peft_model
+from peft.tuners.lora import Linear as LoraLinear
 from ray.actor import ActorProxy
 from tinker import types
 from tinker.types import LoraConfig as TinkerLoraConfig
+from torch.autograd.graph import save_on_cpu
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.checkpoint import checkpoint
 from transformers import AutoModelForCausalLM
+from transformers.utils import is_flash_attn_2_available
 
 from tuft.backends.base_backend import gpu_request
+from tuft.backends.fsdp_engine import _compute_target_logprobs
 from tuft.backends.lora_modules import (
     MODULE_MAP,
     find_unmatched_target_modules,
@@ -43,6 +48,73 @@ from tuft.telemetry.tracing import extract_context, get_tracer
 _get_tracer = lambda: get_tracer("tuft.hf_training_model")  # noqa: E731
 
 OPTIMIZER_STATE_FILENAME = "optimizer.pt"
+
+# Tokens per lm_head chunk: [2048, 248k] bf16 logits take ~1 GB.
+_CHUNK_TOKENS = 2048
+# Elements per tiled-module input chunk: 2048 tokens of a 4096-wide input.
+_TILE_ELEMENTS = 2048 * 4096
+# Long-context threshold for offload and tiling; fixed for every model size.
+_OFFLOAD_MIN_TOKENS = 64 * 1024
+
+
+def _tile_long_inputs(model: torch.nn.Module) -> None:
+    """Run position-wise modules over checkpointed chunks of long inputs."""
+    mlps = [layer.mlp for layer in model.get_decoder().layers]  # pyright: ignore[reportCallIssue]
+    others = (
+        m
+        for m in model.modules()
+        if isinstance(m, LoraLinear) or type(m).__name__.endswith("RMSNormGated")
+    )
+    for module in [*mlps, *others]:
+        if "forward" in vars(module):  # already tiled
+            continue
+        forward = module.forward
+
+        def tiled(x: torch.Tensor, *args, forward=forward, **kwargs) -> torch.Tensor:
+            if x.shape[:-1].numel() < _OFFLOAD_MIN_TOKENS:
+                return forward(x, *args, **kwargs)
+            rows = max(1, _TILE_ELEMENTS // x.shape[-1])
+            # Positional tensors shaped like x (a gated norm's gate) split with it.
+            split = [
+                a.split(rows, dim=-2) if torch.is_tensor(a) and a.shape == x.shape else None
+                for a in args
+            ]
+            return torch.cat(
+                [
+                    checkpoint(
+                        forward,
+                        c,
+                        *(a if s is None else s[i] for a, s in zip(args, split, strict=True)),
+                        use_reentrant=False,
+                        **kwargs,
+                    )
+                    for i, c in enumerate(x.split(rows, dim=-2))
+                ],
+                dim=-2,
+            )
+
+        module.forward = tiled
+
+
+def _chunked_target_logprobs(
+    hidden: torch.Tensor,
+    lm_head: torch.nn.Module,
+    labels: torch.Tensor,
+    temperature: float | None = None,
+) -> torch.Tensor:
+    """FP32 target logprobs from hidden states via checkpointed lm_head chunks."""
+
+    def chunk_logprobs(h: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        logits = lm_head(h)
+        return _compute_target_logprobs(logits / temperature if temperature else logits, y)
+
+    flat = hidden.reshape(-1, hidden.size(-1)).split(_CHUNK_TOKENS)
+    flat_labels = labels.reshape(-1).split(_CHUNK_TOKENS)
+    chunks = [
+        checkpoint(chunk_logprobs, h, y, use_reentrant=False)
+        for h, y in zip(flat, flat_labels, strict=True)
+    ]
+    return torch.cat(chunks).view(labels.shape)
 
 
 def _resolve_optimizer_state_path(checkpoint_record: CheckpointRecord) -> Path | None:
@@ -156,6 +228,55 @@ class HFTrainingModel:
         self._lock = asyncio.Lock()
         self.logger = logging.getLogger()
         self.micro_batch_size = config.micro_batch_size
+        self._device = next(self.model.parameters()).device
+        self._pinned: dict[str, torch.Tensor] = {}  # colocate "sleep": reused host copies
+        self._pin = True  # False once pinning fails (RLIMIT_MEMLOCK)
+        if config.colocate == "sleep":
+            self._move(torch.device("cpu"))  # vLLM starts in the sampling phase
+
+    def _move(self, device: torch.device) -> None:
+        """Move weights, grads, buffers and optimizer state; host copies are pinned."""
+        if not torch.cuda.is_available():
+            return
+        used: dict[str, torch.Tensor] = {}
+
+        def to(key: str, t: torch.Tensor) -> torch.Tensor:
+            if device.type != "cpu":
+                return t.to(device, non_blocking=True)
+            if not self._pin:
+                return t.to("cpu")
+            buf = self._pinned.get(key)
+            if buf is None or buf.shape != t.shape or buf.dtype != t.dtype:
+                try:
+                    buf = torch.empty_like(t, device="cpu").pin_memory()
+                except RuntimeError:
+                    self.logger.warning("Cannot pin host memory; offloading to pageable memory.")
+                    self._pin = False
+                    return t.to("cpu")
+            used[key] = buf
+            return buf.copy_(t, non_blocking=True)
+
+        for name, param in self.model.named_parameters():
+            param.data = to(name, param.data)
+            if param.grad is not None:  # grads survive a sample between fb and optim_step
+                param.grad = to("grad." + name, param.grad)
+        for name, buffer in self.model.named_buffers():
+            buffer.data = to(name, buffer.data)
+        for lora_id, optimizer in self.adapter_optimizer.items():
+            for i, state in enumerate(optimizer.state.values()):
+                for key, value in state.items():
+                    if key != "step" and torch.is_tensor(value):  # AdamW keeps step on CPU
+                        state[key] = to(f"opt.{lora_id}.{i}.{key}", value)
+        if device.type == "cpu":
+            self._pinned = used  # drop buffers of removed adapters
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
+    async def offload(self) -> None:
+        self._move(torch.device("cpu"))
+
+    async def onload(self) -> None:
+        self._move(self._device)
 
     async def async_init(self) -> None:
         """Do nothing for now. Just used to make sure the actor is ready."""
@@ -496,29 +617,35 @@ class HFTrainingModel:
         # SDK's forward_backward_custom) never call backward, so skip building the
         # autograd graph. Matches the FSDP engine's forward_only path.
         grad_context = nullcontext() if backward else torch.no_grad()
+        offload = (
+            backward
+            and torch.cuda.is_available()
+            and input_ids_padded.numel() >= _OFFLOAD_MIN_TOKENS
+        )
         with grad_context:
-            outputs = self.model(
-                input_ids=input_ids_padded,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                return_dict=True,
-            )
+            # Pageable: pinned host blocks round up and about double host RAM.
+            with save_on_cpu(pin_memory=False) if offload else nullcontext():
+                hidden = self.model.get_decoder()(  # pyright: ignore[reportCallIssue]
+                    input_ids=input_ids_padded,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    use_cache=False,
+                    return_dict=True,
+                ).last_hidden_state
 
             if loss_fn_config is None:
                 loss_fn_config = {}
 
-            logits = outputs.logits
-            del outputs
-
-            if "temperature" in loss_fn_config:
-                temperature = loss_fn_config["temperature"]
-                logits = logits / temperature
-
             loss_fn_inputs = self._prepare_loss_fn_inputs(data, client_keys=client_keys)
             target_tokens = loss_fn_inputs["target_tokens"]
 
-            target_logprobs = self._compute_logprobs_from_target_tokens(logits, target_tokens)
-            del logits
+            target_logprobs = _chunked_target_logprobs(
+                hidden,
+                self.model.get_output_embeddings(),  # pyright: ignore[reportCallIssue]
+                target_tokens,
+                loss_fn_config.get("temperature"),
+            )
+            del hidden
 
             loss_fn_inputs["target_logprobs"] = target_logprobs
             loss, metric = loss_fn_callable(loss_fn_inputs, loss_fn_config)
@@ -602,37 +729,6 @@ class HFTrainingModel:
             if key not in MODEL_DERIVED_LOSS_INPUTS
         }
 
-    def _compute_logprobs_from_target_tokens(
-        self, logits: torch.Tensor, target_tokens: torch.Tensor
-    ) -> torch.Tensor:
-        """Compute log probabilities of target tokens from logits with low memory usage.
-        https://github.com/OpenRLHF/OpenRLHF/pull/718
-        """
-        if logits.dtype in [torch.float32, torch.float64]:
-            logits_labels = torch.gather(logits, dim=-1, index=target_tokens.unsqueeze(-1)).squeeze(
-                -1
-            )
-            logsumexp_values = torch.stack(
-                [
-                    torch.logsumexp(logit, dim=-1) for logit in logits
-                ]  # loop to reduce peak mem consumption
-            )
-            log_probs_labels = (
-                logits_labels - logsumexp_values
-            )  # log_softmax(x_i) = x_i - logsumexp(x)
-        else:
-            log_probs_labels = []
-            for row_logits, row_labels in zip(
-                logits, target_tokens, strict=True
-            ):  # loop to reduce peak mem consumption
-                row_log_probs = torch.nn.functional.log_softmax(row_logits, dim=-1)
-                row_log_probs_labels = row_log_probs.gather(
-                    dim=-1, index=row_labels.unsqueeze(-1)
-                ).squeeze(-1)
-                log_probs_labels.append(row_log_probs_labels)
-            log_probs_labels = torch.stack(log_probs_labels)
-        return log_probs_labels
-
     def _unpad_tensor(
         self, padded_tensor: torch.Tensor, original_lengths: list[int]
     ) -> list[torch.Tensor]:
@@ -647,11 +743,8 @@ class HFTrainingModel:
             str(config.model_path),
             dtype="auto",
             device_map="auto",
-            **(
-                {"attn_implementation": config.attn_implementation}
-                if config.attn_implementation
-                else {}
-            ),
+            attn_implementation=config.attn_implementation
+            or ("flash_attention_2" if is_flash_attn_2_available() else None),
         )
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable({"use_reentrant": False})
@@ -669,6 +762,9 @@ class HFTrainingModel:
         if lora_id not in self.adapter_optimizer:
             raise ValueError(f"Adapter {lora_id} not found.")
         self.model.set_adapter(lora_id)
+        # load_adapter leaves eval mode, which disables gradient checkpointing.
+        self.model.train()
+        _tile_long_inputs(self.model)  # adapters add LoRA linears after load
 
     @classmethod
     def get_actor(cls, config: ModelConfig) -> "ActorProxy":
@@ -679,6 +775,14 @@ class HFTrainingModel:
                 name="training_model_" + config.model_name,
                 num_gpus=gpu_request(num_gpus),
                 resources=config.actor_resources("training", num_gpus),
+                # Long contexts fragment the allocator; keep a user-set value.
+                runtime_env={
+                    "env_vars": {
+                        "PYTORCH_CUDA_ALLOC_CONF": os.environ.get(
+                            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+                        )
+                    }
+                },
             )
             .remote(config)
         )
