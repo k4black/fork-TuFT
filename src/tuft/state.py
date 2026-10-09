@@ -269,7 +269,9 @@ class ServerState:
                 logger.exception("Failed to delete checkpoint %s", ckpt.tinker_path)
 
     def _recently_used(self, record: SamplingSessionRecord, saved_at: datetime) -> bool:
-        """Sampled within adapter_idle_ttl_minutes; a never-sampled session counts from saved_at."""
+        """Sampling now or within adapter_idle_ttl_minutes; unsampled counts from saved_at."""
+        if record.in_flight:
+            return True
         model = self.config.get_model_config(record.base_model)
         ttl = model.adapter_idle_ttl_minutes if model else 0
         return ttl > 0 and (record.last_used_at or saved_at) > _now() - timedelta(minutes=ttl)
