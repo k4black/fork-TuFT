@@ -49,16 +49,23 @@ _get_tracer = lambda: get_tracer("tuft.hf_training_model")  # noqa: E731
 
 OPTIMIZER_STATE_FILENAME = "optimizer.pt"
 
-# Tokens per chunk: [2048, 248k] bf16 logits take ~1 GB.
+# Tokens per lm_head chunk: [2048, 248k] bf16 logits take ~1 GB.
 _CHUNK_TOKENS = 2048
+# Elements per tiled-module input chunk: 2048 tokens of a 4096-wide input.
+_TILE_ELEMENTS = 2048 * 4096
 # Long-context threshold for offload and tiling; fixed for every model size.
 _OFFLOAD_MIN_TOKENS = 64 * 1024
 
 
 def _tile_long_inputs(model: torch.nn.Module) -> None:
-    """Run decoder MLPs and LoRA linears over checkpointed sequence chunks on long inputs."""
+    """Run position-wise modules over checkpointed chunks of long inputs."""
     mlps = [layer.mlp for layer in model.get_decoder().layers]
-    for module in [*mlps, *(m for m in model.modules() if isinstance(m, LoraLinear))]:
+    others = (
+        m
+        for m in model.modules()
+        if isinstance(m, LoraLinear) or type(m).__name__.endswith("RMSNormGated")
+    )
+    for module in [*mlps, *others]:
         if "forward" in vars(module):  # already tiled
             continue
         forward = module.forward
@@ -66,10 +73,22 @@ def _tile_long_inputs(model: torch.nn.Module) -> None:
         def tiled(x: torch.Tensor, *args, forward=forward, **kwargs) -> torch.Tensor:
             if x.shape[:-1].numel() < _OFFLOAD_MIN_TOKENS:
                 return forward(x, *args, **kwargs)
+            rows = max(1, _TILE_ELEMENTS // x.shape[-1])
+            # Positional tensors shaped like x (a gated norm's gate) split with it.
+            split = [
+                a.split(rows, dim=-2) if torch.is_tensor(a) and a.shape == x.shape else None
+                for a in args
+            ]
             return torch.cat(
                 [
-                    checkpoint(forward, c, *args, use_reentrant=False, **kwargs)
-                    for c in x.split(_CHUNK_TOKENS, dim=-2)
+                    checkpoint(
+                        forward,
+                        c,
+                        *(a if s is None else s[i] for a, s in zip(args, split, strict=True)),
+                        use_reentrant=False,
+                        **kwargs,
+                    )
+                    for i, c in enumerate(x.split(rows, dim=-2))
                 ],
                 dim=-2,
             )
