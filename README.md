@@ -433,7 +433,8 @@ together; `"sleep"` alternates them: vLLM sleeps while training runs, the traine
 while sampling runs. `sampling_memory_fraction` is vLLM's share of the GPU while awake. In
 `"sleep"`, host RAM must hold about twice the model plus offloaded activations; in docker pass
 `--ulimit memlock=-1`. Long context: from 64k tokens per micro-batch the trainer chunks its
-modules and offloads activations to host memory (~30% slower forward_backward).
+modules and offloads activations to host memory (~30% slower forward_backward); a 9B model at
+262144 tokens needs ~165 GB host RAM.
 
 ```bash
 docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v <host_dir>:/data \
