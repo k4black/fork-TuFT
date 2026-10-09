@@ -599,8 +599,9 @@ class HFTrainingModel:
             and input_ids_padded.numel() >= _OFFLOAD_MIN_TOKENS
         )
         with grad_context:
-            # Long sequences keep the checkpointed layer inputs in pinned host memory.
-            with save_on_cpu(pin_memory=self._pin) if offload else nullcontext():
+            # Long sequences keep the checkpointed layer inputs in host memory. Pageable:
+            # the pinned host allocator rounds blocks up and about doubles host RAM.
+            with save_on_cpu(pin_memory=False) if offload else nullcontext():
                 hidden = self.model.get_decoder()(
                     input_ids=input_ids_padded,
                     attention_mask=attention_mask,
