@@ -59,7 +59,7 @@ _OFFLOAD_MIN_TOKENS = 64 * 1024
 
 def _tile_long_inputs(model: torch.nn.Module) -> None:
     """Run position-wise modules over checkpointed chunks of long inputs."""
-    mlps = [layer.mlp for layer in model.get_decoder().layers]
+    mlps = [layer.mlp for layer in model.get_decoder().layers]  # pyright: ignore[reportCallIssue]
     others = (
         m
         for m in model.modules()
@@ -625,7 +625,7 @@ class HFTrainingModel:
         with grad_context:
             # Pageable: pinned host blocks round up and about double host RAM.
             with save_on_cpu(pin_memory=False) if offload else nullcontext():
-                hidden = self.model.get_decoder()(
+                hidden = self.model.get_decoder()(  # pyright: ignore[reportCallIssue]
                     input_ids=input_ids_padded,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
@@ -641,7 +641,7 @@ class HFTrainingModel:
 
             target_logprobs = _chunked_target_logprobs(
                 hidden,
-                self.model.get_output_embeddings(),
+                self.model.get_output_embeddings(),  # pyright: ignore[reportCallIssue]
                 target_tokens,
                 loss_fn_config.get("temperature"),
             )

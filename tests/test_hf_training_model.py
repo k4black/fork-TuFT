@@ -222,7 +222,7 @@ def test_activate_adapter_keeps_gradient_checkpointing_on(tmp_path):
     model._activate_adapter("default")
 
     # HF checkpoints a layer only when both flags are set.
-    layers = model.model.get_decoder().layers
+    layers = model.model.get_decoder().layers  # pyright: ignore[reportCallIssue]
     assert all(layer.training and layer.gradient_checkpointing for layer in layers)
 
 
@@ -249,9 +249,12 @@ def test_long_context_path_matches_full_logits(monkeypatch):
     monkeypatch.setattr(hf_training_model, "_TILE_ELEMENTS", 3 * 16)  # 3 tokens of hidden 16
     monkeypatch.setattr(hf_training_model, "_OFFLOAD_MIN_TOKENS", 4)
     hf_training_model._tile_long_inputs(model)
-    hidden = model.get_decoder()(input_ids=ids, use_cache=False).last_hidden_state
+    hidden = model.get_decoder()(input_ids=ids, use_cache=False).last_hidden_state  # pyright: ignore[reportCallIssue]
     actual = hf_training_model._chunked_target_logprobs(
-        hidden, model.get_output_embeddings(), labels, 0.7
+        hidden,
+        model.get_output_embeddings(),  # pyright: ignore[reportCallIssue]
+        labels,
+        0.7,
     )
     actual_grads = torch.autograd.grad(actual.sum(), lora)
 
