@@ -1776,7 +1776,11 @@ async def test_sweep_keeps_newest_unnamed_sampler_saves(request, tmp_path) -> No
     assert in_use in state.sampling.sampling_sessions
     assert idle not in state.sampling.sampling_sessions
     state.sampling.sampling_sessions[in_use].last_used_at = hour_ago
+    state.sampling.sampling_sessions[in_use].in_flight = 1
     await state.training.release_run(run_id)
+    await state._sweep_checkpoints()
+    assert [s.path.exists() for s in saves] == [True, False, False, False]
+    state.sampling.sampling_sessions[in_use].in_flight = 0
     await state._sweep_checkpoints()
     assert not any(s.path.exists() for s in saves)
     assert [c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")] == ["named"]

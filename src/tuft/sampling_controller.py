@@ -72,6 +72,7 @@ class SamplingSessionRecord(BaseModel):
     session_seq_id: int
     last_seq_id: int = -1
     last_used_at: datetime | None = None
+    in_flight: int = Field(default=0, exclude=True)
     history: list[SamplingHistoryEntry] = Field(default_factory=list)
     executor: SequenceExecutor = Field(default_factory=SequenceExecutor, exclude=True)
 
@@ -393,15 +394,20 @@ class SamplingController:
             include_prompt_logprobs = bool(request.prompt_logprobs)
             topk_prompt_logprobs = request.topk_prompt_logprobs or 0
 
-            response = await backend.sample(
-                prompt=prompt,
-                num_samples=num_samples,
-                sampling_params=sampling_params,
-                include_prompt_logprobs=include_prompt_logprobs,
-                topk_prompt_logprobs=topk_prompt_logprobs,
-                lora_id=lora_id,
-                topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
-            )
+            record = self.sampling_sessions[request.sampling_session_id or ""]
+            record.in_flight += 1
+            try:
+                response = await backend.sample(
+                    prompt=prompt,
+                    num_samples=num_samples,
+                    sampling_params=sampling_params,
+                    include_prompt_logprobs=include_prompt_logprobs,
+                    topk_prompt_logprobs=topk_prompt_logprobs,
+                    lora_id=lora_id,
+                    topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
+                )
+            finally:
+                record.in_flight -= 1
 
             duration = time.perf_counter() - start_time
             logger.info("Sampling completed for %s", sampling_session_id)
