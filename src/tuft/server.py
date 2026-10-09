@@ -953,6 +953,27 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
     ) -> types.GetSessionResponse:
         return state.get_session_overview(session_id, user.user_id)
 
+    @app.get("/api/v1/billing/usage/checkpoints/current")
+    async def checkpoint_storage_usage(
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> dict:
+        # One row for the caller; project_id is ignored, the server has no projects.
+        sizes = [
+            c.size_bytes
+            for c in await asyncio.to_thread(state.training.disk_checkpoints, "*/*/metadata.json")
+            if c.owner_name == user.user_id
+        ]
+        return {
+            "data": [
+                {
+                    "checkpoint_count": len(sizes),
+                    "size_bytes": sum(sizes),
+                    "size_gigabytes": sum(sizes) / 1e9,
+                }
+            ]
+        }
+
     @app.get(
         "/api/v1/sessions",
         response_model=types.ListSessionsResponse,

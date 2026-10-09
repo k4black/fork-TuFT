@@ -23,7 +23,7 @@ from .exceptions import (
 )
 from .futures import FutureStore
 from .persistence import get_redis_store, is_persistence_enabled, load_record, save_record
-from .sampling_controller import SamplingController
+from .sampling_controller import SamplingController, SamplingSessionRecord
 from .training_controller import TrainingController, TrainingRunRecord
 
 
@@ -221,12 +221,7 @@ class ServerState:
                 await self._drop_checkpoint(ckpt, expired=False)
 
     async def _drop_checkpoint(self, ckpt: CheckpointRecord, *, expired: bool) -> None:
-        """Delete ``ckpt`` if the sweep's reason still holds on disk.
-
-        A save or release of an in-memory run holds its lock, so they cannot
-        interleave. ponytail: a sampler load racing a genuine expiry may still
-        get 404; add a per-checkpoint lock if that matters.
-        """
+        """Recheck the deletion reason on disk under the run lock."""
         run = self.training.training_runs.get(ckpt.training_run_id)
         adapter = str(ckpt.adapter_path)
         async with run._execution_lock if run is not None else contextlib.nullcontext():
@@ -247,7 +242,10 @@ class ServerState:
                         r.model_path == adapter for r in self.sampling.sampling_sessions.values()
                     ):
                         return
-                elif not fresh.transient:
+                elif not fresh.transient or any(
+                    r.model_path == adapter and self._recently_used(r, fresh.created_at)
+                    for r in self.sampling.sampling_sessions.values()
+                ):
                     return
                 else:
                     await self.sampling._evict(lambda r: r.model_path == adapter)
@@ -256,6 +254,14 @@ class ServerState:
                 )
             except Exception:
                 logger.exception("Failed to delete checkpoint %s", ckpt.tinker_path)
+
+    def _recently_used(self, record: SamplingSessionRecord, saved_at: datetime) -> bool:
+        """Sampling now or within adapter_idle_ttl_minutes; unsampled counts from saved_at."""
+        if record.in_flight:
+            return True
+        model = self.config.get_model_config(record.base_model)
+        ttl = model.adapter_idle_ttl_minutes if model else 0
+        return ttl > 0 and (record.last_used_at or saved_at) > _now() - timedelta(minutes=ttl)
 
     async def _sweep_once(self) -> None:
         ttl = timedelta(minutes=self.config.session_heartbeat_ttl_minutes)
@@ -507,6 +513,7 @@ class ServerState:
             path=path,
             optimizer=optimizer,
             seq_id=seq_id,
+            future_id=self.future_store.get_current_future_id(),
         )
 
     def delete_checkpoint(self, model_id: str, user_id: str, checkpoint_id: str) -> None:
@@ -581,7 +588,7 @@ class ServerState:
         await self.sampling.evict_model(model_id, user_id=user_id)
 
     def get_session_overview(self, session_id: str, user_id: str) -> types.GetSessionResponse:
-        self.sessions.require(session_id, user_id)
+        record = self.sessions.require(session_id, user_id)
         training_run_ids = [
             run_id
             for run_id, run in self.training.training_runs.items()
@@ -592,7 +599,11 @@ class ServerState:
             for sid, record in self.sampling.sampling_sessions.items()
             if record.session_id == session_id
         ]
-        return types.GetSessionResponse(training_run_ids=training_run_ids, sampler_ids=sampler_ids)
+        return types.GetSessionResponse(
+            training_run_ids=training_run_ids,
+            sampler_ids=sampler_ids,
+            user_metadata=record.user_metadata,  # tinker < 0.32 ignores it
+        )
 
     def list_sessions(
         self, user_id: str, *, limit: int | None = None, offset: int = 0

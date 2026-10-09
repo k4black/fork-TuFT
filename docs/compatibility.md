@@ -26,7 +26,7 @@ The route column names the main request. Methods that compose several requests l
 | `ServiceClient.create_training_client_from_state` | supported | POST /api/v1/load_weights | Also calls `weights_info` and `create_model`. |
 | `ServiceClient.create_training_client_from_state_with_optimizer` | supported | POST /api/v1/load_weights | Also calls `weights_info` and `create_model`. |
 | `ServiceClient.get_console_url` | client-side | - | Links to the Thinking Machines console. TuFT has no console. |
-| `ServiceClient.get_server_capabilities` | supported | GET /api/v1/get_server_capabilities | Each model also reports `capabilities`, `lora_ranks`, `lora_alpha` and `lora_alpha_ratio`. |
+| `ServiceClient.get_server_capabilities` | supported | GET /api/v1/get_server_capabilities | Each model also reports `capabilities`, `trainable`, `sampleable`, `lora_ranks`, `lora_alpha` and `lora_alpha_ratio`. |
 | `ServiceClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
 | `TrainingClient.create_sampling_client` | supported | POST /api/v1/create_sampling_session | |
 | `TrainingClient.forward` | supported | POST /api/v1/forward_backward | Sends `forward_only=true`. |
@@ -36,11 +36,11 @@ The route column names the main request. Methods that compose several requests l
 | `TrainingClient.get_info` | supported | POST /api/v1/get_info | `model_data.arch` is `model_type` from `config.json` under a local `model_path` (None for a Hub id); `tokenizer_id` is `ModelConfig.tokenizer_id`, else `model_name`. |
 | `TrainingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
 | `TrainingClient.get_tokenizer` | supported | POST /api/v1/get_info | Loads `tokenizer_id` from the HF Hub. Set `ModelConfig.tokenizer_id` when `model_name` is not a Hub id. |
-| `TrainingClient.load_state` | supported | POST /api/v1/load_weights | |
-| `TrainingClient.load_state_with_optimizer` | supported | POST /api/v1/load_weights | 400 for a sampler checkpoint: it holds no optimizer state. |
+| `TrainingClient.load_state` | supported | POST /api/v1/load_weights | Saves the loaded weights as a checkpoint of this run, so a restart restores them. |
+| `TrainingClient.load_state_with_optimizer` | supported | POST /api/v1/load_weights | 400 for a sampler checkpoint: it holds no optimizer state. Saves the loaded state as a checkpoint of this run. |
 | `TrainingClient.optim_step` | supported | POST /api/v1/optim_step | |
 | `TrainingClient.save_state` | supported | POST /api/v1/save_weights | Stores `ttl_seconds` and `user_metadata`. A save under an existing name replaces it; `overwrite` is ignored. |
-| `TrainingClient.save_weights_and_get_sampling_client` | supported | POST /api/v1/create_sampling_session | Calls `save_weights_for_sampler` first. The server keeps the newest `sampler_checkpoints_keep` unnamed saves per live run and deletes all of them on release; older clients get 404. |
+| `TrainingClient.save_weights_and_get_sampling_client` | supported | POST /api/v1/create_sampling_session | Calls `save_weights_for_sampler` first. The server keeps the newest `sampler_checkpoints_keep` unnamed saves per live run (none after release), plus older ones sampled within the model's `adapter_idle_ttl_minutes`; it deletes the rest, and their clients get 404. |
 | `TrainingClient.save_weights_external` | unsupported | POST /api/v1/save_weights_external | |
 | `TrainingClient.save_weights_for_sampler` | supported | POST /api/v1/save_weights_for_sampler | Stores `ttl_seconds` and `user_metadata`. |
 | `SamplingClient.compute_logprobs` | supported | POST /api/v1/asample | Samples one token with prompt logprobs. |
@@ -58,20 +58,20 @@ The route column names the main request. Methods that compose several requests l
 | `RestClient.export_session_trace` | unsupported | GET /api/v1/sessions/{session_id}/trace_export | |
 | `RestClient.get_audit_log` | unsupported | GET /api/v1/audit | |
 | `RestClient.get_billing_usage` | unsupported | GET /api/v1/billing/usage/events | |
-| `RestClient.get_current_checkpoint_storage_usage` | unsupported | GET /api/v1/billing/usage/checkpoints/current | 0.32+ |
+| `RestClient.get_current_checkpoint_storage_usage` | supported | GET /api/v1/billing/usage/checkpoints/current | 0.32+. One row for the caller: count and `size_bytes` of their checkpoints on disk. `project_id` is ignored; no cost fields. |
 | `RestClient.get_checkpoint_archive_url` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
 | `RestClient.get_checkpoint_archive_url_from_tinker_path` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
 | `RestClient.get_external_weights_urls` | unsupported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/external_weights_urls | |
 | `RestClient.get_sampler` | supported | GET /api/v1/samplers/{sampler_id} | |
-| `RestClient.get_session` | supported | GET /api/v1/sessions/{session_id} | |
+| `RestClient.get_session` | supported | GET /api/v1/sessions/{session_id} | Returns the session's `user_metadata` (read by 0.32+). |
 | `RestClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
-| `RestClient.get_training_run` | supported | GET /api/v1/training_runs/{model_id} | |
-| `RestClient.get_training_run_by_tinker_path` | supported | GET /api/v1/training_runs/{model_id} | |
+| `RestClient.get_training_run` | supported | GET /api/v1/training_runs/{model_id} | Rebuilds a run from its `metadata.json` files when it is not in memory. |
+| `RestClient.get_training_run_by_tinker_path` | supported | GET /api/v1/training_runs/{model_id} | Rebuilds a run from its `metadata.json` files when it is not in memory. |
 | `RestClient.get_weights_info_by_tinker_path` | supported | POST /api/v1/weights_info | |
 | `RestClient.list_checkpoints` | supported | GET /api/v1/training_runs/{model_id}/checkpoints | Reads `metadata.json` from disk when the run is not in memory (restart without Redis). |
 | `RestClient.list_sessions` | supported | GET /api/v1/sessions | |
-| `RestClient.list_training_runs` | supported | GET /api/v1/training_runs | |
-| `RestClient.list_user_checkpoints` | supported | GET /api/v1/checkpoints | |
+| `RestClient.list_training_runs` | supported | GET /api/v1/training_runs | Includes runs found only on disk. |
+| `RestClient.list_user_checkpoints` | supported | GET /api/v1/checkpoints | Training checkpoints only, including runs found only on disk. |
 | `RestClient.publish_checkpoint_from_tinker_path` | supported | POST /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/publish | |
 | `RestClient.set_checkpoint_ttl_from_tinker_path` | supported | PUT /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/ttl | Owner only. A 60 s sweep deletes expired checkpoints; it skips one a live sampler holds. |
 | `RestClient.unpublish_checkpoint_from_tinker_path` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/publish | |

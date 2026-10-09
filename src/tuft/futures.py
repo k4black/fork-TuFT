@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
 import uuid
@@ -36,6 +37,10 @@ from .persistence import (
 )
 from .telemetry.metrics import get_metrics
 from .telemetry.tracing import get_tracer
+
+
+# The future whose operation runs in this task.
+_running_future_id: contextvars.ContextVar[int] = contextvars.ContextVar("_running_future_id")
 
 
 logger = logging.getLogger(__name__)
@@ -173,8 +178,8 @@ class FutureStore:
         return future_id
 
     def get_current_future_id(self) -> int:
-        """Get the current (latest allocated) future_id, or 0 if none allocated."""
-        return self._next_future_id - 1 if self._next_future_id > 1 else 0
+        """The running operation's future_id, else the latest allocated one, or 0."""
+        return _running_future_id.get(self._next_future_id - 1)
 
     def _delete_future(self, request_id: str) -> None:
         if not is_persistence_enabled():
@@ -317,6 +322,7 @@ class FutureStore:
         enqueue_time = time.perf_counter()
 
         async def _runner() -> None:
+            _running_future_id.set(future_id)
             start_time = time.perf_counter()
             wait_time = start_time - enqueue_time
 

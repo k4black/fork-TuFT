@@ -189,7 +189,7 @@ Session contains training runs: ['550e8400-e29b-41d4-a716-446655440000']
 ```
 
 Checkpoints live on disk under `checkpoint_dir`, so `load_state`, `create_sampling_client` and the run and checkpoint listings still find them after a server restart without Redis.
-Saves honour `ttl_seconds`; the server keeps the newest `sampler_checkpoints_keep` unnamed sampler saves per live run.
+Saves honour `ttl_seconds`; the server keeps the newest `sampler_checkpoints_keep` unnamed sampler saves per live run, plus older ones sampled within the model's `adapter_idle_ttl_minutes`.
 `service.copy_weights(path)` copies a `tinker://` checkpoint or imports a safetensors adapter from `hf://org/repo` or `s3://` (under `import_s3_prefixes`).
 `rest.get_checkpoint_archive_url(model_id, "demo-sampler")` returns a signed `http(s)://.../api/v1/archives/...` URL, valid for 15 minutes and until the server restarts; it downloads a tar of the adapter with no API key.
 
@@ -317,8 +317,6 @@ supported_models:
 
 See [`config/tuft_config.example.yaml`](config/tuft_config.example.yaml) for a complete example configuration with all available options.
 
-`get_info` reports `ModelConfig.tokenizer_id` as the tokenizer, else `model_name`; clients load it from the HF Hub. Set `tokenizer_id` when `model_name` is an alias or a local name.
-
 Session lifecycle: `ServiceClient.close()` (`POST /api/v1/sessions/{id}/finish`) or no heartbeat for `session_heartbeat_ttl_minutes` (default 30, `0` disables) finishes the session. The server then frees each training run's adapter and slot and keeps its checkpoints; to continue, create a new run and `load_state` from a checkpoint. Completed futures leave server memory after `persistence.future_ttl_seconds` (default 1 hour).
 
 ### CPU integration tests
@@ -335,7 +333,7 @@ export TUFT_TINY_MODEL=/tmp/tiny-qwen3 VLLM_CPU_KVCACHE_SPACE=1 TUFT_NO_GPU=1
 .venv/bin/pytest --cpu-integration -m cpu_integration -s tests/test_cpu_integration.py
 ```
 
-[`config/tuft_config.cookbook.yaml`](config/tuft_config.cookbook.yaml) serves the tiny model as `Qwen/Qwen3-0.6B` with `max_lora_rank: 32`, the cookbook default. Start it with `tuft launch --config config/tuft_config.cookbook.yaml` and point recipes at it with `TINKER_BASE_URL=http://127.0.0.1:10610 TINKER_API_KEY=tml-cookbook`. The workflow's `cookbook` job lists the recipe commands.
+[`config/tuft_config.cookbook.yaml`](config/tuft_config.cookbook.yaml) serves the tiny model as `Qwen/Qwen3-0.6B` with `max_lora_rank: 32`, the cookbook default, and as the sampling-only distillation teacher `Qwen/Qwen3-1.7B`. Start it with `tuft launch --config config/tuft_config.cookbook.yaml` and point recipes at it with `TINKER_BASE_URL=http://127.0.0.1:10610 TINKER_API_KEY=tml-cookbook`. The workflow's `cookbook` job lists the recipe commands.
 
 ## Branching and Development Rules
 

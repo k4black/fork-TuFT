@@ -40,8 +40,6 @@ jobs:
           # torchcodec's native library fails to load on the runner and vLLM
           # catches only ImportError; text-only tests never decode video.
           uv pip uninstall torchcodec
-          uv pip list | grep -iE "^(torch|vllm|nvidia|triton)" || true
-          df -h /
 
       - name: Build the tiny model
         run: .venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
@@ -104,14 +102,21 @@ jobs:
         if: ${{ !cancelled() }}
         run: /tmp/cb/bin/python -m tinker_cookbook.recipes.multiplayer_rl.guess_number.train $C log_path=/tmp/r/gn batch_size=2 group_size=2 max_tokens=16 eval_every=0
 
-      # Not run: on_policy_distillation and dpo. Both send concurrent prompt-logprob
-      # requests (teacher logprobs, SamplerNLLEvaluator), and vLLM 0.28's CPU LoRA
-      # logits path (punica_cpu.add_lora_logits) indexes per-sequence LoRA ids
-      # against per-prompt-token rows, so the engine dies with an einsum shape error.
+      - name: on_policy_distillation
+        timeout-minutes: 15
+        if: ${{ !cancelled() }}
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.distillation.on_policy_distillation $C log_path=/tmp/r/kd teacher_model=Qwen/Qwen3-1.7B dataset=tulu3 groups_per_batch=2 group_size=2 max_tokens=16 lora_rank=32 eval_every=0
+
+      - name: dpo
+        # Two steps: DPO evaluates the 1024-pair test set on step 0 and the last step,
+        # each from a new sampler save, while its reference sampler stays in use.
+        timeout-minutes: 40
+        if: ${{ !cancelled() }}
+        run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=32 max_steps=2
 
       - name: Server log
         if: always()
-        run: tail -n 100 server.log; df -h /; free -g
+        run: tail -n 100 server.log
 
       - uses: actions/upload-artifact@v4
         if: failure()

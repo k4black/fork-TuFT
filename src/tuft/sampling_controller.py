@@ -71,6 +71,8 @@ class SamplingSessionRecord(BaseModel):
     model_path: str | None = None
     session_seq_id: int
     last_seq_id: int = -1
+    last_used_at: datetime | None = None
+    in_flight: int = Field(default=0, exclude=True)
     history: list[SamplingHistoryEntry] = Field(default_factory=list)
     executor: SequenceExecutor = Field(default_factory=SequenceExecutor, exclude=True)
 
@@ -100,6 +102,8 @@ class SamplingController:
         record._history_by_seq_id = history_by_seq_id
         if history_by_seq_id:
             record.last_seq_id = max(record.last_seq_id, max(history_by_seq_id))
+        if record.last_used_at is None:
+            record.last_used_at = max((e.created_at for e in record.history), default=None)
 
     def _restore_from_redis(self) -> None:
         """Restore sampling sessions from Redis on startup."""
@@ -288,6 +292,7 @@ class SamplingController:
                     base_model=base_model_ref,
                     model_path=str(adapter_path) if adapter_path else None,
                     session_seq_id=session_seq_id,
+                    last_used_at=_now(),
                 )
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, self._save_session, sampling_session_id)
@@ -316,6 +321,7 @@ class SamplingController:
         record._history_by_seq_id[seq_id] = entry
         record.history = [record._history_by_seq_id[k] for k in sorted(record._history_by_seq_id)]
         record.last_seq_id = max(record.last_seq_id, seq_id)
+        record.last_used_at = entry.created_at
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._save_session, record.sampling_session_id)
@@ -372,31 +378,35 @@ class SamplingController:
             sampling_session_id = request.sampling_session_id or ""
             span.set_attribute("tuft.sampling_session_id", sampling_session_id)
             # Get session_id from sampling session record if available
-            if request.sampling_session_id:
-                record = self.sampling_sessions.get(request.sampling_session_id)
-                if record:
-                    span.set_attribute("tuft.session_id", record.session_id)
+            held = self.sampling_sessions.get(sampling_session_id)
+            if held:
+                span.set_attribute("tuft.session_id", held.session_id)
+                held.in_flight += 1  # before the first await, so keep-N cannot evict it
             span.set_attribute("tuft.num_samples", request.num_samples)
 
             logger.info("Sampling begin for %s", sampling_session_id)
             start_time = time.perf_counter()
 
-            backend, lora_id = await self._resolve_backend(request, user_id=user_id)
-            prompt = request.prompt
-            sampling_params = request.sampling_params
-            num_samples = request.num_samples
-            include_prompt_logprobs = bool(request.prompt_logprobs)
-            topk_prompt_logprobs = request.topk_prompt_logprobs or 0
+            try:
+                backend, lora_id = await self._resolve_backend(request, user_id=user_id)
+                prompt = request.prompt
+                sampling_params = request.sampling_params
+                num_samples = request.num_samples
+                include_prompt_logprobs = bool(request.prompt_logprobs)
+                topk_prompt_logprobs = request.topk_prompt_logprobs or 0
 
-            response = await backend.sample(
-                prompt=prompt,
-                num_samples=num_samples,
-                sampling_params=sampling_params,
-                include_prompt_logprobs=include_prompt_logprobs,
-                topk_prompt_logprobs=topk_prompt_logprobs,
-                lora_id=lora_id,
-                topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
-            )
+                response = await backend.sample(
+                    prompt=prompt,
+                    num_samples=num_samples,
+                    sampling_params=sampling_params,
+                    include_prompt_logprobs=include_prompt_logprobs,
+                    topk_prompt_logprobs=topk_prompt_logprobs,
+                    lora_id=lora_id,
+                    topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
+                )
+            finally:
+                if held:
+                    held.in_flight -= 1
 
             duration = time.perf_counter() - start_time
             logger.info("Sampling completed for %s", sampling_session_id)

@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import shutil
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -246,7 +246,7 @@ async def test_sampling_session_cocurrent(request, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sampling_seq_id_history_is_monotonic(request, tmp_path) -> None:
+async def test_sampling_seq_id_history_is_monotonic(request, tmp_path, monkeypatch) -> None:
     use_gpu = request.config.getoption("--gpu")
     state = await _build_state(tmp_path, use_gpu)
     session_id = _create_session(state)
@@ -273,10 +273,19 @@ async def test_sampling_seq_id_history_is_monotonic(request, tmp_path) -> None:
         seq_id=0,
     )
 
+    record = state.sampling.sampling_sessions[sampling_session_id]
+    in_flight_while_recording = []
+    original_record_sequence = state.sampling._record_sequence
+
+    async def recording(record, seq_id, prompt):
+        in_flight_while_recording.append(record.in_flight)
+        await original_record_sequence(record, seq_id, prompt)
+
+    monkeypatch.setattr(state.sampling, "_record_sequence", recording)
     await state.run_sample(req1, user_id="tester")
     await state.run_sample(req0, user_id="tester")
 
-    record = state.sampling.sampling_sessions[sampling_session_id]
+    assert in_flight_while_recording == [1, 1] and record.in_flight == 0
     assert record.last_seq_id == 1
     assert [entry.seq_id for entry in record.history] == [0, 1]
 
@@ -785,6 +794,49 @@ async def test_load_checkpoint_into_new_run_uses_destination_sequence_and_adapte
     assert source_record.next_seq_id == 3
     assert destination_record.next_seq_id == 2
     assert loaded_lora_ids == [destination.training_run_id]
+
+
+@pytest.mark.asyncio
+async def test_load_checkpoint_survives_restore(request, tmp_path, monkeypatch) -> None:
+    """agentscope-ai/TuFT#140: a run seeded by load_state restores the loaded weights."""
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    source, destination = [
+        await state.create_model(
+            session_id,
+            model_owner="tester",
+            base_model="Qwen/Qwen3-0.6B",
+            lora_config=types.LoraConfig(rank=4, train_unembed=False),
+            user_metadata=None,
+        )
+        for _ in range(2)
+    ]
+    checkpoint = await state.save_checkpoint(
+        source.training_run_id, user_id="tester", name="seed", checkpoint_type="training"
+    )
+    await state.load_checkpoint(
+        destination.training_run_id,
+        path=checkpoint.tinker_checkpoint.tinker_path,
+        user_id="tester",
+        optimizer=False,
+    )
+
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    original_load_state = backend.load_state
+    loaded = []
+
+    async def recording_load_state(*, lora_id, checkpoint_record, optimizer):
+        loaded.append((lora_id, checkpoint_record.path))
+        await original_load_state(
+            lora_id=lora_id, checkpoint_record=checkpoint_record, optimizer=optimizer
+        )
+
+    monkeypatch.setattr(backend, "load_state", recording_load_state)
+    await backend.remove_adapter(destination.training_run_id)
+    restored = await state.training.restore_from_checkpoint(destination.training_run_id)
+    assert restored is not None and restored.checkpoint_type == "training"
+    assert loaded == [(destination.training_run_id, restored.path)]
+    assert restored.path.parent == tmp_path / destination.training_run_id
 
 
 @pytest.mark.asyncio
@@ -1719,14 +1771,25 @@ async def test_sweep_keeps_newest_unnamed_sampler_saves(request, tmp_path) -> No
     run_id = await _create_run(state, session_id)
     saves = [await _sampler_save(state, run_id) for _ in range(4)]
     named = await _sampler_save(state, run_id, "named")
-    old_sampler = await _hold(state, session_id, saves[0])
+    in_use = await _hold(state, session_id, saves[0])
+    idle = await _hold(state, session_id, saves[1])
+    now = datetime.now(timezone.utc)
+    hour_ago = now - timedelta(hours=1)
+    state.sampling.sampling_sessions[in_use].last_used_at = now
+    state.sampling.sampling_sessions[idle].last_used_at = hour_ago
     assert [s.transient for s in saves] == [True] * 4 and named.transient is False
 
     await state._sweep_checkpoints()
 
-    assert [s.path.exists() for s in saves] == [False, False, True, True]
-    assert old_sampler not in state.sampling.sampling_sessions
+    assert [s.path.exists() for s in saves] == [True, False, True, True]
+    assert in_use in state.sampling.sampling_sessions
+    assert idle not in state.sampling.sampling_sessions
+    state.sampling.sampling_sessions[in_use].last_used_at = hour_ago
+    state.sampling.sampling_sessions[in_use].in_flight = 1
     await state.training.release_run(run_id)
+    await state._sweep_checkpoints()
+    assert [s.path.exists() for s in saves] == [True, False, False, False]
+    state.sampling.sampling_sessions[in_use].in_flight = 0
     await state._sweep_checkpoints()
     assert not any(s.path.exists() for s in saves)
     assert [c.checkpoint_id for c in state.list_checkpoints(run_id, "tester")] == ["named"]
