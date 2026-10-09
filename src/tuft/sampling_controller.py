@@ -381,25 +381,23 @@ class SamplingController:
             sampling_session_id = request.sampling_session_id or ""
             span.set_attribute("tuft.sampling_session_id", sampling_session_id)
             # Get session_id from sampling session record if available
-            if request.sampling_session_id:
-                record = self.sampling_sessions.get(request.sampling_session_id)
-                if record:
-                    span.set_attribute("tuft.session_id", record.session_id)
+            held = self.sampling_sessions.get(sampling_session_id)
+            if held:
+                span.set_attribute("tuft.session_id", held.session_id)
+                held.in_flight += 1  # before the first await, so keep-N cannot evict it
             span.set_attribute("tuft.num_samples", request.num_samples)
 
             logger.info("Sampling begin for %s", sampling_session_id)
             start_time = time.perf_counter()
 
-            backend, lora_id = await self._resolve_backend(request, user_id=user_id)
-            prompt = request.prompt
-            sampling_params = request.sampling_params
-            num_samples = request.num_samples
-            include_prompt_logprobs = bool(request.prompt_logprobs)
-            topk_prompt_logprobs = request.topk_prompt_logprobs or 0
-
-            record = self.sampling_sessions[request.sampling_session_id or ""]
-            record.in_flight += 1
             try:
+                backend, lora_id = await self._resolve_backend(request, user_id=user_id)
+                prompt = request.prompt
+                sampling_params = request.sampling_params
+                num_samples = request.num_samples
+                include_prompt_logprobs = bool(request.prompt_logprobs)
+                topk_prompt_logprobs = request.topk_prompt_logprobs or 0
+
                 async with use_phase(self.phases, backend.base_model, "sample"):
                     response = await backend.sample(
                         prompt=prompt,
@@ -411,7 +409,8 @@ class SamplingController:
                         topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
                     )
             finally:
-                record.in_flight -= 1
+                if held:
+                    held.in_flight -= 1
 
             duration = time.perf_counter() - start_time
             logger.info("Sampling completed for %s", sampling_session_id)

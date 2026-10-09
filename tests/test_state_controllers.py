@@ -246,7 +246,7 @@ async def test_sampling_session_cocurrent(request, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sampling_seq_id_history_is_monotonic(request, tmp_path) -> None:
+async def test_sampling_seq_id_history_is_monotonic(request, tmp_path, monkeypatch) -> None:
     use_gpu = request.config.getoption("--gpu")
     state = await _build_state(tmp_path, use_gpu)
     session_id = _create_session(state)
@@ -273,10 +273,19 @@ async def test_sampling_seq_id_history_is_monotonic(request, tmp_path) -> None:
         seq_id=0,
     )
 
+    record = state.sampling.sampling_sessions[sampling_session_id]
+    in_flight_while_recording = []
+    original_record_sequence = state.sampling._record_sequence
+
+    async def recording(record, seq_id, prompt):
+        in_flight_while_recording.append(record.in_flight)
+        await original_record_sequence(record, seq_id, prompt)
+
+    monkeypatch.setattr(state.sampling, "_record_sequence", recording)
     await state.run_sample(req1, user_id="tester")
     await state.run_sample(req0, user_id="tester")
 
-    record = state.sampling.sampling_sessions[sampling_session_id]
+    assert in_flight_while_recording == [1, 1] and record.in_flight == 0
     assert record.last_seq_id == 1
     assert [entry.seq_id for entry in record.history] == [0, 1]
 
