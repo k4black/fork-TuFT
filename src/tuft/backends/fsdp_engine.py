@@ -435,6 +435,7 @@ def forward_backward(
                 dtype=torch.bfloat16,
                 enabled=device.type == "cuda",
             )
+            # Padded elements.
             offload = not forward_only and batch.input_ids.numel() >= _OFFLOAD_MIN_TOKENS
             with autocast:
                 # Pageable: pinned host blocks round up and about double host RAM.

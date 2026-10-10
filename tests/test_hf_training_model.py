@@ -278,7 +278,7 @@ def test_inactive_adapter_optimizer_moments_stay_on_host(monkeypatch):
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
     model = HFTrainingModel.__new__(HFTrainingModel)
     model.model = torch.nn.Linear(2, 2, device="meta")  # type: ignore[assignment]
-    model._pinned = {}
+    model._host = {}
     model.adapter_optimizer = {}
     for lora_id in ("a", "b"):
         param = torch.nn.Parameter(torch.zeros(2, device="meta"))
@@ -308,3 +308,34 @@ def test_inactive_adapter_optimizer_moments_stay_on_host(monkeypatch):
     assert devices() == {"a": ("cpu", "cpu"), "b": ("cpu", "cpu")}
     model._move(torch.device("meta"))
     assert devices() == {"a": ("meta", "cpu"), "b": ("cpu", "cpu")}
+
+
+def test_parked_optimizer_moments_survive_a_round_trip():
+    import torch
+
+    from tuft.backends.hf_training_model import HFTrainingModel
+
+    def train(swap: bool) -> tuple[torch.Tensor, list[str]]:
+        torch.manual_seed(0)
+        model = HFTrainingModel.__new__(HFTrainingModel)
+        model._host, model._pin = {}, True
+        params = {k: torch.nn.Parameter(torch.randn(4)) for k in ("a", "b")}
+        model.adapter_optimizer = {k: torch.optim.AdamW([p]) for k, p in params.items()}
+        for _ in range(3):
+            for k, p in params.items():
+                p.grad = torch.randn(4)
+                model.adapter_optimizer[k].step()
+                if swap:  # park k, then unpark it
+                    model._move_opt(k, torch.device("cpu"), model._host)
+                    model._move_opt(k, torch.device("cpu"), model._host)
+        return torch.cat([p.detach() for p in params.values()]), sorted(model._host)
+
+    swapped, host = train(swap=True)
+    plain, _ = train(swap=False)
+    torch.testing.assert_close(swapped, plain)
+    assert host == [
+        "opt.a.0.exp_avg",
+        "opt.a.0.exp_avg_sq",
+        "opt.b.0.exp_avg",
+        "opt.b.0.exp_avg_sq",
+    ]

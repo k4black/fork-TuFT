@@ -1,3 +1,4 @@
+import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -15,21 +16,20 @@ def gpu_request(num_gpus: float) -> float:
 
 
 def check_gpu_layout(models: list[ModelConfig]) -> None:
-    """Fail fast when the models request more GPUs than the Ray cluster has.
+    """Warn when the models request more GPUs than the Ray cluster has now.
 
-    Ray otherwise queues the actors until a startup timeout. The check counts
-    cluster totals: it does not model per-node packing, and an autoscaling
-    cluster must have its nodes up before the server starts.
+    Ray otherwise queues the actors silently until a startup timeout. Only a
+    warning: autoscaling nodes may join later. Counts cluster totals, not
+    per-node packing.
     """
     if os.environ.get("TUFT_NO_GPU") == "1" or os.environ.get("TUFT_CPU_TEST") == "1":
         return  # actors request no GPUs
     import ray
 
-    no_ray_fsdp = os.environ.get("TUFT_FSDP_NO_RAY") == "1"  # trains in-process
     need: dict[str, float] = {}
     roles: list[str] = []
     for m in models:
-        train = (0 if no_ray_fsdp else m.fsdp_num_gpus) if m.training_backend == "fsdp" else 1
+        train = m.fsdp_num_gpus if m.training_backend == "fsdp" else 1
         infer = m.tensor_parallel_size * m.data_parallel_size
         if m.colocate:
             train, infer = 1 - m.sampling_memory_fraction, m.sampling_memory_fraction
@@ -43,7 +43,7 @@ def check_gpu_layout(models: list[ModelConfig]) -> None:
         ray.init()
     have = ray.cluster_resources()
     if short := {r: n for r, n in need.items() if n > have.get(r, 0)}:
-        raise ValueError(
+        logging.getLogger(__name__).warning(
             "GPU layout exceeds the Ray cluster: "
             + ", ".join(
                 f"{r} requested {n:g}, available {have.get(r, 0):g}" for r, n in short.items()

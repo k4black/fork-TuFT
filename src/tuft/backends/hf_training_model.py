@@ -229,7 +229,8 @@ class HFTrainingModel:
         self.logger = logging.getLogger()
         self.micro_batch_size = config.micro_batch_size
         self._device = next(self.model.parameters()).device
-        self._pinned: dict[str, torch.Tensor] = {}  # colocate "sleep": reused host copies
+        # Reusable host copies by key: pinned unless pinning failed; _move replaces, _swap_opt adds.
+        self._host: dict[str, torch.Tensor] = {}
         self._pin = True  # False once pinning fails (RLIMIT_MEMLOCK)
         if config.colocate == "sleep":
             self._move(torch.device("cpu"))  # vLLM starts in the sampling phase
@@ -249,7 +250,7 @@ class HFTrainingModel:
             if device.type == "cpu" or lora_id == self._opt_active:  # others stay on host
                 self._move_opt(lora_id, device, used)
         if device.type == "cpu":
-            self._pinned = used  # drop buffers of removed adapters
+            self._host = used  # drop buffers of removed adapters
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
 
@@ -264,7 +265,7 @@ class HFTrainingModel:
             return t
         if not self._pin:
             return t.to("cpu")
-        buf = self._pinned.get(key)
+        buf = self._host.get(key)
         if buf is None or buf.shape != t.shape or buf.dtype != t.dtype:
             try:
                 buf = torch.empty_like(t, device="cpu").pin_memory()
@@ -288,9 +289,9 @@ class HFTrainingModel:
         if prev == lora_id or not torch.cuda.is_available() or device.type == "cpu":
             return
         if prev in self.adapter_optimizer:
-            self._move_opt(prev, torch.device("cpu"), self._pinned)
+            self._move_opt(prev, torch.device("cpu"), self._host)
         if lora_id in self.adapter_optimizer:
-            self._move_opt(lora_id, device, self._pinned)
+            self._move_opt(lora_id, device, self._host)
         torch.cuda.synchronize()  # host copies land before a save reads them
 
     async def offload(self) -> None:
@@ -477,7 +478,7 @@ class HFTrainingModel:
                 optimizer = self.adapter_optimizer.pop(lora_id)
                 del optimizer
                 prefix = f"opt.{lora_id}."
-                self._pinned = {k: v for k, v in self._pinned.items() if not k.startswith(prefix)}
+                self._host = {k: v for k, v in self._host.items() if not k.startswith(prefix)}
                 torch.cuda.empty_cache()
 
     # --------------------------------

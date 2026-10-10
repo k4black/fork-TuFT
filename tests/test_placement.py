@@ -1,6 +1,5 @@
 """Ray custom-resource placement of training vs sampling actors."""
 
-from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -101,7 +100,7 @@ def test_actors_request_no_gpus_only_in_cpu_mode(monkeypatch):
         ({"train_gpu_resource": "train_gpu"}, {"GPU": 2}, "train_gpu requested 1, available 0"),
     ],
 )
-def test_gpu_layout_fails_fast_when_cluster_is_short(monkeypatch, overrides, cluster, error):
+def test_gpu_layout_warns_when_cluster_is_short(monkeypatch, caplog, overrides, cluster, error):
     import ray
 
     from tuft.backends.base_backend import check_gpu_layout
@@ -111,5 +110,6 @@ def test_gpu_layout_fails_fast_when_cluster_is_short(monkeypatch, overrides, clu
     monkeypatch.setattr(ray, "is_initialized", lambda: True)
     monkeypatch.setattr(ray, "cluster_resources", lambda: cluster)
 
-    with pytest.raises(ValueError, match=error) if error else nullcontext():
-        check_gpu_layout([_config(**overrides)])
+    check_gpu_layout([_config(**overrides)])
+
+    assert error in caplog.text if error else not caplog.records
