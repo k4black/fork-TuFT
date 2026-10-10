@@ -594,7 +594,12 @@ class TrainingController:
             start_time = time.perf_counter()
 
             # Count total input tokens for metrics
-            total_tokens = sum(len(datum.model_input.to_ints()) for datum in data)
+            try:
+                total_tokens = sum(len(datum.model_input.to_ints()) for datum in data)
+            except ValueError as exc:  # to_ints() rejects non-text chunks
+                raise InvalidRequestException(
+                    "image inputs are supported for sampling only"
+                ) from exc
 
             async def _operation() -> types.ForwardBackwardOutput:
                 if record.backend is None:

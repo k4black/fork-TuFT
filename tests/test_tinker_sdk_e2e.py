@@ -512,3 +512,39 @@ def test_checkpoint_storage_usage(sdk_server: str) -> None:
         assert after.size_bytes > before.size_bytes
     finally:
         service_client.holder.close()
+
+
+@pytest.mark.integration
+def test_image_chunks_sample_but_do_not_train(sdk_server: str) -> None:
+    """An image counts expected_tokens prompt positions; training rejects it with a 400."""
+    image = types.ImageChunk(data=b"\x89PNG fake", format="png", expected_tokens=4)
+    prompt = types.ModelInput(
+        chunks=[
+            types.EncodedTextChunk(tokens=[1, 2]),
+            image,
+            types.EncodedTextChunk(tokens=[3]),
+        ]
+    )
+    service_client = _service_client(sdk_server)
+    try:
+        sampling_client = service_client.create_sampling_client(base_model=BASE_MODEL)
+        result = sampling_client.sample(
+            prompt=prompt,
+            num_samples=1,
+            sampling_params=types.SamplingParams(max_tokens=2),
+            include_prompt_logprobs=True,
+        ).result(timeout=CPU_TEST_TIMEOUT)
+        assert result.prompt_logprobs is not None
+        assert len(result.prompt_logprobs) == 7
+
+        training_client = service_client.create_lora_training_client(
+            base_model=BASE_MODEL, rank=8, train_unembed=False
+        )
+        datum = _datum([0], [0])
+        datum = types.Datum(model_input=prompt, loss_fn_inputs=datum.loss_fn_inputs)
+        with pytest.raises(Exception, match="sampling only"):
+            training_client.forward_backward([datum], "cross_entropy").result(
+                timeout=CPU_TEST_TIMEOUT
+            )
+    finally:
+        service_client.holder.close()

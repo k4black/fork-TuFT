@@ -15,6 +15,7 @@ from tinker import types
 
 from .backends import BaseSamplingBackend
 from .backends.gpu_phase import GpuPhase, use_phase
+from .backends.image_prompt import split_prompt
 from .checkpoints import CheckpointRecord
 from .config import SAMPLING_CAPABILITY, AppConfig, ModelConfig
 from .exceptions import (
@@ -310,15 +311,18 @@ class SamplingController:
                 raise
 
     def _hash_prompt(self, prompt: types.ModelInput) -> str:
-        tokens = ",".join(str(token) for token in prompt.to_ints())
-        return hashlib.sha1(tokens.encode("utf-8")).hexdigest()[:16]
+        tokens, images, _ = split_prompt(prompt)
+        digest = hashlib.sha1(",".join(str(token) for token in tokens).encode("utf-8"))
+        for image in images:
+            digest.update(image)
+        return digest.hexdigest()[:16]
 
     async def _record_sequence(
         self, record: SamplingSessionRecord, seq_id: int, prompt: types.ModelInput
     ) -> None:
         entry = SamplingHistoryEntry(
             seq_id=seq_id,
-            prompt_token_count=len(prompt.to_ints()),
+            prompt_token_count=split_prompt(prompt)[2],
             prompt_hash=self._hash_prompt(prompt),
         )
         record._history_by_seq_id[seq_id] = entry
@@ -357,6 +361,7 @@ class SamplingController:
             if record.base_model not in self._base_backends:
                 self.require_sampling_capability(record.base_model)
                 raise UnknownModelException(model_name=record.base_model)
+            split_prompt(request.prompt)  # same rule: reject a bad prompt before recording
 
             await record.executor.submit(
                 sequence_id=request.seq_id,
