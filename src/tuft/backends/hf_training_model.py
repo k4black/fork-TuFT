@@ -221,6 +221,8 @@ def get_default_target_modules(model_path: str) -> list[str] | None:
 
 
 class HFTrainingModel:
+    _opt_active: str | None = None  # adapter whose AdamW moments are on the GPU
+
     def __init__(self, config: ModelConfig) -> None:
         self.config = config
         self.model = self._init_peft_model(config)
@@ -239,38 +241,59 @@ class HFTrainingModel:
         if not torch.cuda.is_available():
             return
         used: dict[str, torch.Tensor] = {}
-
-        def to(key: str, t: torch.Tensor) -> torch.Tensor:
-            if device.type != "cpu":
-                return t.to(device, non_blocking=True)
-            if not self._pin:
-                return t.to("cpu")
-            buf = self._pinned.get(key)
-            if buf is None or buf.shape != t.shape or buf.dtype != t.dtype:
-                try:
-                    buf = torch.empty_like(t, device="cpu").pin_memory()
-                except RuntimeError:
-                    self.logger.warning("Cannot pin host memory; offloading to pageable memory.")
-                    self._pin = False
-                    return t.to("cpu")
-            used[key] = buf
-            return buf.copy_(t, non_blocking=True)
-
         for name, param in self.model.named_parameters():
-            param.data = to(name, param.data)
+            param.data = self._to(name, param.data, device, used)
             if param.grad is not None:  # grads survive a sample between fb and optim_step
-                param.grad = to("grad." + name, param.grad)
+                param.grad = self._to("grad." + name, param.grad, device, used)
         for name, buffer in self.model.named_buffers():
-            buffer.data = to(name, buffer.data)
-        for lora_id, optimizer in self.adapter_optimizer.items():
-            for i, state in enumerate(optimizer.state.values()):
-                for key, value in state.items():
-                    if key != "step" and torch.is_tensor(value):  # AdamW keeps step on CPU
-                        state[key] = to(f"opt.{lora_id}.{i}.{key}", value)
+            buffer.data = self._to(name, buffer.data, device, used)
+        for lora_id in self.adapter_optimizer:
+            if device.type == "cpu" or lora_id == self._opt_active:  # others stay on host
+                self._move_opt(lora_id, device, used)
         if device.type == "cpu":
             self._pinned = used  # drop buffers of removed adapters
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
+
+    def _to(
+        self, key: str, t: torch.Tensor, device: torch.device, used: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Move t to device; host copies reuse pinned buffers and are recorded in used."""
+        if device.type != "cpu":
+            return t.to(device, non_blocking=True)
+        if t.device.type == "cpu":  # already offloaded
+            used[key] = t
+            return t
+        if not self._pin:
+            return t.to("cpu")
+        buf = self._pinned.get(key)
+        if buf is None or buf.shape != t.shape or buf.dtype != t.dtype:
+            try:
+                buf = torch.empty_like(t, device="cpu").pin_memory()
+            except RuntimeError:
+                self.logger.warning("Cannot pin host memory; offloading to pageable memory.")
+                self._pin = False
+                return t.to("cpu")
+        used[key] = buf
+        return buf.copy_(t, non_blocking=True)
+
+    def _move_opt(self, lora_id: str, device: torch.device, used: dict[str, torch.Tensor]) -> None:
+        for i, state in enumerate(self.adapter_optimizer[lora_id].state.values()):
+            for key, value in state.items():
+                if key != "step" and torch.is_tensor(value):  # AdamW keeps step on CPU
+                    state[key] = self._to(f"opt.{lora_id}.{i}.{key}", value, device, used)
+
+    def _swap_opt(self, lora_id: str) -> None:
+        """Keep only lora_id's AdamW moments on the GPU; park the previous adapter's on host."""
+        prev, self._opt_active = self._opt_active, lora_id
+        device = next(self.model.parameters()).device  # CPU while colocate "sleep" offloads
+        if prev == lora_id or not torch.cuda.is_available() or device.type == "cpu":
+            return
+        if prev in self.adapter_optimizer:
+            self._move_opt(prev, torch.device("cpu"), self._pinned)
+        if lora_id in self.adapter_optimizer:
+            self._move_opt(lora_id, device, self._pinned)
+        torch.cuda.synchronize()  # host copies land before a save reads them
 
     async def offload(self) -> None:
         self._move(torch.device("cpu"))
@@ -431,6 +454,7 @@ class HFTrainingModel:
             # 2. Load optimizer state if needed
             async with self._lock:
                 self.model.set_adapter(lora_id)
+                self._swap_opt(lora_id)
                 params = [p for p in self.model.parameters() if p.requires_grad]
                 optimizer_obj = torch.optim.AdamW(params)
                 if optimizer:
@@ -454,6 +478,8 @@ class HFTrainingModel:
                 self.model.delete_adapter(lora_id)
                 optimizer = self.adapter_optimizer.pop(lora_id)
                 del optimizer
+                prefix = f"opt.{lora_id}."
+                self._pinned = {k: v for k, v in self._pinned.items() if not k.startswith(prefix)}
                 torch.cuda.empty_cache()
 
     # --------------------------------
@@ -691,17 +717,19 @@ class HFTrainingModel:
         ctx = extract_context(trace_context or {})
         with _get_tracer().start_as_current_span("hf_model.optim_step", context=ctx) as span:
             span.set_attribute("tuft.lora_id", lora_id)
-            optimizer = self.adapter_optimizer[lora_id]
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = adam_params.learning_rate
-                param_group["betas"] = (adam_params.beta1, adam_params.beta2)
-                param_group["eps"] = adam_params.eps
-                param_group["weight_decay"] = adam_params.weight_decay
-            if adam_params.grad_clip_norm:
-                clip_params = [p for group in optimizer.param_groups for p in group["params"]]
-                torch.nn.utils.clip_grad_norm_(clip_params, adam_params.grad_clip_norm)
-            optimizer.step()
-            optimizer.zero_grad()
+            async with self._lock:
+                self._activate_adapter(lora_id)
+                optimizer = self.adapter_optimizer[lora_id]
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = adam_params.learning_rate
+                    param_group["betas"] = (adam_params.beta1, adam_params.beta2)
+                    param_group["eps"] = adam_params.eps
+                    param_group["weight_decay"] = adam_params.weight_decay
+                if adam_params.grad_clip_norm:
+                    clip_params = [p for group in optimizer.param_groups for p in group["params"]]
+                    torch.nn.utils.clip_grad_norm_(clip_params, adam_params.grad_clip_norm)
+                optimizer.step()
+                optimizer.zero_grad()
 
         torch.cuda.empty_cache()
         return types.OptimStepResponse()
@@ -762,6 +790,7 @@ class HFTrainingModel:
         if lora_id not in self.adapter_optimizer:
             raise ValueError(f"Adapter {lora_id} not found.")
         self.model.set_adapter(lora_id)
+        self._swap_opt(lora_id)
         # load_adapter leaves eval mode, which disables gradient checkpointing.
         self.model.train()
         _tile_long_inputs(self.model)  # adapters add LoRA linears after load
