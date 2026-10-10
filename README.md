@@ -425,6 +425,22 @@ docker pull k4black/tuft-train:latest       # or :latest-cu12, :0.3.0, :dev
 docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
 ```
 
+### Single-GPU modes
+
+`colocate` puts training and sampling of one model on one GPU (`training_backend: hf`,
+`tensor_parallel_size: 1`, `data_parallel_size: 1`). `true` keeps the trainer and vLLM resident
+together; `"sleep"` alternates them: vLLM sleeps while training runs, the trainer moves to CPU
+while sampling runs. `sampling_memory_fraction` is vLLM's share of the GPU while awake. In
+`"sleep"`, host RAM must hold about twice the model plus offloaded activations; in docker pass
+`--ulimit memlock=-1`. Long context: from 64k tokens per micro-batch the trainer chunks its
+modules and offloads activations to host memory (~30% slower forward_backward); a 9B model at
+262144 tokens needs ~165 GB host RAM.
+
+```bash
+docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v <host_dir>:/data \
+    --entrypoint tuft k4black/tuft-infer:latest launch --port 10610 --config /data/tuft_config.yaml
+```
+
 ## Deployment
 
 Don't have a GPU? Run TuFT on **pay-as-you-go cloud compute** — rent a GPU on demand and fine-tune from your laptop (no local GPU). The [`deploy/`](deploy/) helpers wrap the standard `tuft launch` server for popular cloud backends and walk you through configuring the deployment, running an end-to-end "talk like Yoda" training example on `Qwen/Qwen3-0.6B`, and downloading the trained adapter.

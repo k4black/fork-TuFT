@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from tinker import types
 
 from .auth import AuthenticationDB, User
+from .backends.gpu_phase import sleep_phase
 from .checkpoints import CheckpointRecord
 from .config import AppConfig, ModelCapability, ModelConfig
 from .exceptions import (
@@ -174,12 +175,24 @@ class ServerState:
         self.sessions = SessionManager()
         self.training = TrainingController(self.config)
         self.sampling = SamplingController(self.config)
+        for model in self.config.supported_models:
+            if model.colocate == "sleep":
+                name = model.model_name
+                phase = sleep_phase(
+                    self.training.training_backends[name].model,  # type: ignore[attr-defined]
+                    self.sampling._base_backends[name],
+                )
+                self.training.phases[name] = self.sampling.phases[name] = phase
         self.auth_db = AuthenticationDB(self.config.authorized_users)
         self.future_store = FutureStore()
         self._sweep_task: asyncio.Task | None = None
 
     async def async_init(self) -> None:
         """Put any async initialization logic here"""
+        # vLLM sizes its memory from what is free, so let the trainer load first.
+        for model in self.config.supported_models:
+            if model.colocate:
+                await self.training.training_backends[model.model_name].async_init()
         await self.sampling.async_init()
         await self._restore_from_checkpoints()
         if self._sweep_task is None:

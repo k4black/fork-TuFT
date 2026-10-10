@@ -21,8 +21,8 @@ pytestmark = pytest.mark.cpu_integration
 TIMEOUT = 600
 
 
-@pytest.fixture(scope="module")
-def cpu_server_endpoint(tmp_path_factory: pytest.TempPathFactory):
+@pytest.fixture(scope="module", params=[False, True, "sleep"], ids=lambda m: f"colocate={m}")
+def cpu_server_endpoint(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory):
     model_path = Path(os.environ["TUFT_TINY_MODEL"])
     config = ServerFixtureConfig(
         model_configs=[
@@ -32,6 +32,7 @@ def cpu_server_endpoint(tmp_path_factory: pytest.TempPathFactory):
                 max_model_len=1024,
                 max_lora_rank=8,
                 sampling_enforce_eager=True,
+                colocate=request.param,
             )
         ]
     )
@@ -83,6 +84,17 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
             assert row is not None and len(row) == 3
             assert [lp for _, lp in row] == sorted((lp for _, lp in row), reverse=True)
         assert trainer.get_info().model_data.arch == "qwen3"
+
+        def greedy(stop: list[str] | list[int] | None = None) -> types.SampledSequence:
+            params = types.SamplingParams(max_tokens=8, temperature=0.0, stop=stop)
+            return sampler.sample(prompt, 1, params).result(timeout=TIMEOUT).sequences[0]
+
+        full = greedy().tokens
+        by_id = greedy(stop=[full[2]])
+        assert by_id.stop_reason == "stop"
+        assert by_id.tokens == full[: full.index(full[2]) + 1]
+        by_str = greedy(stop=[tok.decode(full[2:3])])
+        assert by_str.stop_reason == "stop" and len(by_str.tokens) <= 3
 
         state_path = trainer.save_state("cpu-state").result(timeout=TIMEOUT).path
         restored = service.create_lora_training_client(base_model="Qwen/Qwen3-0.6B", rank=8)

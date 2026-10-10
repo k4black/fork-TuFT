@@ -22,6 +22,7 @@ from tinker import types
 
 from . import weights_import
 from .backends import BaseTrainingBackend
+from .backends.gpu_phase import GpuPhase, use_phase
 from .checkpoints import (
     CheckpointMetadata,
     CheckpointRecord,
@@ -194,6 +195,7 @@ class TrainingController:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.training_backends = self._create_backends(config.supported_models)
+        self.phases: Dict[str, GpuPhase] = {}  # colocate "sleep" models, set by ServerState
         self.training_runs: Dict[str, TrainingRunRecord] = {}
         self._restore_from_redis()
 
@@ -443,7 +445,8 @@ class TrainingController:
                     )
 
             try:
-                result = await operation()
+                async with use_phase(self.phases, record.base_model, "train"):
+                    result = await operation()
             except Exception:
                 if seq_id is not None:
                     record.failed_seq_id = seq_id

@@ -128,6 +128,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         # At most this many sessions stay staged (vLLM's default max_cpu_loras).
         self._max_staged = config.max_loras
         self._idle_ttl = config.adapter_idle_ttl_minutes * 60
+        self._asleep = False  # colocate "sleep": the sweep must not unload then
         self._sweep_task: Optional[asyncio.Task] = None
         self._counter = 1
         self._lock = asyncio.Lock()
@@ -173,6 +174,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             tool_call_parser=config.tool_call_parser,
             reasoning_parser=config.reasoning_parser,
             bundle_indices=bundle_indices,
+            enable_sleep_mode=config.colocate == "sleep",
         )
 
     def _create_colocated_engine(self, config: ModelConfig):
@@ -344,6 +346,8 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     "n": num_samples,
                     "prompt_logprobs": (topk_prompt_logprobs if include_prompt_logprobs else None),
                     "logprobs": topk_sample_logprobs,
+                    # tinker returns token ids only; string stops need the text.
+                    "detokenize": False,
                 }
                 # Avoid prefix cache reads when computing prompt logprobs
                 # (cached prompt chunks would otherwise skip logit computation
@@ -369,6 +373,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     ]
                     if str_stops:
                         params["stop"] = str_stops
+                        params["detokenize"] = True
                     if int_stops:
                         params["stop_token_ids"] = int_stops
 
@@ -522,6 +527,8 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 # Re-check under the lock: a request may have landed meanwhile.
                 if self._in_flight[lora_id] or self._last_used.get(lora_id, cutoff) >= cutoff:
                     continue
+                if self._asleep:  # unloading writes GPU memory vLLM has released
+                    return
                 logger.info("Unloading LoRA adapter %s, idle for %.0fs", lora_id, self._idle_ttl)
                 await self._remove_adapter_locked(lora_id)
 
@@ -529,7 +536,10 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         with _get_tracer().start_as_current_span("sampling_backend.remove_adapter") as span:
             span.set_attribute("tuft.lora_id", lora_id)
             async with self._lock:
-                await self._remove_adapter_locked(lora_id)
+                if not self._asleep:
+                    await self._remove_adapter_locked(lora_id)
+                elif lora_id in self._last_used:  # the sweep or the LRU cap unloads it later
+                    self._last_used[lora_id] = 0.0
                 # Final, unlike the sweep: no re-add for this id later.
                 self._adapter_paths.pop(lora_id, None)
 
@@ -549,6 +559,16 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             return
         await self.engine.unstage_adapter.remote(lora_id)  # type: ignore[attr-defined]
         self._last_used.pop(lora_id, None)
+
+    async def sleep(self) -> None:
+        async with self._lock:
+            await self.engine.sleep.remote()  # type: ignore[attr-defined]
+            self._asleep = True
+
+    async def wake_up(self) -> None:
+        async with self._lock:
+            await self.engine.wake_up.remote()  # type: ignore[attr-defined]
+            self._asleep = False
 
     async def shutdown(self) -> None:
         """Shut down the vLLM engine Ray actor and release GPU resources."""

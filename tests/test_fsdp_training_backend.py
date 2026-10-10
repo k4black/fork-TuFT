@@ -1209,6 +1209,14 @@ async def test_fsdp_engine_matches_hf_target_tokens_on_cpu():
             logits = vocab_logits.expand(batch, seq_len, -1).clone()
             return SimpleNamespace(logits=logits)
 
+        def get_decoder(self):
+            return lambda input_ids, **_: SimpleNamespace(
+                last_hidden_state=self.scale * torch.ones(*input_ids.shape, 1)
+            )
+
+        def get_output_embeddings(self):
+            return lambda hidden: hidden * torch.arange(16, dtype=torch.float32)
+
     data = [
         types.Datum(
             model_input=types.ModelInput.from_ints(tokens=[10, 11]),
