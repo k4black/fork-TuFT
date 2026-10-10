@@ -38,7 +38,9 @@ class HFTrainingBackend(BaseTrainingBackend):
         """Create a LoRA adapter with the given ID and configuration."""
         if lora_config.rank > self.config.max_lora_rank:
             raise InvalidRequestException(
-                f"LoRA rank {lora_config.rank} exceeds max_lora_rank={self.config.max_lora_rank}."
+                f"LoRA rank {lora_config.rank} exceeds max_lora_rank={self.config.max_lora_rank}; "
+                "raise supported_models[].max_lora_rank in the server config "
+                "(tinker-cookbook defaults to rank 32)."
             )
         with _get_tracer().start_as_current_span("training_backend.create_adapter") as span:
             span.set_attribute("tuft.lora_id", lora_id)

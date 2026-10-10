@@ -388,7 +388,10 @@ class ServerState:
         self.sessions.finish(record)
         for model_id, run in list(self.training.training_runs.items()):
             if run.session_id == record.session_id:
-                await self.training.release_run(model_id)
+                try:
+                    await self.training.release_run(model_id)
+                except Exception:  # keep releasing the rest; the session is gone either way
+                    logger.exception("Failed to release run %s", model_id)
         await self.sampling.evict_session(record.session_id)
 
     async def create_model(

@@ -185,6 +185,7 @@ async def test_create_adapter_rejects_rank_above_max_lora_rank():
     with pytest.raises(InvalidRequestException) as excinfo:
         await backend.create_adapter("run", types.LoraConfig(rank=32))
     assert excinfo.value.status_code == 400
+    assert "raise supported_models[].max_lora_rank" in str(excinfo.value)
 
 
 def _tiny_qwen3_5():

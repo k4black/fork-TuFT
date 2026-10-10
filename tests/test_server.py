@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -335,3 +336,61 @@ def test_readyz_reports_dead_actor(tmp_path: Path) -> None:
     assert response.json()["failed"] == {
         "m": "sampling: RuntimeError('engine dead'); training: RayActorError()"
     }
+
+
+def test_readyz_checks_the_vllm_openai_server(tmp_path: Path, monkeypatch) -> None:
+    from tuft.backends.sampling_backend import VLLMSamplingBackend
+
+    config = AppConfig(checkpoint_dir=tmp_path)
+    config.supported_models = [
+        ModelConfig(model_name="m", model_path=Path("/dummy/m"), max_model_len=4096)
+    ]
+    app = create_root_app(config)
+    client = TestClient(app)
+
+    async def healthy() -> None:
+        return None
+
+    backend = VLLMSamplingBackend.__new__(VLLMSamplingBackend)
+    backend.engine = SimpleNamespace(check_health=SimpleNamespace(remote=healthy))  # type: ignore[assignment]
+    backend._openai_api_url = "http://vllm-node:8000"
+    app.state.server_state.sampling._base_backends["m"] = backend
+    transport = httpx.MockTransport(lambda request: httpx.Response(500))
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(transport=transport, **kw))
+
+    response = client.get("/api/v1/readyz")
+    assert response.status_code == 503
+    assert "500" in response.json()["failed"]["m"]
+
+
+def test_telemetry_logs_client_exceptions(tmp_path: Path, caplog) -> None:
+    config = AppConfig(checkpoint_dir=tmp_path)
+    config.supported_models = [
+        ModelConfig(model_name="m", model_path=Path("/dummy/m"), max_model_len=4096)
+    ]
+    config.authorized_users = {"tml-k": "default"}
+    client = TestClient(create_root_app(config))
+    event = {
+        "event": "UNHANDLED_EXCEPTION",
+        "event_id": "e1",
+        "event_session_index": 0,
+        "severity": "ERROR",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "error_type": "ValueError",
+        "error_message": "boom" + "x" * 5000,
+        "traceback": "secret frames",
+    }
+    body = {
+        "events": [event],
+        "platform": "linux",
+        "sdk_version": "0.32.0",
+        "session_id": "sess-1",
+        "process_uuid": "p1",
+    }
+    with caplog.at_level("WARNING", logger="tuft.server"):
+        response = client.post("/api/v1/telemetry", json=body, headers={"X-API-Key": "tml-k"})
+    assert response.status_code == 200
+    (record,) = [r for r in caplog.records if r.name == "tuft.server"]
+    assert "sess-1" in record.getMessage() and "ValueError: boom" in record.getMessage()
+    assert "secret frames" not in record.getMessage() and len(record.getMessage()) < 1200

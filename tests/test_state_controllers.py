@@ -1651,6 +1651,38 @@ async def test_finish_session_releases_run_keeps_checkpoints(request, tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_finish_session_continues_past_a_failed_release(request, tmp_path, monkeypatch):
+    from tuft.sampling_controller import SamplingSessionRecord
+
+    state = await _build_state(tmp_path, request.config.getoption("--gpu"))
+    session_id = _create_session(state)
+    first, second = await _create_run(state, session_id), await _create_run(state, session_id)
+    state.sampling.sampling_sessions["sampler1"] = SamplingSessionRecord(
+        sampling_session_id="sampler1",
+        session_id=session_id,
+        user_id="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        model_id=first,
+        session_seq_id=0,
+    )
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    original_remove_adapter = backend.remove_adapter
+
+    async def failing_remove_adapter(lora_id):
+        if lora_id == first:
+            raise RuntimeError("actor gone")
+        await original_remove_adapter(lora_id)
+
+    monkeypatch.setattr(backend, "remove_adapter", failing_remove_adapter)
+
+    await state.finish_session(session_id, user_id="tester")
+
+    assert not state.training.training_runs[first].released
+    assert state.training.training_runs[second].released
+    assert "sampler1" not in state.sampling.sampling_sessions
+
+
+@pytest.mark.asyncio
 async def test_sweep_finishes_only_expired_sessions(request, tmp_path) -> None:
     state = await _build_state(tmp_path, request.config.getoption("--gpu"))
     stale_session, live_session = _create_session(state), _create_session(state)
@@ -1967,7 +1999,10 @@ async def test_copy_weights_imports_hf_adapter(request, tmp_path, monkeypatch) -
     adapter_config.update(lora_alpha=8, base_model_name_or_path="other/model")
     with pytest.raises(InvalidRequestException, match="matches no configured"):
         await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
-    adapter_config.update(base_model_name_or_path="Qwen/Qwen3-0.6B", r="4")
+    adapter_config.update(base_model_name_or_path="Qwen/Qwen3-0.6B", r=999)
+    with pytest.raises(InvalidRequestException, match=r"rank 999 is not supported.*accepted ranks"):
+        await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
+    adapter_config.update(r="4")
     with pytest.raises(InvalidRequestException, match="must be an integer"):
         await state.copy_weights(session_id, "tester", "hf://org/repo", None, None)
     adapter_config["raw"] = "{not json"
