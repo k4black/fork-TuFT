@@ -538,6 +538,44 @@ def test_worker_load_checkpoint_validates_supplied_geometry_before_weights(tmp_p
         )
 
 
+def test_reinit_adapter_weights_honours_seed():
+    import torch
+    from peft import LoraConfig, get_peft_model
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    from tuft.backends.fsdp_engine import FSDPModelConfig
+    from tuft.backends.fsdp_training_backend import MultiAdapterFSDPWorker, SlotPoolConfig
+
+    base = Qwen3ForCausalLM(
+        Qwen3Config(
+            vocab_size=128,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=8,
+        )
+    )
+    worker = MultiAdapterFSDPWorker(
+        FSDPModelConfig(path="/tmp/model", max_model_len=1024),
+        SlotPoolConfig(rank_slots={4: 1}, target_modules=["q_proj", "v_proj"]),
+    )
+    worker.module = get_peft_model(
+        base, LoraConfig(r=4, target_modules=["q_proj", "v_proj"]), adapter_name="s0"
+    )
+
+    def lora_a() -> list[torch.Tensor]:
+        return [p.clone() for n, p in worker.module.named_parameters() if ".lora_A." in n]
+
+    worker._reinit_adapter_weights("s0", seed=7)
+    first = lora_a()
+    worker._reinit_adapter_weights("s0", seed=7)
+    assert all(a.equal(b) for a, b in zip(first, lora_a(), strict=True))
+    worker._reinit_adapter_weights("s0")
+    assert not first[0].equal(lora_a()[0])
+
+
 def test_worker_load_checkpoint_reads_imported_safetensors(tmp_path):
     """Without adapter.pt the worker loads PEFT keys from adapter_model.safetensors."""
     import torch

@@ -226,6 +226,33 @@ def test_activate_adapter_keeps_gradient_checkpointing_on(tmp_path):
     assert all(layer.training and layer.gradient_checkpointing for layer in layers)
 
 
+async def test_create_adapter_honours_lora_seed(tmp_path):
+    import asyncio
+
+    from tuft.backends.hf_training_model import HFTrainingModel
+
+    _tiny_qwen3_5().save_pretrained(tmp_path)
+    model = HFTrainingModel.__new__(HFTrainingModel)
+    model.config = SimpleNamespace(  # type: ignore[assignment]
+        model_path=tmp_path,
+        attn_implementation=None,
+        lora_alpha_ratio=2,
+        qwen_gated_deltanet_full_lora=False,
+    )
+    model.model = model._init_peft_model(model.config)  # type: ignore[arg-type]
+    model.adapter_optimizer = {}  # type: ignore[assignment]
+    model._lock = asyncio.Lock()
+    seeded = types.LoraConfig(rank=4, seed=7, train_unembed=False)
+    await model.create_adapter("a", seeded)
+    await model.create_adapter("b", seeded)
+
+    params = dict(model.model.named_parameters())
+    lora_a = [name for name in params if ".lora_A.a." in name]
+    assert lora_a
+    for name in lora_a:
+        assert params[name].equal(params[name.replace(".a.", ".b.")])
+
+
 def test_long_context_path_matches_full_logits(monkeypatch):
     import torch
     from peft import LoraConfig, get_peft_model
