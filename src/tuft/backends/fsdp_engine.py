@@ -15,6 +15,7 @@ from typing import Any
 import torch
 from tinker import types
 from torch.autograd.function import once_differentiable
+from torch.autograd.graph import save_on_cpu
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -25,6 +26,10 @@ from tuft.backends.loss_inputs import (
 )
 from tuft.backends.validation import _RLHF_LOSS_FNS
 from tuft.loss_fn import get_loss_fn, metrics_reduction
+
+
+# Long-context threshold for offload and tiling; fixed for every model size.
+_OFFLOAD_MIN_TOKENS = 64 * 1024
 
 
 def _fsdp_world_size() -> int:
@@ -430,14 +435,17 @@ def forward_backward(
                 dtype=torch.bfloat16,
                 enabled=device.type == "cuda",
             )
+            offload = not forward_only and batch.input_ids.numel() >= _OFFLOAD_MIN_TOKENS
             with autocast:
-                outputs = module(
-                    input_ids=batch.input_ids,
-                    attention_mask=batch.attention_mask,
-                    position_ids=batch.position_ids,
-                    use_cache=False,
-                    return_dict=True,
-                )
+                # Pageable: pinned host blocks round up and about double host RAM.
+                with save_on_cpu(pin_memory=False) if offload else nullcontext():
+                    outputs = module(
+                        input_ids=batch.input_ids,
+                        attention_mask=batch.attention_mask,
+                        position_ids=batch.position_ids,
+                        use_cache=False,
+                        return_dict=True,
+                    )
                 logits = outputs.logits if hasattr(outputs, "logits") else outputs["logits"]
                 # Match HFTrainingModel: honor loss_fn_config["temperature"]. Without
                 # this, FSDP target_logprobs are computed at a different temperature

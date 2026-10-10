@@ -21,7 +21,7 @@ from transformers import AutoModelForCausalLM
 from transformers.utils import is_flash_attn_2_available
 
 from tuft.backends.base_backend import gpu_request
-from tuft.backends.fsdp_engine import _compute_target_logprobs
+from tuft.backends.fsdp_engine import _OFFLOAD_MIN_TOKENS, _compute_target_logprobs
 from tuft.backends.lora_modules import (
     MODULE_MAP,
     find_unmatched_target_modules,
@@ -53,8 +53,6 @@ OPTIMIZER_STATE_FILENAME = "optimizer.pt"
 _CHUNK_TOKENS = 2048
 # Elements per tiled-module input chunk: 2048 tokens of a 4096-wide input.
 _TILE_ELEMENTS = 2048 * 4096
-# Long-context threshold for offload and tiling; fixed for every model size.
-_OFFLOAD_MIN_TOKENS = 64 * 1024
 
 
 def _tile_long_inputs(model: torch.nn.Module) -> None:
