@@ -83,7 +83,7 @@ def _tile_long_inputs(model: torch.nn.Module) -> None:
                 [
                     checkpoint(
                         forward,
-                        c,
+                        c.contiguous(),  # MoE blocks view() their input flat
                         *(a if s is None else s[i] for a, s in zip(args, split, strict=True)),
                         use_reentrant=False,
                         **kwargs,

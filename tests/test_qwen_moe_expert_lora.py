@@ -690,3 +690,18 @@ def test_dense_qwen35_geometry_is_unchanged(tmp_path):
         fsdp_train_unembed=False,
     )
     assert _config_to_worker_dict(config)["slot_config"]["target_parameters"] == []
+
+
+def test_tiled_moe_forward_matches_untiled(monkeypatch):
+    from tuft.backends import hf_training_model
+
+    model = _tiny_qwen3_5_moe_causal_lm()
+    ids = torch.randint(0, 128, (2, 7))
+    expected = model(input_ids=ids).logits
+
+    # With 2 rows, split chunks are non-contiguous; the MoE block views them flat.
+    monkeypatch.setattr(hf_training_model, "_TILE_ELEMENTS", 3 * 16)  # 3 tokens of hidden 16
+    monkeypatch.setattr(hf_training_model, "_OFFLOAD_MIN_TOKENS", 4)
+    hf_training_model._tile_long_inputs(model)
+
+    torch.testing.assert_close(model(input_ids=ids).logits, expected)
