@@ -7,7 +7,10 @@ from tinker import types
 from ..exceptions import InvalidRequestException
 
 
-def split_prompt(prompt: types.ModelInput) -> tuple[list[int | None], list[bytes], int]:
+PromptParts = tuple[list[int | None], list[bytes], int]
+
+
+def split_prompt(prompt: types.ModelInput) -> PromptParts:
     """Return token ids with one ``None`` per image, the image bytes and the SDK length.
 
     Text-only input gives ``to_ints()``, ``[]`` and ``len(to_ints())``. The length

@@ -87,6 +87,9 @@ class VLLMEngineConfig:
     enable_sleep_mode: bool = False
 
 
+IMAGE_DECODE_ERROR = "ImageChunk data is not a decodable image"
+
+
 def _plain_output(output: Any) -> SimpleNamespace:
     """Copy the ``RequestOutput`` fields ``_build_sample_response`` reads into builtins.
 
@@ -313,9 +316,13 @@ class VLLMEngine:
         if images:  # raw bytes: the TuFT server has no Pillow
             from PIL import Image
 
-            prompt["multi_modal_data"] = {
-                "image": [Image.open(io.BytesIO(data)) for data in images]
-            }
+            try:
+                decoded = [Image.open(io.BytesIO(data)) for data in images]
+                for image in decoded:
+                    image.load()  # open() is lazy; fail here, not in vLLM's processor
+            except Exception as e:
+                raise ValueError(IMAGE_DECODE_ERROR) from e
+            prompt["multi_modal_data"] = {"image": decoded}
         stream = self.async_llm.generate(
             request_id=str(next(self._request_counter)),
             prompt=prompt,

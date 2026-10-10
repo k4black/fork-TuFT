@@ -9,6 +9,7 @@ from tinker import types
 from tinker.proto.request_conv import forward_backward_request_to_proto
 
 from tuft.backends.image_prompt import split_prompt
+from tuft.backends.vllm_engine import IMAGE_DECODE_ERROR
 from tuft.compat import decode_forward_backward_request
 from tuft.exceptions import InvalidRequestException
 
@@ -77,3 +78,16 @@ async def test_vllm_sends_one_image_token_and_checks_the_expansion(
         with pytest.raises(InvalidRequestException, match="expands to 9 tokens, expected 7"):
             await sample
     assert sent == [{"prompt_token_ids": [1, 2, 99, 3], "images": [IMAGE.data]}]
+
+
+async def test_undecodable_image_is_a_bad_request(monkeypatch) -> None:
+    def _generate(**_kwargs):
+        raise ValueError(IMAGE_DECODE_ERROR)
+
+    backend = _backend(monkeypatch, [])
+    backend.engine.generate = _remote(_generate)  # type: ignore[attr-defined]
+    backend._image_token_id = 99
+    with pytest.raises(InvalidRequestException, match="not a decodable image"):
+        await backend.sample(
+            prompt=PROMPT, num_samples=1, sampling_params=types.SamplingParams(max_tokens=1)
+        )

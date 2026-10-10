@@ -598,7 +598,7 @@ class TrainingController:
                 total_tokens = sum(len(datum.model_input.to_ints()) for datum in data)
             except ValueError as exc:  # to_ints() rejects non-text chunks
                 raise InvalidRequestException(
-                    "image inputs are supported for sampling only"
+                    "non-text (image) chunks are supported for sampling only"
                 ) from exc
 
             async def _operation() -> types.ForwardBackwardOutput:

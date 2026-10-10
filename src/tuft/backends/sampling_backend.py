@@ -21,7 +21,7 @@ from ..exceptions import InvalidRequestException
 from ..telemetry.tracing import get_tracer
 from .base_backend import BaseSamplingBackend, gpu_request
 from .image_prompt import split_prompt
-from .vllm_engine import VLLMEngine, VLLMEngineConfig
+from .vllm_engine import IMAGE_DECODE_ERROR, VLLMEngine, VLLMEngineConfig
 
 
 _get_tracer = lambda: get_tracer("tuft.sampling_backend")  # noqa: E731
@@ -391,11 +391,16 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                         params["stop_token_ids"] = int_stops
 
                 # Ray @ray.remote decorator adds .remote() method dynamically
-                req_output = await self.engine.generate.remote(  # type: ignore[attr-defined]
-                    prompt=vllm_prompt,
-                    lora_request=lora_request,
-                    **params,
-                )
+                try:
+                    req_output = await self.engine.generate.remote(  # type: ignore[attr-defined]
+                        prompt=vllm_prompt,
+                        lora_request=lora_request,
+                        **params,
+                    )
+                except ValueError as e:  # Ray re-raises the engine's error as a ValueError
+                    if IMAGE_DECODE_ERROR not in str(e):
+                        raise
+                    raise InvalidRequestException(IMAGE_DECODE_ERROR) from e
                 if images and len(req_output.prompt_token_ids) != length:
                     raise InvalidRequestException(
                         f"Image prompt expands to {len(req_output.prompt_token_ids)} tokens, "
@@ -1008,10 +1013,12 @@ class DummySamplingBackend(BaseSamplingBackend):
     ) -> types.SampleResponse:
         """Return a fixed dummy response."""
         split_prompt(prompt)  # same validation as vLLM
-        # Each image stands for expected_tokens fake prompt tokens.
-        prompt_tokens = [
-            t for c in prompt.chunks for t in getattr(c, "tokens", None) or [0] * c.length
-        ]
+        prompt_tokens: list[int] = []
+        for chunk in prompt.chunks:
+            if isinstance(chunk, types.EncodedTextChunk):
+                prompt_tokens.extend(chunk.tokens)
+            elif isinstance(chunk, types.ImageChunk):
+                prompt_tokens.extend([0] * (chunk.expected_tokens or 0))  # fake image tokens
         max_tokens = sampling_params.max_tokens or 16
         sequences: list[types.SampledSequence] = []
         for _ in range(num_samples):
