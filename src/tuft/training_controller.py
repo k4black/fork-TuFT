@@ -609,7 +609,7 @@ class TrainingController:
                 return result
 
             result = await self._with_sequence_guard(record, seq_id, _operation)
-            for key, value in result.metrics.items():
+            for key, value in (result.metrics or {}).items():
                 span.set_attribute(f"tuft.metric.{key}", value)
 
             # Record tokens per second metric

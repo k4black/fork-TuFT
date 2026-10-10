@@ -994,7 +994,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         body: types.TelemetrySendRequest,
     ) -> types.TelemetryResponse:
         # Client exceptions are logged; other events are discarded. Untrusted input: capped.
-        for event in body.events:
+        for event in body.events[:32]:
             if isinstance(event, types.UnhandledExceptionEvent):
                 logger.warning(
                     "Client exception in session %s: %s: %s",

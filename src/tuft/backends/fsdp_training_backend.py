@@ -1360,7 +1360,7 @@ class FSDPTrainingBackend(BaseTrainingBackend):
     async def create_adapter(self, lora_id: str, lora_config: types.LoraConfig) -> None:
         self._validate_lora_config(lora_config)
         rank = getattr(lora_config, "rank", 8)
-        seed = getattr(lora_config, "seed", None)
+        seed = lora_config.seed
         if rank not in self._slot_config.rank_slots:
             raise InvalidRequestException(
                 f"FSDP LoRA rank {rank} is not configured. This server preallocates slots "

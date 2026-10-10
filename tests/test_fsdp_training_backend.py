@@ -576,6 +576,39 @@ def test_reinit_adapter_weights_honours_seed():
     assert not first[0].equal(lora_a()[0])
 
 
+def _seeded_reinit_rank(rank: int, init_file: str, out_dir: str) -> None:
+    import torch
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import Shard, distribute_tensor
+
+    from tuft.backends.fsdp_training_backend import MultiAdapterFSDPWorker
+
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=2)
+    mesh = init_device_mesh("cpu", (2,))
+    lora_a = torch.nn.Linear(16, 5, bias=False)  # uneven dim0 across 2 ranks
+    lora_a.weight = torch.nn.Parameter(distribute_tensor(torch.zeros(5, 16), mesh, [Shard(0)]))
+    worker = MultiAdapterFSDPWorker.__new__(MultiAdapterFSDPWorker)
+    worker.module = torch.nn.Sequential(
+        torch.nn.ModuleDict({"lora_A": torch.nn.ModuleDict({"s0": lora_a})})
+    )
+    worker._reinit_adapter_weights("s0", seed=7)
+    full = lora_a.weight.full_tensor()  # pyright: ignore[reportAttributeAccessIssue]
+    torch.save(full, f"{out_dir}/rank{rank}.pt")
+    dist.destroy_process_group()
+
+
+def test_seeded_reinit_shards_one_lora_a_across_ranks(tmp_path):
+    import torch
+    import torch.multiprocessing as mp
+
+    mp.spawn(_seeded_reinit_rank, args=(str(tmp_path / "init"), str(tmp_path)), nprocs=2, join=True)
+    rank0, rank1 = (torch.load(tmp_path / f"rank{r}.pt") for r in (0, 1))
+    expected = torch.empty(5, 16)
+    torch.nn.init.kaiming_uniform_(expected, a=5**0.5, generator=torch.Generator().manual_seed(7))
+    assert rank0.equal(expected) and rank1.equal(expected)
+
+
 def test_worker_load_checkpoint_reads_imported_safetensors(tmp_path):
     """Without adapter.pt the worker loads PEFT keys from adapter_model.safetensors."""
     import torch
