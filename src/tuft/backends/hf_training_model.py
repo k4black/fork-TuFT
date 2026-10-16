@@ -354,11 +354,13 @@ class HFTrainingModel:
                         "its config.json model_type matches the real architecture."
                     )
 
-                # peft initialises lora_A on CPU; fork so the seed stays local.
-                with torch.random.fork_rng(devices=[]):
-                    if lora_config.seed is not None:
-                        torch.manual_seed(lora_config.seed)
+                if lora_config.seed is None:
                     self.model.add_adapter(adapter_name=lora_id, peft_config=peft_config)
+                else:
+                    # peft initialises lora_A on CPU: seed only that generator, then restore it.
+                    with torch.random.fork_rng(devices=[]):
+                        torch.random.default_generator.manual_seed(lora_config.seed)
+                        self.model.add_adapter(adapter_name=lora_id, peft_config=peft_config)
                 async with self._lock:
                     self.model.set_adapter(lora_id)
                     params = [p for p in self.model.parameters() if p.requires_grad]

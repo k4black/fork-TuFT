@@ -230,6 +230,8 @@ def test_activate_adapter_keeps_gradient_checkpointing_on(tmp_path):
 async def test_create_adapter_honours_lora_seed(tmp_path):
     import asyncio
 
+    import torch
+
     from tuft.backends.hf_training_model import HFTrainingModel
 
     _tiny_qwen3_5().save_pretrained(tmp_path)
@@ -244,14 +246,22 @@ async def test_create_adapter_honours_lora_seed(tmp_path):
     model.adapter_optimizer = {}  # type: ignore[assignment]
     model._lock = asyncio.Lock()
     seeded = types.LoraConfig(rank=4, seed=7, train_unembed=False)
+    unseeded = types.LoraConfig(rank=4, train_unembed=False)
     await model.create_adapter("a", seeded)
+    torch.manual_seed(0)
+    expected_draw = torch.rand(3)
+    torch.manual_seed(0)
     await model.create_adapter("b", seeded)
+    assert torch.rand(3).equal(expected_draw)  # the seed does not leak into the caller's RNG
+    await model.create_adapter("c", unseeded)
+    await model.create_adapter("d", unseeded)
 
     params = dict(model.model.named_parameters())
     lora_a = [name for name in params if ".lora_A.a." in name]
     assert lora_a
     for name in lora_a:
         assert params[name].equal(params[name.replace(".a.", ".b.")])
+        assert not params[name.replace(".a.", ".c.")].equal(params[name.replace(".a.", ".d.")])
 
 
 def test_long_context_path_matches_full_logits(monkeypatch):
