@@ -40,6 +40,7 @@ from tuft.backends.fsdp_engine import (
     build_base_model,
     forward_backward as fsdp_forward_backward,
 )
+from tuft.backends.hf_training_model import _tile_long_inputs
 from tuft.backends.lora_modules import (
     achievable_lora_target_sets,
     find_unmatched_target_modules,
@@ -532,6 +533,7 @@ class MultiAdapterFSDPWorker:
                 self._allocated[name] = False
         if peft_model is None or not self._adapters:
             raise RuntimeError("slot_config.rank_slots must define at least one slot")
+        _tile_long_inputs(peft_model)
 
         first = next(iter(self._adapters))
         peft_model.set_adapter(first)

@@ -188,7 +188,7 @@ definition, schema) are decided in a design pass when the phase starts.
 | In-memory adapter sync to samplers | ? | ? | yes | ? | Phase 8 |
 | Multi-node FSDP | yes | no | yes | framework-level | Phase 8 |
 | Tensor / pipeline / expert parallelism | yes | no | Megatron | Megatron | Phase 8 |
-| MoE training | yes | roadmap | Megatron MoE | expert-parallel adapters | routed-expert LoRA |
+| MoE training | yes | roadmap | Megatron MoE | expert-parallel adapters | routed-expert LoRA (Qwen3.5 MoE) |
 | Sequence packing, sequence parallelism | long-context tiers | chunked logprobs only | yes | yes | Phase 8 |
 | Hybrid LoRA with full-weight modules | train_unembed only | no | no | yes | Phase 8 |
 | Vision and audio inputs | vision and audio | no | vision | ? | Phase 8 |

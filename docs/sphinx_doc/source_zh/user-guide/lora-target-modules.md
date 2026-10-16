@@ -34,6 +34,11 @@ Hugging Face 模型 ID）时，由模型名决定。
 注意力、Gated DeltaNet 投影、共享专家和所有路由专家都会训练。vLLM 推理时会解析
 peft 格式的专家适配器键，训练和推理涉及的目标一致。
 
+专家 LoRA 仅支持架构为 `*ForConditionalGeneration` 的 `qwen3_5_moe` 检查点。
+其他 MoE 系列（如 Qwen3-MoE（`qwen3_moe`）和 gpt-oss）需要 `train_mlp=False`，
+或不受支持。vLLM 会预分配随 `max_loras × rank` 增长的专家 LoRA 缓冲区，
+因此 MoE 模型应调低 `max_loras`。
+
 模块列表和参数列表共同定义检查点的结构；两者都会记录在训练运行、检查点元数据
 和 peft `adapter_config.json` 中，加载检查点时两者都必须完全一致。在 FSDP 上，
 `fsdp_target_parameters` 可以显式覆盖参数侧，与 `fsdp_target_modules` 覆盖模块

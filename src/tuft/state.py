@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from tinker import types
 
 from .auth import AuthenticationDB, User
+from .backends.base_backend import check_gpu_layout
 from .backends.gpu_phase import sleep_phase
 from .checkpoints import CheckpointRecord
 from .config import AppConfig, ModelCapability, ModelConfig
@@ -172,6 +173,7 @@ class ServerState:
         self.config = config or AppConfig()
         self.config.ensure_directories()
         self.config.check_validity()
+        check_gpu_layout(self.config.supported_models)
         self.sessions = SessionManager()
         self.training = TrainingController(self.config)
         self.sampling = SamplingController(self.config)

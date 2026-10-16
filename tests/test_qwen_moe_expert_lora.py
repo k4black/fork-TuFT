@@ -690,3 +690,52 @@ def test_dense_qwen35_geometry_is_unchanged(tmp_path):
         fsdp_train_unembed=False,
     )
     assert _config_to_worker_dict(config)["slot_config"]["target_parameters"] == []
+
+
+def test_tiled_moe_forward_matches_untiled(monkeypatch):
+    from tuft.backends import hf_training_model
+
+    model = _tiny_qwen3_5_moe_causal_lm()
+    ids = torch.randint(0, 128, (2, 7))
+    expected = model(input_ids=ids).logits
+
+    # With 2 rows, split chunks are non-contiguous; the MoE block views them flat.
+    monkeypatch.setattr(hf_training_model, "_TILE_ELEMENTS", 3 * 16)  # 3 tokens of hidden 16
+    monkeypatch.setattr(hf_training_model, "_OFFLOAD_MIN_TOKENS", 4)
+    hf_training_model._tile_long_inputs(model)
+
+    torch.testing.assert_close(model(input_ids=ids).logits, expected)
+
+
+def test_fsdp_worker_long_context_offloads_and_tiles(tmp_path, monkeypatch):
+    from tuft.backends import fsdp_engine, hf_training_model
+
+    worker = _build_cpu_worker(tmp_path)
+    data = [
+        types.Datum(
+            model_input=types.ModelInput.from_ints(tokens=list(range(1, 8))),
+            loss_fn_inputs={
+                "target_tokens": types.TensorData(data=list(range(2, 9)), dtype="int64")
+            },
+        )
+    ] * 2
+    lora = [p for n, p in worker.module.named_parameters() if ".adapter_r2_0." in n]
+
+    def run() -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        for p in lora:
+            p.grad = None
+        out = worker.forward_backward("adapter_r2_0", data, "cross_entropy", None, 2)
+        return out["model_output"]["log_probs"], [p.grad.clone() for p in lora]
+
+    expected = run()
+    offloads = []
+    real = fsdp_engine.save_on_cpu
+    monkeypatch.setattr(fsdp_engine, "save_on_cpu", lambda **kw: offloads.append(kw) or real(**kw))
+    monkeypatch.setattr(fsdp_engine, "_OFFLOAD_MIN_TOKENS", 4)
+    monkeypatch.setattr(hf_training_model, "_TILE_ELEMENTS", 3 * 16)  # 3 tokens of hidden 16
+    monkeypatch.setattr(hf_training_model, "_OFFLOAD_MIN_TOKENS", 4)
+    hf_training_model._tile_long_inputs(worker.module)  # as initialize does
+
+    actual = run()
+    assert offloads == [{"pin_memory": False}]
+    torch.testing.assert_close(actual, expected)
