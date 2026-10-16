@@ -261,3 +261,81 @@ def test_long_context_path_matches_full_logits(monkeypatch):
     torch.testing.assert_close(actual, expected)
     for a, e in zip(actual_grads, expected_grads, strict=True):
         torch.testing.assert_close(a, e)
+
+
+def test_inactive_adapter_optimizer_moments_stay_on_host(monkeypatch):
+    import torch
+
+    from tuft.backends.hf_training_model import HFTrainingModel
+
+    # The meta device stands in for the GPU; moments get placeholder copies.
+    def fake_to(self, key, t, device, used):
+        return torch.empty_like(t, device=device) if key.startswith("opt.") else t
+
+    monkeypatch.setattr(HFTrainingModel, "_to", fake_to)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    model = HFTrainingModel.__new__(HFTrainingModel)
+    model.model = torch.nn.Linear(2, 2, device="meta")  # type: ignore[assignment]
+    model._host = {}
+    model.adapter_optimizer = {}
+    for lora_id in ("a", "b"):
+        param = torch.nn.Parameter(torch.zeros(2, device="meta"))
+        optimizer = torch.optim.AdamW([param])
+        optimizer.state[param] = {
+            "step": torch.tensor(1.0),
+            "exp_avg": torch.zeros(2, device="meta"),
+        }
+        model.adapter_optimizer[lora_id] = optimizer
+
+    def devices() -> dict[str, tuple[str, str]]:
+        return {
+            lora_id: next(
+                (s["exp_avg"].device.type, s["step"].device.type) for s in opt.state.values()
+            )
+            for lora_id, opt in model.adapter_optimizer.items()
+        }
+
+    model._swap_opt("a")
+    model._swap_opt("b")
+    assert devices() == {"a": ("cpu", "cpu"), "b": ("meta", "cpu")}
+    model._swap_opt("a")
+    assert devices() == {"a": ("meta", "cpu"), "b": ("cpu", "cpu")}
+
+    # colocate "sleep": onload brings back only the active adapter's moments.
+    model._move(torch.device("cpu"))
+    assert devices() == {"a": ("cpu", "cpu"), "b": ("cpu", "cpu")}
+    model._move(torch.device("meta"))
+    assert devices() == {"a": ("meta", "cpu"), "b": ("cpu", "cpu")}
+
+
+def test_parked_optimizer_moments_survive_a_round_trip():
+    import torch
+
+    from tuft.backends.hf_training_model import HFTrainingModel
+
+    def train(swap: bool) -> tuple[torch.Tensor, list[str]]:
+        torch.manual_seed(0)
+        model = HFTrainingModel.__new__(HFTrainingModel)
+        model._host, model._pin = {}, True
+        params = {k: torch.nn.Parameter(torch.randn(4)) for k in ("a", "b")}
+        model.adapter_optimizer = {k: torch.optim.AdamW([p]) for k, p in params.items()}
+        for _ in range(3):
+            for k, p in params.items():
+                p.grad = torch.randn(4)
+                model.adapter_optimizer[k].step()
+                if swap:  # park k, then unpark it
+                    model._move_opt(k, torch.device("cpu"), model._host)
+                    model._move_opt(k, torch.device("cpu"), model._host)
+        return torch.cat([p.detach() for p in params.values()]), sorted(model._host)
+
+    swapped, host = train(swap=True)
+    plain, _ = train(swap=False)
+    torch.testing.assert_close(swapped, plain)
+    assert host == [
+        "opt.a.0.exp_avg",
+        "opt.a.0.exp_avg_sq",
+        "opt.b.0.exp_avg",
+        "opt.b.0.exp_avg_sq",
+    ]

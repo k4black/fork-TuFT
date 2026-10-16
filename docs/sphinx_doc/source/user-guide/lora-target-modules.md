@@ -39,6 +39,11 @@ the Gated DeltaNet projections, the shared expert, and every routed expert
 all train. vLLM parses the peft-format expert adapter keys when serving, so
 trained and served targets match.
 
+Expert LoRA covers `qwen3_5_moe` checkpoints with a `*ForConditionalGeneration`
+architecture only. Other MoE families, such as Qwen3-MoE (`qwen3_moe`) and
+gpt-oss, need `train_mlp=False` or are unsupported. vLLM preallocates expert
+LoRA buffers that grow with `max_loras × rank`, so lower `max_loras` for MoE.
+
 The module list and the parameter list together define a checkpoint's
 geometry; both are recorded in the training run, checkpoint metadata, and
 the peft `adapter_config.json`, and both must match exactly to load a

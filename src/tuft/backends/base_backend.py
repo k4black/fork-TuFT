@@ -1,3 +1,4 @@
+import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -6,12 +7,49 @@ from typing import Optional
 from tinker import types
 
 from ..checkpoints import CheckpointRecord
-from ..config import ModelConfig
+from ..config import TRAINING_CAPABILITY, ModelConfig
 
 
 def gpu_request(num_gpus: float) -> float:
     """``num_gpus`` for a Ray actor: 0 when ``TUFT_NO_GPU=1`` (CPU-only runs)."""
     return 0 if os.environ.get("TUFT_NO_GPU") == "1" else num_gpus
+
+
+def check_gpu_layout(models: list[ModelConfig]) -> None:
+    """Warn when the models request more GPUs than the Ray cluster has now.
+
+    Ray otherwise queues the actors silently until a startup timeout. Only a
+    warning: autoscaling nodes may join later. Counts cluster totals, not
+    per-node packing.
+    """
+    if os.environ.get("TUFT_NO_GPU") == "1" or os.environ.get("TUFT_CPU_TEST") == "1":
+        return  # actors request no GPUs
+    import ray
+
+    need: dict[str, float] = {}
+    roles: list[str] = []
+    for m in models:
+        train = m.fsdp_num_gpus if m.training_backend == "fsdp" else 1
+        infer = m.tensor_parallel_size * m.data_parallel_size
+        if m.colocate:
+            train, infer = 1 - m.sampling_memory_fraction, m.sampling_memory_fraction
+        for role in m.capabilities:
+            n = train if role == TRAINING_CAPABILITY else infer
+            if n:
+                roles.append(f"{m.model_name} {role}: {n:g}")
+                for res, k in {"GPU": n, **m.actor_resources(role, n)}.items():
+                    need[res] = round(need.get(res, 0) + k, 6)
+    if not ray.is_initialized():
+        ray.init()
+    have = ray.cluster_resources()
+    if short := {r: n for r, n in need.items() if n > have.get(r, 0)}:
+        logging.getLogger(__name__).warning(
+            "GPU layout exceeds the Ray cluster: "
+            + ", ".join(
+                f"{r} requested {n:g}, available {have.get(r, 0):g}" for r, n in short.items()
+            )
+            + f" ({'; '.join(roles)})."
+        )
 
 
 class BaseBackend(ABC):

@@ -81,3 +81,35 @@ def test_actors_request_no_gpus_only_in_cpu_mode(monkeypatch):
     assert gpu_request(1) == 1
     monkeypatch.setenv("TUFT_NO_GPU", "1")
     assert gpu_request(1) == 0
+
+
+@pytest.mark.parametrize(
+    "overrides, cluster, error",
+    [
+        (
+            {"training_backend": "fsdp", "fsdp_num_gpus": 4, "data_parallel_size": 4},
+            {"GPU": 8},
+            None,
+        ),
+        (
+            {"training_backend": "fsdp", "fsdp_num_gpus": 4, "data_parallel_size": 5},
+            {"GPU": 8},
+            "GPU requested 9, available 8",
+        ),
+        ({"colocate": True}, {"GPU": 1}, None),
+        ({"train_gpu_resource": "train_gpu"}, {"GPU": 2}, "train_gpu requested 1, available 0"),
+    ],
+)
+def test_gpu_layout_warns_when_cluster_is_short(monkeypatch, caplog, overrides, cluster, error):
+    import ray
+
+    from tuft.backends.base_backend import check_gpu_layout
+
+    monkeypatch.delenv("TUFT_NO_GPU", raising=False)
+    monkeypatch.delenv("TUFT_CPU_TEST", raising=False)
+    monkeypatch.setattr(ray, "is_initialized", lambda: True)
+    monkeypatch.setattr(ray, "cluster_resources", lambda: cluster)
+
+    check_gpu_layout([_config(**overrides)])
+
+    assert error in caplog.text if error else not caplog.records
