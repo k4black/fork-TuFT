@@ -185,6 +185,7 @@ async def test_create_adapter_rejects_rank_above_max_lora_rank():
     with pytest.raises(InvalidRequestException) as excinfo:
         await backend.create_adapter("run", types.LoraConfig(rank=32))
     assert excinfo.value.status_code == 400
+    assert "raise supported_models[].max_lora_rank" in str(excinfo.value)
 
 
 def _tiny_qwen3_5():
@@ -224,6 +225,43 @@ def test_activate_adapter_keeps_gradient_checkpointing_on(tmp_path):
     # HF checkpoints a layer only when both flags are set.
     layers = model.model.get_decoder().layers  # pyright: ignore[reportCallIssue]
     assert all(layer.training and layer.gradient_checkpointing for layer in layers)
+
+
+async def test_create_adapter_honours_lora_seed(tmp_path):
+    import asyncio
+
+    import torch
+
+    from tuft.backends.hf_training_model import HFTrainingModel
+
+    _tiny_qwen3_5().save_pretrained(tmp_path)
+    model = HFTrainingModel.__new__(HFTrainingModel)
+    model.config = SimpleNamespace(  # type: ignore[assignment]
+        model_path=tmp_path,
+        attn_implementation=None,
+        lora_alpha_ratio=2,
+        qwen_gated_deltanet_full_lora=False,
+    )
+    model.model = model._init_peft_model(model.config)  # type: ignore[arg-type]
+    model.adapter_optimizer = {}  # type: ignore[assignment]
+    model._lock = asyncio.Lock()
+    seeded = types.LoraConfig(rank=4, seed=7, train_unembed=False)
+    unseeded = types.LoraConfig(rank=4, train_unembed=False)
+    await model.create_adapter("a", seeded)
+    torch.manual_seed(0)
+    expected_draw = torch.rand(3)
+    torch.manual_seed(0)
+    await model.create_adapter("b", seeded)
+    assert torch.rand(3).equal(expected_draw)  # the seed does not leak into the caller's RNG
+    await model.create_adapter("c", unseeded)
+    await model.create_adapter("d", unseeded)
+
+    params = dict(model.model.named_parameters())
+    lora_a = [name for name in params if ".lora_A.a." in name]
+    assert lora_a
+    for name in lora_a:
+        assert params[name].equal(params[name.replace(".a.", ".b.")])
+        assert not params[name.replace(".a.", ".c.")].equal(params[name.replace(".a.", ".d.")])
 
 
 def test_long_context_path_matches_full_logits(monkeypatch):

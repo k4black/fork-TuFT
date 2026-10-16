@@ -1,5 +1,6 @@
+import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -75,3 +76,35 @@ async def test_sampling_controller_evict_removes_adapter():
 
     assert "session1" not in controller.sampling_sessions
     mock_backend.remove_adapter.assert_awaited_once_with("session1")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_evicts_drop_a_session_once(monkeypatch):
+    from tuft import sampling_controller
+    from tuft.sampling_controller import SamplingController, SamplingSessionRecord
+
+    config = AppConfig(
+        supported_models=[ModelConfig(model_name="m", model_path=Path("m"), max_model_len=1024)]
+    )
+    controller = SamplingController(config)
+
+    async def slow_remove(_lora_id):
+        await asyncio.sleep(0.01)
+
+    controller._base_backends["m"] = AsyncMock(remove_adapter=slow_remove)
+    controller.sampling_sessions["session1"] = SamplingSessionRecord(
+        sampling_session_id="session1",
+        session_id="s1",
+        user_id="user1",
+        base_model="m",
+        model_id="m1",
+        model_path="/tmp/adapter",
+        session_seq_id=0,
+    )
+    metrics = MagicMock()
+    monkeypatch.setattr(sampling_controller, "get_metrics", lambda: metrics)
+
+    await asyncio.gather(controller.evict_session("s1"), controller.evict_model("m1", "user1"))
+
+    assert controller.sampling_sessions == {}
+    metrics.sampling_sessions_active.add.assert_called_once()

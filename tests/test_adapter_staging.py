@@ -167,6 +167,17 @@ async def test_unstaging_waits_for_a_confirmed_unload(
     assert (OAI_NAME in backend._oai_loaded) is not confirmed
 
 
+async def test_removing_an_unloaded_adapter_sends_nothing(monkeypatch):
+    calls: list[tuple] = []
+    backend = _backend(monkeypatch, calls)
+    backend._adapter_paths[SESSION_ID] = Path("/ckpt")  # LRU-evicted: path kept for re-add
+
+    await backend.remove_adapter(SESSION_ID)
+
+    assert calls == []
+    assert SESSION_ID not in backend._adapter_paths
+
+
 async def test_sample_transparently_readds_a_swept_adapter(tmp_path, monkeypatch):
     adapter_dir = _adapter_dir(tmp_path)
     calls: list[tuple] = []

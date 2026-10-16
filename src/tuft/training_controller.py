@@ -609,6 +609,8 @@ class TrainingController:
                 return result
 
             result = await self._with_sequence_guard(record, seq_id, _operation)
+            for key, value in (result.metrics or {}).items():
+                span.set_attribute(f"tuft.metric.{key}", value)
 
             # Record tokens per second metric
             duration = time.perf_counter() - start_time
@@ -640,6 +642,8 @@ class TrainingController:
                     raise UnknownModelException(model_name=model_id)
                 result = await record.backend.optim_step(adam_params=params, lora_id=model_id)
                 logger.info("Optimizer step completed for %s", model_id)
+                for key, value in (result.metrics or {}).items():
+                    span.set_attribute(f"tuft.metric.{key}", value)
                 return result
 
             return await self._with_sequence_guard(record, seq_id, _operation)
@@ -664,6 +668,7 @@ class TrainingController:
             await asyncio.get_running_loop().run_in_executor(
                 None, self._save_training_run, model_id
             )
+            logger.info("Released run %s", model_id)
         get_metrics().training_models_active.add(-1, {"base_model": record.base_model})
 
     def list_training_runs(
@@ -1080,11 +1085,15 @@ class TrainingController:
         if model_config.training_backend == "fsdp":
             from .backends.fsdp_training_backend import _get_rank_slots_from_config
 
-            rank_ok = rank in _get_rank_slots_from_config(model_config)
+            slot_ranks = sorted(_get_rank_slots_from_config(model_config))
+            rank_ok, accepted = rank in slot_ranks, str(slot_ranks)
         else:
             rank_ok = 1 <= rank <= model_config.max_lora_rank
+            accepted = f"1..{model_config.max_lora_rank}"
         if not rank_ok:
-            raise InvalidRequestException(f"Adapter LoRA rank {rank} is not supported here.")
+            raise InvalidRequestException(
+                f"Adapter LoRA rank {rank} is not supported here; accepted ranks: {accepted}."
+            )
         modules = read_adapter_target_modules(adapter)
         parameters = read_adapter_target_parameters(adapter)
         for attn, mlp, unembed in itertools.product([True, False], repeat=3):
