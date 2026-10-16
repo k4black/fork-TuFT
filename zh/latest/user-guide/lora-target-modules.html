@@ -174,6 +174,10 @@ Hugging Face 模型 ID）时，由模型名决定。</p>
 <code class="docutils literal notranslate"><span class="pre">mlp.experts.down_proj</span></code>。这与 Tinker 文档中 <code class="docutils literal notranslate"><span class="pre">train_mlp</span></code> 覆盖 MoE 层的行为一致：
 注意力、Gated DeltaNet 投影、共享专家和所有路由专家都会训练。vLLM 推理时会解析
 peft 格式的专家适配器键，训练和推理涉及的目标一致。</p>
+<p>专家 LoRA 仅支持架构为 <code class="docutils literal notranslate"><span class="pre">*ForConditionalGeneration</span></code> 的 <code class="docutils literal notranslate"><span class="pre">qwen3_5_moe</span></code> 检查点。
+其他 MoE 系列（如 Qwen3-MoE（<code class="docutils literal notranslate"><span class="pre">qwen3_moe</span></code>）和 gpt-oss）需要 <code class="docutils literal notranslate"><span class="pre">train_mlp=False</span></code>，
+或不受支持。vLLM 会预分配随 <code class="docutils literal notranslate"><span class="pre">max_loras</span> <span class="pre">×</span> <span class="pre">rank</span></code> 增长的专家 LoRA 缓冲区，
+因此 MoE 模型应调低 <code class="docutils literal notranslate"><span class="pre">max_loras</span></code>。</p>
 <p>模块列表和参数列表共同定义检查点的结构；两者都会记录在训练运行、检查点元数据
 和 peft <code class="docutils literal notranslate"><span class="pre">adapter_config.json</span></code> 中，加载检查点时两者都必须完全一致。在 FSDP 上，
 <code class="docutils literal notranslate"><span class="pre">fsdp_target_parameters</span></code> 可以显式覆盖参数侧，与 <code class="docutils literal notranslate"><span class="pre">fsdp_target_modules</span></code> 覆盖模块

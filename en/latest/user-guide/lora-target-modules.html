@@ -179,6 +179,10 @@ Tinker’s documented behavior of <code class="docutils literal notranslate"><sp
 the Gated DeltaNet projections, the shared expert, and every routed expert
 all train. vLLM parses the peft-format expert adapter keys when serving, so
 trained and served targets match.</p>
+<p>Expert LoRA covers <code class="docutils literal notranslate"><span class="pre">qwen3_5_moe</span></code> checkpoints with a <code class="docutils literal notranslate"><span class="pre">*ForConditionalGeneration</span></code>
+architecture only. Other MoE families, such as Qwen3-MoE (<code class="docutils literal notranslate"><span class="pre">qwen3_moe</span></code>) and
+gpt-oss, need <code class="docutils literal notranslate"><span class="pre">train_mlp=False</span></code> or are unsupported. vLLM preallocates expert
+LoRA buffers that grow with <code class="docutils literal notranslate"><span class="pre">max_loras</span> <span class="pre">×</span> <span class="pre">rank</span></code>, so lower <code class="docutils literal notranslate"><span class="pre">max_loras</span></code> for MoE.</p>
 <p>The module list and the parameter list together define a checkpoint’s
 geometry; both are recorded in the training run, checkpoint metadata, and
 the peft <code class="docutils literal notranslate"><span class="pre">adapter_config.json</span></code>, and both must match exactly to load a
