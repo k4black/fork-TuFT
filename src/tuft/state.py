@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from tinker import types
 
 from .auth import AuthenticationDB, User
+from .backends.base_backend import check_gpu_layout
 from .backends.gpu_phase import sleep_phase
 from .checkpoints import CheckpointRecord
 from .config import AppConfig, ModelCapability, ModelConfig
@@ -172,6 +173,7 @@ class ServerState:
         self.config = config or AppConfig()
         self.config.ensure_directories()
         self.config.check_validity()
+        check_gpu_layout(self.config.supported_models)
         self.sessions = SessionManager()
         self.training = TrainingController(self.config)
         self.sampling = SamplingController(self.config)
@@ -388,7 +390,10 @@ class ServerState:
         self.sessions.finish(record)
         for model_id, run in list(self.training.training_runs.items()):
             if run.session_id == record.session_id:
-                await self.training.release_run(model_id)
+                try:
+                    await self.training.release_run(model_id)
+                except Exception:  # keep releasing the rest; the session is gone either way
+                    logger.exception("Failed to release run %s", model_id)
         await self.sampling.evict_session(record.session_id)
 
     async def create_model(

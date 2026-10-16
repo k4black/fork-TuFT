@@ -538,6 +538,77 @@ def test_worker_load_checkpoint_validates_supplied_geometry_before_weights(tmp_p
         )
 
 
+def test_reinit_adapter_weights_honours_seed():
+    import torch
+    from peft import LoraConfig, get_peft_model
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    from tuft.backends.fsdp_engine import FSDPModelConfig
+    from tuft.backends.fsdp_training_backend import MultiAdapterFSDPWorker, SlotPoolConfig
+
+    base = Qwen3ForCausalLM(
+        Qwen3Config(
+            vocab_size=128,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=8,
+        )
+    )
+    worker = MultiAdapterFSDPWorker(
+        FSDPModelConfig(path="/tmp/model", max_model_len=1024),
+        SlotPoolConfig(rank_slots={4: 1}, target_modules=["q_proj", "v_proj"]),
+    )
+    worker.module = get_peft_model(
+        base, LoraConfig(r=4, target_modules=["q_proj", "v_proj"]), adapter_name="s0"
+    )
+
+    def lora_a() -> list[torch.Tensor]:
+        return [p.clone() for n, p in worker.module.named_parameters() if ".lora_A." in n]
+
+    worker._reinit_adapter_weights("s0", seed=7)
+    first = lora_a()
+    worker._reinit_adapter_weights("s0", seed=7)
+    assert all(a.equal(b) for a, b in zip(first, lora_a(), strict=True))
+    worker._reinit_adapter_weights("s0")
+    assert not first[0].equal(lora_a()[0])
+
+
+def _seeded_reinit_rank(rank: int, init_file: str, out_dir: str) -> None:
+    import torch
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import Shard, distribute_tensor
+
+    from tuft.backends.fsdp_training_backend import MultiAdapterFSDPWorker
+
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=2)
+    mesh = init_device_mesh("cpu", (2,))
+    lora_a = torch.nn.Linear(16, 5, bias=False)  # uneven dim0 across 2 ranks
+    lora_a.weight = torch.nn.Parameter(distribute_tensor(torch.zeros(5, 16), mesh, [Shard(0)]))
+    worker = MultiAdapterFSDPWorker.__new__(MultiAdapterFSDPWorker)
+    worker.module = torch.nn.Sequential(
+        torch.nn.ModuleDict({"lora_A": torch.nn.ModuleDict({"s0": lora_a})})
+    )
+    worker._reinit_adapter_weights("s0", seed=7)
+    full = lora_a.weight.full_tensor()  # pyright: ignore[reportAttributeAccessIssue]
+    torch.save(full, f"{out_dir}/rank{rank}.pt")
+    dist.destroy_process_group()
+
+
+def test_seeded_reinit_shards_one_lora_a_across_ranks(tmp_path):
+    import torch
+    import torch.multiprocessing as mp
+
+    mp.spawn(_seeded_reinit_rank, args=(str(tmp_path / "init"), str(tmp_path)), nprocs=2, join=True)
+    rank0, rank1 = (torch.load(tmp_path / f"rank{r}.pt") for r in (0, 1))
+    expected = torch.empty(5, 16)
+    torch.nn.init.kaiming_uniform_(expected, a=5**0.5, generator=torch.Generator().manual_seed(7))
+    assert rank0.equal(expected) and rank1.equal(expected)
+
+
 def test_worker_load_checkpoint_reads_imported_safetensors(tmp_path):
     """Without adapter.pt the worker loads PEFT keys from adapter_model.safetensors."""
     import torch

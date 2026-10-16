@@ -78,9 +78,8 @@ Identity, quotas and routing belong to the control plane (Phase 9).
 - [ ] **Packaging** — Helm chart or kustomize for one worker with `/api/v1/readyz`, a long startup
   probe (socket opens only after vLLM init), Docker `HEALTHCHECK`, `train_gpu`/`infer_gpu` Ray
   resources for the split layout.
-- [ ] **Small fixes** — `release_run` logs nothing; `evict_session` sends one
-  `unload_lora_adapter` per already-unloaded sampler; document that the default FSDP slot set is
-  rank 8 plus `max_lora_rank` and that `fsdp_rank_slots` overrides it.
+- [x] **Small fixes** — `release_run` logs; a session finish skips unloads for already-unloaded
+  samplers and keeps releasing runs past a failed release; README documents the default FSDP ranks.
 - [ ] **OpenAI proxy rollout capture** — chosen-token logprobs, token ids, routing and
   served-version capture verified before and after a publish, including in-flight requests.
 
@@ -112,8 +111,9 @@ Identity, quotas and routing belong to the control plane (Phase 9).
   alternatives at prompt positions inside the prompt-logprobs patch, including sparse CSR input.
 - [ ] **External export** — `save_weights_external` and `get_external_weights_urls` in the HF
   adapter layout.
-- [ ] **Reproducible adapter init** — `LoraConfig.seed` on both backends, including reused FSDP slots.
-- [ ] **Telemetry** — keep SDK telemetry events; per-step training metrics.
+- [x] **Reproducible adapter init** — `LoraConfig.seed` on both backends, including reused FSDP slots.
+- [ ] **Telemetry** — client exceptions are logged and step metrics go on OTEL spans; keeping
+  other SDK events is open.
 
 ### Phase 9: Control plane (P2, after Phase 7)
 Many workers behind one control plane. Mechanics (pinning policy, scale-down choice, pool
@@ -188,7 +188,7 @@ definition, schema) are decided in a design pass when the phase starts.
 | In-memory adapter sync to samplers | ? | ? | yes | ? | Phase 8 |
 | Multi-node FSDP | yes | no | yes | framework-level | Phase 8 |
 | Tensor / pipeline / expert parallelism | yes | no | Megatron | Megatron | Phase 8 |
-| MoE training | yes | roadmap | Megatron MoE | expert-parallel adapters | routed-expert LoRA |
+| MoE training | yes | roadmap | Megatron MoE | expert-parallel adapters | routed-expert LoRA (Qwen3.5 MoE) |
 | Sequence packing, sequence parallelism | long-context tiers | chunked logprobs only | yes | yes | Phase 8 |
 | Hybrid LoRA with full-weight modules | train_unembed only | no | no | yes | Phase 8 |
 | Vision and audio inputs | vision and audio | no | vision | ? | Phase 8 |

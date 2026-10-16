@@ -318,6 +318,8 @@ supported_models:
 
 See [`config/tuft_config.example.yaml`](config/tuft_config.example.yaml) for a complete example configuration with all available options.
 
+LoRA ranks: the HF backend accepts ranks `1..max_lora_rank`. The FSDP backend accepts by default only rank 8 and `max_lora_rank` (16 rank-8 slots plus 8 slots at `max_lora_rank`); set `fsdp_rank_slots` to choose other ranks and slot counts.
+
 Session lifecycle: `ServiceClient.close()` (`POST /api/v1/sessions/{id}/finish`) or no heartbeat for `session_heartbeat_ttl_minutes` (default 30, `0` disables) finishes the session. The server then frees each training run's adapter and slot and keeps its checkpoints; to continue, create a new run and `load_state` from a checkpoint. Completed futures leave server memory after `persistence.future_ttl_seconds` (default 1 hour).
 
 ### CPU integration tests
@@ -425,6 +427,16 @@ Tags carry a `-cu12` / `-cu13` suffix; the bare tag is CUDA 13.
 docker pull k4black/tuft-train:latest       # or :latest-cu12, :0.3.0, :dev
 docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
 ```
+
+### GPU layouts
+
+- HF training (`training_backend: hf`): 1 GPU per model.
+- FSDP training (`training_backend: fsdp`, `fsdp_num_gpus: N`): N GPUs, parameters fully sharded.
+- Sampling: `tensor_parallel_size` × `data_parallel_size` GPUs per model (vLLM).
+- `colocate: true` or `"sleep"`: training and sampling share 1 GPU (HF backend, one model only).
+- Several models in `supported_models`: their GPUs add up.
+- Startup warns when the total, or a `train_gpu_resource`/`infer_gpu_resource` count,
+  exceeds the Ray cluster. `TUFT_NO_GPU=1` skips the check.
 
 ### Single-GPU modes
 

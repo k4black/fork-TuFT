@@ -454,6 +454,9 @@ class SamplingController:
     async def _evict(self, match: Callable[[SamplingSessionRecord], bool]) -> None:
         for sampling_id, record in list(self.sampling_sessions.items()):
             if match(record):
+                # Claim before the await: a concurrent evict may hold the same snapshot.
+                if self.sampling_sessions.pop(sampling_id, None) is None:
+                    continue
                 base_model = record.base_model
                 if record.model_path and base_model in self._base_backends:
                     try:
@@ -464,7 +467,6 @@ class SamplingController:
                         logger.exception(
                             "Failed to remove adapter for evicted session %s", sampling_id
                         )
-                del self.sampling_sessions[sampling_id]
                 self._delete_session(sampling_id)
                 # Update metrics
                 get_metrics().sampling_sessions_active.add(-1, {"base_model": base_model or ""})

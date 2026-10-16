@@ -40,6 +40,7 @@ from tuft.backends.fsdp_engine import (
     build_base_model,
     forward_backward as fsdp_forward_backward,
 )
+from tuft.backends.hf_training_model import _tile_long_inputs
 from tuft.backends.lora_modules import (
     achievable_lora_target_sets,
     find_unmatched_target_modules,
@@ -80,7 +81,9 @@ def _canonical_lora_key(key: str) -> str:
     return _LORA_AB_NAME_RE.sub(r".lora_\1.weight", key)
 
 
-def _copy_full_tensor_into_dtensor(param: DTensor, full_tensor: torch.Tensor) -> None:
+def _copy_full_tensor_into_dtensor(
+    param: DTensor, full_tensor: torch.Tensor, src_data_rank: int | None = 0
+) -> None:
     """Copy a full (unsharded) tensor into an FSDP2 DTensor parameter.
 
     Uses ``distribute_tensor`` with the parameter's own device_mesh/placements so the
@@ -91,7 +94,12 @@ def _copy_full_tensor_into_dtensor(param: DTensor, full_tensor: torch.Tensor) ->
 
     local_device = param.to_local().device
     full = full_tensor.to(device=local_device, dtype=param.dtype)
-    sharded = distribute_tensor(full, device_mesh=param.device_mesh, placements=param.placements)
+    sharded = distribute_tensor(
+        full,
+        device_mesh=param.device_mesh,
+        placements=param.placements,
+        src_data_rank=src_data_rank,
+    )
     param.to_local().copy_(sharded.to_local())
 
 
@@ -525,6 +533,7 @@ class MultiAdapterFSDPWorker:
                 self._allocated[name] = False
         if peft_model is None or not self._adapters:
             raise RuntimeError("slot_config.rank_slots must define at least one slot")
+        _tile_long_inputs(peft_model)
 
         first = next(iter(self._adapters))
         peft_model.set_adapter(first)
@@ -580,15 +589,17 @@ class MultiAdapterFSDPWorker:
         else:
             raise RuntimeError(f"Cannot find set_adapter method on module: {type(module)}")
 
-    def _reinit_adapter_weights(self, adapter_name: str) -> None:
+    def _reinit_adapter_weights(self, adapter_name: str, seed: int | None = None) -> None:
         """Re-initialize an adapter's LoRA weights to PEFT's fresh-init state.
 
         lora_A -> kaiming_uniform (a=sqrt(5)); lora_B -> zeros. With lora_B zero the
         adapter contributes nothing on top of the base model (identity delta), i.e. a
         clean start. Works for both plain tensors and FSDP2 DTensors (operates on the
-        local shard; every rank resets its own shard).
+        local shard; every rank resets its own shard). A seed draws the full lora_A
+        on every rank from one generator, so each keeps its shard with no collective.
         """
         _match = f".{adapter_name}."
+        gen = torch.Generator().manual_seed(seed) if seed is not None else None
         with torch.no_grad():
             for name, param in self.module.named_parameters():
                 if _match not in name:
@@ -596,10 +607,17 @@ class MultiAdapterFSDPWorker:
                 data = param.to_local() if isinstance(param, DTensor) else param.data
                 if ".lora_B." in name:
                     data.zero_()
-                elif ".lora_A." in name:
+                elif ".lora_A." in name and gen is None:
                     torch.nn.init.kaiming_uniform_(data, a=math.sqrt(5))
+                elif ".lora_A." in name:
+                    full = torch.empty(param.shape)
+                    torch.nn.init.kaiming_uniform_(full, a=math.sqrt(5), generator=gen)
+                    if isinstance(param, DTensor):
+                        _copy_full_tensor_into_dtensor(param, full, src_data_rank=None)
+                    else:
+                        data.copy_(full)
 
-    def _reset_adapter_slot(self, adapter_name: str) -> None:
+    def _reset_adapter_slot(self, adapter_name: str, seed: int | None = None) -> None:
         """Reset a slot to a fresh-adapter state.
 
         A reused slot would otherwise inherit the previous run's trained LoRA weights,
@@ -613,7 +631,7 @@ class MultiAdapterFSDPWorker:
         # Drop the optimizer so a fresh AdamW (no stale momentum/step) is recreated.
         info.optimizer = None
         info.step_count = 0
-        self._reinit_adapter_weights(adapter_name)
+        self._reinit_adapter_weights(adapter_name, seed)
         # Clear any unconsumed accumulated gradients on this adapter's parameters.
         _match = f".{adapter_name}."
         for name, param in self.module.named_parameters():
@@ -883,16 +901,16 @@ class MultiAdapterFSDPWorker:
                 opt_state = torch.load(opt_path, map_location="cpu", weights_only=True)
                 self._adapters[adapter_name].optimizer.load_state_dict(opt_state)
 
-    def allocate_slot(self, rank: int) -> Optional[str]:
+    def allocate_slot(self, rank: int, seed: int | None = None) -> Optional[str]:
         """Allocate an unused slot for rank, reset it to a fresh state, return name."""
         for name in self._adapters_by_rank.get(rank, []):
             if not self._allocated.get(name, False):
                 self._allocated[name] = True
-                self._reset_adapter_slot(name)
+                self._reset_adapter_slot(name, seed)
                 return name
         return None
 
-    def reserve_slot(self, adapter_name: str) -> None:
+    def reserve_slot(self, adapter_name: str, seed: int | None = None) -> None:
         """Mark a specific slot allocated and reset it.
 
         Used to synchronize non-lead ranks to the slot chosen by the lead rank, so
@@ -900,7 +918,7 @@ class MultiAdapterFSDPWorker:
         """
         if adapter_name in self._adapters:
             self._allocated[adapter_name] = True
-            self._reset_adapter_slot(adapter_name)
+            self._reset_adapter_slot(adapter_name, seed)
 
     def release_slot(self, adapter_name: str) -> None:
         # Reset on release so a freed slot does not retain the run's trained weights,
@@ -971,14 +989,14 @@ class FSDPWorkerActor:
         self._worker.initialize()
         logging.info("[SERVER][Actor] build_worker initialize 返回 rank=%s", self.rank)
 
-    def allocate_slot(self, rank: int) -> Optional[str]:
+    def allocate_slot(self, rank: int, seed: int | None = None) -> Optional[str]:
         if self._worker is None:
             return None
-        return self._worker.allocate_slot(rank)
+        return self._worker.allocate_slot(rank, seed)
 
-    def reserve_slot(self, adapter_name: str) -> None:
+    def reserve_slot(self, adapter_name: str, seed: int | None = None) -> None:
         if self._worker is not None:
-            self._worker.reserve_slot(adapter_name)
+            self._worker.reserve_slot(adapter_name, seed)
 
     def release_slot(self, adapter_name: str) -> None:
         if self._worker is not None:
@@ -1344,6 +1362,7 @@ class FSDPTrainingBackend(BaseTrainingBackend):
     async def create_adapter(self, lora_id: str, lora_config: types.LoraConfig) -> None:
         self._validate_lora_config(lora_config)
         rank = getattr(lora_config, "rank", 8)
+        seed = lora_config.seed
         if rank not in self._slot_config.rank_slots:
             raise InvalidRequestException(
                 f"FSDP LoRA rank {rank} is not configured. This server preallocates slots "
@@ -1354,19 +1373,19 @@ class FSDPTrainingBackend(BaseTrainingBackend):
             if self._world_size == 0 and self._worker is None and not self._actors:
                 await self.async_init()
             if self._worker is not None:
-                adapter_name = await asyncio.to_thread(self._worker.allocate_slot, rank)
+                adapter_name = await asyncio.to_thread(self._worker.allocate_slot, rank, seed)
             elif self._actors:
                 import ray
 
                 adapter_name: str | None = await asyncio.to_thread(
-                    ray.get, self._actors[0].allocate_slot.remote(rank)
+                    ray.get, self._actors[0].allocate_slot.remote(rank, seed)
                 )
                 if adapter_name is not None and len(self._actors) > 1:
                     # Every rank shares the base model; sync the remaining ranks to the
                     # same slot and reset weights/optimizer identically on each of them.
                     await asyncio.gather(
                         *[
-                            asyncio.to_thread(ray.get, a.reserve_slot.remote(adapter_name))
+                            asyncio.to_thread(ray.get, a.reserve_slot.remote(adapter_name, seed))
                             for a in self._actors[1:]
                         ]
                     )

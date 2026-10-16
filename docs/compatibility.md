@@ -27,14 +27,14 @@ The route column names the main request. Methods that compose several requests l
 | `ServiceClient.create_training_client_from_state_with_optimizer` | supported | POST /api/v1/load_weights | Also calls `weights_info` and `create_model`. |
 | `ServiceClient.get_console_url` | client-side | - | Links to the Thinking Machines console. TuFT has no console. |
 | `ServiceClient.get_server_capabilities` | supported | GET /api/v1/get_server_capabilities | Each model also reports `capabilities`, `trainable`, `sampleable`, `lora_ranks`, `lora_alpha` and `lora_alpha_ratio`. |
-| `ServiceClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
+| `ServiceClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
 | `TrainingClient.create_sampling_client` | supported | POST /api/v1/create_sampling_session | |
 | `TrainingClient.forward` | supported | POST /api/v1/forward_backward | Sends `forward_only=true`. |
 | `TrainingClient.forward_backward` | supported | POST /api/v1/forward_backward | Text only: `ImageChunk` inputs return 400. |
 | `TrainingClient.forward_backward_custom` | supported | POST /api/v1/forward_backward | The SDK computes the custom loss between a forward and a backward call. |
 | `TrainingClient.get_console_url` | client-side | - | Links to the Thinking Machines console. |
 | `TrainingClient.get_info` | supported | POST /api/v1/get_info | `model_data.arch` is `model_type` from `config.json` under a local `model_path` (None for a Hub id); `tokenizer_id` is `ModelConfig.tokenizer_id`, else `model_name`. |
-| `TrainingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
+| `TrainingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
 | `TrainingClient.get_tokenizer` | supported | POST /api/v1/get_info | Loads `tokenizer_id` from the HF Hub. Set `ModelConfig.tokenizer_id` when `model_name` is not a Hub id. |
 | `TrainingClient.load_state` | supported | POST /api/v1/load_weights | Saves the loaded weights as a checkpoint of this run, so a restart restores them. |
 | `TrainingClient.load_state_with_optimizer` | supported | POST /api/v1/load_weights | 400 for a sampler checkpoint: it holds no optimizer state. Saves the loaded state as a checkpoint of this run. |
@@ -48,7 +48,7 @@ The route column names the main request. Methods that compose several requests l
 | `SamplingClient.from_sampler_handle` | client-side | - | 0.32+; rebuilds a client from a handle string. |
 | `SamplingClient.get_base_model` | supported | GET /api/v1/samplers/{sampler_id} | |
 | `SamplingClient.get_sampler_handle` | client-side | - | 0.32+; serialises the client without credentials. |
-| `SamplingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
+| `SamplingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
 | `SamplingClient.get_tokenizer` | partial | GET /api/v1/samplers/{sampler_id} | Loads `base_model` from the HF Hub. TuFT sets it to the configured `model_name`. |
 | `SamplingClient.on_queue_state_change` | client-side | - | |
 | `SamplingClient.sample` | supported | POST /api/v1/asample | `topk_sample_logprobs` up to 20 (vLLM's `max_logprobs`), processed logprobs like the sampled-token ones. `prompt_alt_tokens_k` and `target_prompt_logprobs` return 400. `ImageChunk` inputs work on vLLM vision-language models (e.g. Qwen3-VL) and need `expected_tokens`; a count that differs from vLLM's image expansion returns 400. |
@@ -64,7 +64,7 @@ The route column names the main request. Methods that compose several requests l
 | `RestClient.get_external_weights_urls` | unsupported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/external_weights_urls | |
 | `RestClient.get_sampler` | supported | GET /api/v1/samplers/{sampler_id} | |
 | `RestClient.get_session` | supported | GET /api/v1/sessions/{session_id} | Returns the session's `user_metadata` (read by 0.32+). |
-| `RestClient.get_telemetry` | partial | POST /api/v1/telemetry | The server accepts telemetry events and discards them. |
+| `RestClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
 | `RestClient.get_training_run` | supported | GET /api/v1/training_runs/{model_id} | Rebuilds a run from its `metadata.json` files when it is not in memory. |
 | `RestClient.get_training_run_by_tinker_path` | supported | GET /api/v1/training_runs/{model_id} | Rebuilds a run from its `metadata.json` files when it is not in memory. |
 | `RestClient.get_weights_info_by_tinker_path` | supported | POST /api/v1/weights_info | |

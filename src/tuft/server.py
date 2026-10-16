@@ -993,7 +993,15 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
     async def send_telemetry(
         body: types.TelemetrySendRequest,
     ) -> types.TelemetryResponse:
-        # We currently accept telemetry events for protocol compatibility but do not persist them.
+        # Client exceptions are logged; other events are discarded. Untrusted input: capped.
+        for event in body.events[:32]:
+            if isinstance(event, types.UnhandledExceptionEvent):
+                logger.warning(
+                    "Client exception in session %s: %s: %s",
+                    body.session_id[:64],
+                    event.error_type[:200],
+                    event.error_message[:1000],
+                )
         return types.TelemetryResponse(status="accepted")
 
     @app.get(

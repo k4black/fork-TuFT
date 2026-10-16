@@ -424,7 +424,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
 
     async def _stage(self, lora_id: str, adapter_path: Path) -> str:
         """Ship the adapter bytes to the engine node (plain Ray arg, no shared FS)."""
-        files = read_adapter_files(adapter_path)
+        files = await asyncio.to_thread(read_adapter_files, adapter_path)
         return await self.engine.stage_adapter.remote(lora_id, files)  # type: ignore[attr-defined]
 
     async def ensure_oai_lora_loaded(self, lora_name: str, adapter_path: Path) -> None:
@@ -559,10 +559,12 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         with _get_tracer().start_as_current_span("sampling_backend.remove_adapter") as span:
             span.set_attribute("tuft.lora_id", lora_id)
             async with self._lock:
-                if not self._asleep:
-                    await self._remove_adapter_locked(lora_id)
-                elif lora_id in self._last_used:  # the sweep or the LRU cap unloads it later
-                    self._last_used[lora_id] = 0.0
+                # Skip ids the LRU cap or the idle sweep already unloaded.
+                if lora_id in self.lora_adapters or lora_id in self._last_used:
+                    if not self._asleep:
+                        await self._remove_adapter_locked(lora_id)
+                    elif lora_id in self._last_used:  # the sweep or the LRU cap unloads it later
+                        self._last_used[lora_id] = 0.0
                 # Final, unlike the sweep: no re-add for this id later.
                 self._adapter_paths.pop(lora_id, None)
 
@@ -611,7 +613,14 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         self.lora_adapters.clear()
 
     async def ping(self) -> None:
+        import httpx
+
         await self.engine.check_health.remote()  # type: ignore[attr-defined]
+        if self._openai_api_url is not None:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{self._openai_api_url}/health", timeout=2.0)
+            if resp.status_code != 200:
+                raise RuntimeError(f"vLLM OpenAI server unhealthy: {resp.status_code}")
 
 
 class DPSamplingBackend(BaseSamplingBackend):
