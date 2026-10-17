@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -131,6 +132,18 @@ class BaseSamplingBackend(BaseBackend):
 
 class BaseTrainingBackend(BaseBackend):
     """Abstract training backend."""
+
+    config: ModelConfig
+    _vocab_size: int | None = None  # HF: loaded on the first forward; FSDP: in async_init
+
+    async def _load_vocab_size(self) -> None:
+        """Read the vocabulary size from the checkpoint config, off the event loop."""
+        from transformers import AutoConfig
+
+        config = await asyncio.to_thread(
+            AutoConfig.from_pretrained, self.config.model_path, trust_remote_code=True
+        )
+        self._vocab_size = config.get_text_config().vocab_size
 
     @abstractmethod
     async def forward(

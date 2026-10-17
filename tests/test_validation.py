@@ -39,6 +39,23 @@ def test_validate_exceeds_max_len():
         validate_training_batch_inputs([d], "cross_entropy", 8)
 
 
+@pytest.mark.parametrize(
+    "tokens, inputs",
+    [([1, 2, 16, 4], {}), ([1, 2, 3, 4], {"target_tokens": td([2, 3, 4, 16], "int64")})],
+    ids=["model_input", "target_tokens"],
+)
+def test_validate_token_id_out_of_vocab(tokens, inputs):
+    with pytest.raises(ValueError, match="out of range for vocab_size 16"):
+        validate_training_batch_inputs([make_datum(tokens, inputs)], "cross_entropy", 1024, 16)
+    validate_training_batch_inputs([make_datum([1, 2, 3, 15])], "cross_entropy", 1024, 16)
+
+
+def test_validate_rejects_float_target_tokens():
+    d = make_datum([1, 2, 3], {"target_tokens": td([2.0, float("nan"), 3.0])})
+    with pytest.raises(ValueError, match="target_tokens must be integers"):
+        validate_training_batch_inputs([d], "cross_entropy", 1024, 16)
+
+
 def test_validate_target_tokens_mismatch():
     d = make_datum([1, 2, 3, 4], {"target_tokens": td([1, 2, 3], "int64")})
     with pytest.raises(ValueError, match="target_tokens length"):

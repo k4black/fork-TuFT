@@ -11,11 +11,12 @@ def validate_training_batch_inputs(
     data: list[types.Datum],
     loss_fn_name: str,
     max_model_len: int,
+    vocab_size: int | None = None,
 ) -> None:
     """Validate all batch inputs upfront before any microstep or backward pass.
 
     Ensures:
-    1. No row sequence is empty or exceeds max_model_len.
+    1. No row sequence is empty or exceeds max_model_len; token ids are below vocab_size.
     2. Explicit target_tokens, weights, logprobs, advantages match sequence length.
     3. For RLHF losses, behavior logprobs and advantages are strictly present and finite.
     """
@@ -38,12 +39,20 @@ def validate_training_batch_inputs(
 
         # Validate target_tokens
         if "target_tokens" in inputs and inputs["target_tokens"] is not None:
-            t_len = len(inputs["target_tokens"].to_torch())
+            target_tokens = inputs["target_tokens"].to_torch()
+            if target_tokens.is_floating_point():
+                raise ValueError(f"Row {idx}: target_tokens must be integers")
+            t_len = len(target_tokens)
             if t_len != seq_len:
                 raise ValueError(
                     f"Row {idx}: target_tokens length {t_len} does not match "
                     f"model_input length {seq_len}"
                 )
+            tokens = tokens + target_tokens.tolist()
+
+        # An out-of-range id is a device-side assert on CUDA, which leaves the actor unusable.
+        if vocab_size is not None and (min(tokens) < 0 or max(tokens) >= vocab_size):
+            raise ValueError(f"Row {idx}: token id out of range for vocab_size {vocab_size}")
 
         # Validate weights
         if "weights" in inputs and inputs["weights"] is not None:

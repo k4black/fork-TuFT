@@ -1165,6 +1165,7 @@ class FSDPTrainingBackend(BaseTrainingBackend):
                 "TUFT_FSDP_NO_RAY=1 (no Ray) requires fsdp_num_gpus=1. "
                 f"Got fsdp_num_gpus={n_gpus}. Multi-GPU requires Ray."
             )
+        await self._load_vocab_size()
         if not use_ray:
             # Local single-process: no Ray actors; for standalone tests (train/save logic)
             import torch.distributed as dist
@@ -1432,7 +1433,9 @@ class FSDPTrainingBackend(BaseTrainingBackend):
         loss_fn_name = (
             loss_fn if isinstance(loss_fn, str) else getattr(loss_fn, "__name__", "cross_entropy")
         )
-        validate_training_batch_inputs(data, loss_fn_name, self.config.max_model_len)
+        validate_training_batch_inputs(
+            data, loss_fn_name, self.config.max_model_len, self._vocab_size
+        )
         client_keys = validate_fsdp_loss_fn_inputs(data, loss_fn_name)
 
         # Per-call internal micro-batch grad accumulation.
