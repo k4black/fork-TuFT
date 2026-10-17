@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 import tinker.types as types
 from tinker.lib.public_interfaces.service_client import ServiceClient
@@ -159,3 +160,44 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
         assert len(out.sequences[0].tokens) == 4
     finally:
         service.holder.close()
+
+
+def test_trained_checkpoint_serves_openai_chat(cpu_server_endpoint: str) -> None:
+    service = ServiceClient(
+        api_key="tml-test-key",  # pragma: allowlist secret
+        base_url=cpu_server_endpoint,
+        timeout=TIMEOUT,
+    )
+    tok = AutoTokenizer.from_pretrained(os.environ["TUFT_TINY_MODEL"])
+    try:
+        trainer = service.create_lora_training_client(base_model="Qwen/Qwen3-0.6B", rank=8)
+        trainer.forward_backward(_create_training_data(tok), "cross_entropy").result(
+            timeout=TIMEOUT
+        )
+        trainer.optim_step(types.AdamParams(learning_rate=1e-3)).result(timeout=TIMEOUT)
+        path = trainer.save_weights_for_sampler("cpu-oai").result(timeout=TIMEOUT).path
+    finally:
+        service.holder.close()
+
+    def chat(api_key: str) -> httpx.Response:
+        return httpx.post(
+            f"{cpu_server_endpoint}/oai/api/v1/chat/completions",
+            json={
+                "model": path,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 4,
+                "temperature": 0,
+                "ignore_eos": True,
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=TIMEOUT,
+        )
+
+    resp = chat("tml-test-key")  # pragma: allowlist secret
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["model"] == path
+    assert len(body["choices"]) == 1
+    assert body["usage"]["completion_tokens"] == 4
+    # Checkpoints are private by default.
+    assert chat("tml-test-key-2").status_code == 403  # pragma: allowlist secret
