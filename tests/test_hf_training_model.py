@@ -198,20 +198,21 @@ async def test_hf_backend_validates_inputs_before_the_actor(tmp_path):
     backend = HFTrainingBackend.__new__(HFTrainingBackend)
     backend.config = SimpleNamespace(max_model_len=4, model_path=tmp_path)  # type: ignore[assignment]
     backend.model = None  # type: ignore[assignment]  # the actor must not be reached
-    await backend._load_vocab_size()
-    assert backend._vocab_size == 128
 
     def datum(tokens: list[int]) -> types.Datum:
         return types.Datum(model_input=types.ModelInput.from_ints(tokens), loss_fn_inputs={})
 
+    # No async_init (colocate=False skips it): the first forward loads the vocabulary.
     with pytest.raises(ValueError, match="exceeds max_model_len"):
         await backend.forward([datum([1, 2, 3, 4, 5])], "run", "cross_entropy", None)
+    assert backend._vocab_size == 128
     with pytest.raises(ValueError, match="out of range for vocab_size 128"):
         await backend.forward([datum([1, 2, 128])], "run", "cross_entropy", None)
 
+    backend._vocab_size = None
     backend.config.model_path = tmp_path / "missing"
     with pytest.raises(OSError):
-        await backend._load_vocab_size()
+        await backend.forward([datum([1, 2, 3])], "run", "cross_entropy", None)
 
 
 def _tiny_qwen3_5():

@@ -134,7 +134,7 @@ class BaseTrainingBackend(BaseBackend):
     """Abstract training backend."""
 
     config: ModelConfig
-    _vocab_size: int | None = None  # set by _load_vocab_size() from async_init
+    _vocab_size: int | None = None  # HF: loaded on the first forward; FSDP: in async_init
 
     async def _load_vocab_size(self) -> None:
         """Read the vocabulary size from the checkpoint config, off the event loop."""

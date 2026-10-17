@@ -31,7 +31,6 @@ class HFTrainingBackend(BaseTrainingBackend):
 
     async def async_init(self) -> None:
         await self.model.async_init.remote()
-        await self._load_vocab_size()
 
     async def ping(self) -> None:
         await self.model.async_init.remote()
@@ -80,6 +79,8 @@ class HFTrainingBackend(BaseTrainingBackend):
         loss_fn_name = (
             loss_fn if isinstance(loss_fn, str) else getattr(loss_fn, "__name__", "cross_entropy")
         )
+        if self._vocab_size is None:
+            await self._load_vocab_size()
         validate_training_batch_inputs(
             data, loss_fn_name, self.config.max_model_len, self._vocab_size
         )
