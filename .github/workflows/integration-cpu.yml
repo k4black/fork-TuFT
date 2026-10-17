@@ -118,7 +118,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           ls /tmp/r/*/metrics.jsonl
-          ! grep -liE '\bnan\b|\binf\b' /tmp/r/*/metrics.jsonl
+          ! grep -liE '\b(nan|inf(inity)?)\b' /tmp/r/*/metrics.jsonl
 
       - name: Server log
         if: always()
