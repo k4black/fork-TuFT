@@ -55,6 +55,11 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
         num_scheduled_tokens: dict[str, int],
     ) -> dict[str, LogprobsTensors | None]:
         """Patched version of _get_prompt_logprobs_dict for vLLM v0.21.0."""
+        # PATCH START: prefer the snapshot taken before the drafter ran (see below).
+        snapshot = vars(self).pop("_tuft_prompt_hidden_states", None)
+        if snapshot is not None:
+            hidden_states = snapshot
+        # PATCH END
         num_prompt_logprobs_dict = self.num_prompt_logprobs
         if not num_prompt_logprobs_dict:
             return {}
@@ -175,6 +180,35 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
             f"Unsupported vllm version for patching: {vllm.__version__}; expected >=0.21.0."
         )
     model_runner._get_prompt_logprobs_dict = MethodType(_get_prompt_logprobs_dict_v21, model_runner)
+
+    # vLLM 0.28 runs a padded EAGLE/MTP drafter before prompt-logprob bookkeeping and its
+    # CUDA graphs share the target's memory pool, so the target hidden states are
+    # overwritten first (vllm-project/vllm#53488). Snapshot them before the drafter runs.
+    propose = model_runner.propose_draft_token_ids
+
+    def _propose_draft_token_ids(
+        self,
+        scheduler_output: Any,
+        sampled_token_ids: Any,
+        sampling_metadata: Any,
+        hidden_states: torch.Tensor,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        spec = self.speculative_config
+        if (
+            self.num_prompt_logprobs
+            and spec is not None
+            and not spec.disable_padded_drafter_batch
+            and (spec.use_eagle() or spec.uses_draft_model() or spec.uses_extract_hidden_states())
+        ):
+            num_tokens = scheduler_output.total_num_scheduled_tokens
+            self._tuft_prompt_hidden_states = hidden_states[:num_tokens].clone()
+        return propose(
+            scheduler_output, sampled_token_ids, sampling_metadata, hidden_states, *args, **kwargs
+        )
+
+    model_runner.propose_draft_token_ids = MethodType(_propose_draft_token_ids, model_runner)
 
 
 class TuFTGPUWorker(VLLMGPUWorker):
