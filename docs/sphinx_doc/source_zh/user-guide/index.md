@@ -60,14 +60,6 @@ LoRA 标志如何解析为模块名，以及围绕它们的规则。
 
 集成 OpenTelemetry，用于链路追踪、指标监控和日志记录。
 :::
-
-:::{grid-item-card} 控制台
-:link: console
-:link-type: doc
-:shadow: none
-
-训练运行与检查点监控仪表盘，内置推理试验场。
-:::
 ```
 
 ```{toctree}
@@ -81,5 +73,4 @@ custom-losses
 lora-target-modules
 persistence
 telemetry
-console
 ```

@@ -186,20 +186,6 @@ class FutureStore:
             return
         get_redis_store().delete(self._build_key(request_id))
 
-    def get_pending_futures_by_model(self) -> dict[str | None, list[FutureRecord]]:
-        """Group all pending futures by model_id."""
-        by_model: dict[str | None, list[FutureRecord]] = {}
-        for record in self._records.values():
-            if record.status == "pending":
-                if record.model_id not in by_model:
-                    by_model[record.model_id] = []
-                by_model[record.model_id].append(record)
-
-        for model_id in by_model:
-            by_model[model_id].sort(key=lambda r: r.future_id)
-
-        return by_model
-
     def mark_futures_failed_after_checkpoint(
         self,
         model_id: str | None,
@@ -212,21 +198,6 @@ class FutureStore:
             if record.model_id != model_id:
                 continue
             if checkpoint_future_id is None or record.future_id > checkpoint_future_id:
-                record.status = "failed"
-                record.error = FutureCancelledException(record.request_id, reason=error_message)
-                record.event.set()
-                self._save_future(record.request_id)
-                count += 1
-        return count
-
-    def mark_all_pending_failed(
-        self,
-        error_message: str = "Server restarted while task was pending. Please retry.",
-    ) -> int:
-        """Mark all pending futures as failed."""
-        count = 0
-        for record in self._records.values():
-            if record.status == "pending":
                 record.status = "failed"
                 record.error = FutureCancelledException(record.request_id, reason=error_message)
                 record.event.set()

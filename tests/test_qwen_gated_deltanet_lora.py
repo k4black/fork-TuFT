@@ -463,7 +463,7 @@ def test_path_fallback_markers_are_anchored(tmp_path):
     assert resolve_model_architecture("Qwen/Qwen3-30B-A3B") is None
 
 
-def test_resolve_target_modules_reads_config_json_once(monkeypatch, tmp_path):
+def test_get_target_modules_reads_config_json_once(monkeypatch, tmp_path):
     """Series and architecture resolution share a single config.json read."""
 
     from tuft.backends import vllm_lora_compat
