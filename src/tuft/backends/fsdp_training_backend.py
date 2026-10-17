@@ -1432,7 +1432,9 @@ class FSDPTrainingBackend(BaseTrainingBackend):
         loss_fn_name = (
             loss_fn if isinstance(loss_fn, str) else getattr(loss_fn, "__name__", "cross_entropy")
         )
-        validate_training_batch_inputs(data, loss_fn_name, self.config.max_model_len)
+        validate_training_batch_inputs(
+            data, loss_fn_name, self.config.max_model_len, self._vocab_size
+        )
         client_keys = validate_fsdp_loss_fn_inputs(data, loss_fn_name)
 
         # Per-call internal micro-batch grad accumulation.

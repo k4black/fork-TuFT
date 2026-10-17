@@ -188,6 +188,29 @@ async def test_create_adapter_rejects_rank_above_max_lora_rank():
     assert "raise supported_models[].max_lora_rank" in str(excinfo.value)
 
 
+@pytest.mark.asyncio
+async def test_hf_backend_validates_inputs_before_the_actor(tmp_path):
+    from tuft.backends.training_backend import HFTrainingBackend
+
+    _tiny_qwen3_5().save_pretrained(tmp_path)
+    backend = HFTrainingBackend.__new__(HFTrainingBackend)
+    backend.config = SimpleNamespace(max_model_len=4, model_path=tmp_path)  # type: ignore[assignment]
+    backend.model = None  # type: ignore[assignment]  # the actor must not be reached
+    assert backend._vocab_size == 128
+
+    def datum(tokens: list[int]) -> types.Datum:
+        return types.Datum(model_input=types.ModelInput.from_ints(tokens), loss_fn_inputs={})
+
+    with pytest.raises(ValueError, match="exceeds max_model_len"):
+        await backend.forward([datum([1, 2, 3, 4, 5])], "run", "cross_entropy", None)
+    with pytest.raises(ValueError, match="out of range for vocab_size 128"):
+        await backend.forward([datum([1, 2, 128])], "run", "cross_entropy", None)
+
+    backend.config.model_path = tmp_path / "missing"
+    del backend._vocab_size
+    assert backend._vocab_size is None
+
+
 def _tiny_qwen3_5():
     import torch
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig

@@ -1,3 +1,4 @@
+import functools
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -131,6 +132,19 @@ class BaseSamplingBackend(BaseBackend):
 
 class BaseTrainingBackend(BaseBackend):
     """Abstract training backend."""
+
+    config: ModelConfig
+
+    @functools.cached_property
+    def _vocab_size(self) -> int | None:
+        """Vocabulary size from the checkpoint config; None when no checkpoint is on disk."""
+        from transformers import AutoConfig
+
+        try:
+            config = AutoConfig.from_pretrained(self.config.model_path, trust_remote_code=True)
+        except OSError:
+            return None
+        return config.get_text_config().vocab_size
 
     @abstractmethod
     async def forward(

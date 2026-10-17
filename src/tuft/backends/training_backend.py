@@ -7,6 +7,7 @@ import numpy as np
 from tinker import types
 
 from tuft.backends.base_backend import BaseTrainingBackend
+from tuft.backends.validation import validate_training_batch_inputs
 from tuft.checkpoints import CheckpointRecord
 from tuft.config import ModelConfig
 from tuft.exceptions import InvalidRequestException, LossFunctionMissingInputException
@@ -75,6 +76,12 @@ class HFTrainingBackend(BaseTrainingBackend):
         Returns:
             ForwardBackwardOutput: The output of the forward (and backward) pass.
         """
+        loss_fn_name = (
+            loss_fn if isinstance(loss_fn, str) else getattr(loss_fn, "__name__", "cross_entropy")
+        )
+        validate_training_batch_inputs(
+            data, loss_fn_name, self.config.max_model_len, self._vocab_size
+        )
         span_name = "training_backend.forward_backward" if backward else "training_backend.forward"
         with _get_tracer().start_as_current_span(span_name) as span:
             span.set_attribute("tuft.lora_id", lora_id)
