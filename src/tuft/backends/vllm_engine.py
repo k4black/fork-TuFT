@@ -85,6 +85,8 @@ class VLLMEngineConfig:
     bundle_indices: str = ""
     # Colocate "sleep"; vLLM supports it on CUDA only, elsewhere sleep/wake are no-ops.
     enable_sleep_mode: bool = False
+    # vLLM ``speculative_config`` (e.g. MTP); None disables speculative decoding.
+    speculative_config: Optional[dict[str, Any]] = None
 
 
 IMAGE_DECODE_ERROR = "ImageChunk data is not a decodable image"
@@ -225,6 +227,7 @@ class VLLMEngine:
                 # temperature scaling) -- required for RL importance ratios.
                 logprobs_mode="processed_logprobs",
                 async_scheduling=True,
+                speculative_config=self.config.speculative_config,
             )
             if self.config.quantization:
                 engine_args.quantization = self.config.quantization
