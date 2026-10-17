@@ -169,3 +169,27 @@ async def test_evict_expired_keeps_pending():
     assert pending.request_id in store._records
     release.set()
     await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_current_future_id_is_the_running_operations_id():
+    store = FutureStore()
+    second_started = asyncio.Event()
+    seen: list[int] = []
+
+    async def _first() -> None:
+        await second_started.wait()  # the second operation runs while this one is suspended
+        seen.append(store.get_current_future_id())
+
+    async def _second() -> None:
+        second_started.set()
+        seen.append(store.get_current_future_id())
+
+    first = await store.enqueue(_first, user_id="tester")
+    second = await store.enqueue(_second, user_id="tester")
+    await _wait_for_result(store, first.request_id, user_id="tester")
+    await _wait_for_result(store, second.request_id, user_id="tester")
+
+    ids = [store._records[f.request_id].future_id for f in (first, second)]
+    assert sorted(seen) == ids
+    await store.shutdown()

@@ -31,12 +31,26 @@ def cpu_server_endpoint(request: pytest.FixtureRequest, tmp_path_factory: pytest
                 model_path=model_path,
                 max_model_len=1024,
                 max_lora_rank=8,
+                max_loras=1,
                 sampling_enforce_eager=True,
                 colocate=request.param,
             )
         ]
     )
     yield from _create_server_endpoint(tmp_path_factory, config)
+
+
+def _rl_data(tok, advantage: float) -> list[types.Datum]:
+    data = _create_training_data(tok)
+    for datum in data:
+        n = datum.model_input.length
+        datum.loss_fn_inputs["logprobs"] = types.TensorData(
+            data=[0.0] * n, dtype="float32", shape=[n]
+        )
+        datum.loss_fn_inputs["advantages"] = types.TensorData(
+            data=[advantage] * n, dtype="float32", shape=[n]
+        )
+    return data
 
 
 def test_sdk_flow(cpu_server_endpoint: str) -> None:
@@ -52,6 +66,18 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
             timeout=TIMEOUT
         )
         assert all(math.isfinite(v) for v in fb.metrics.values())
+        trainer.optim_step(types.AdamParams(learning_rate=1e-3)).result(timeout=TIMEOUT)
+
+        # Importance sampling through the real HF path: negating the advantages
+        # negates the loss exactly, so both the ratio and the advantages reach it.
+        pos = trainer.forward_backward(_rl_data(tok, 1.0), "importance_sampling").result(
+            timeout=TIMEOUT
+        )
+        neg = trainer.forward_backward(_rl_data(tok, -1.0), "importance_sampling").result(
+            timeout=TIMEOUT
+        )
+        assert math.isfinite(pos.metrics["loss:sum"]) and pos.metrics["loss:sum"] != 0
+        assert pos.metrics["loss:sum"] == pytest.approx(-neg.metrics["loss:sum"], rel=1e-3)
         trainer.optim_step(types.AdamParams(learning_rate=1e-3)).result(timeout=TIMEOUT)
 
         sampler = trainer.save_weights_and_get_sampling_client()
@@ -74,6 +100,25 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
         assert len(res.prompt_logprobs) == prompt.length
         # The TuFTCPUWorker patch scales prompt logprobs by temperature.
         assert sample(0.5).prompt_logprobs != res.prompt_logprobs
+
+        # A second adapter with max_loras=1 makes vLLM evict the first and re-add it.
+        other = service.create_lora_training_client(base_model="Qwen/Qwen3-0.6B", rank=8)
+        other.forward_backward(_create_training_data(tok), "cross_entropy").result(timeout=TIMEOUT)
+        other.optim_step(types.AdamParams(learning_rate=0.1)).result(timeout=TIMEOUT)
+        other_res = (
+            other.save_weights_and_get_sampling_client()
+            .sample(
+                prompt,
+                1,
+                types.SamplingParams(max_tokens=4, temperature=1.0, seed=0),
+                include_prompt_logprobs=True,
+            )
+            .result(timeout=TIMEOUT)
+        )
+        again = sample(1.0).prompt_logprobs
+        assert other_res.prompt_logprobs is not None and again is not None
+        assert other_res.prompt_logprobs[1:] != res.prompt_logprobs[1:]
+        assert again[1:] == pytest.approx(res.prompt_logprobs[1:], abs=1e-4)
 
         topk = sampler.sample(
             prompt, 1, types.SamplingParams(max_tokens=4), topk_sample_logprobs=3
