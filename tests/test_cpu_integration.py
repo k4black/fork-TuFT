@@ -43,7 +43,7 @@ def cpu_server_endpoint(request: pytest.FixtureRequest, tmp_path_factory: pytest
 def _rl_data(tok, advantage: float) -> list[types.Datum]:
     data = _create_training_data(tok)
     for datum in data:
-        n = datum.loss_fn_inputs["target_tokens"].shape[0]
+        n = datum.model_input.length
         datum.loss_fn_inputs["logprobs"] = types.TensorData(
             data=[0.0] * n, dtype="float32", shape=[n]
         )
@@ -115,8 +115,10 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
             )
             .result(timeout=TIMEOUT)
         )
+        again = sample(1.0).prompt_logprobs
+        assert other_res.prompt_logprobs is not None and again is not None
         assert other_res.prompt_logprobs[1:] != res.prompt_logprobs[1:]
-        assert sample(1.0).prompt_logprobs[1:] == pytest.approx(res.prompt_logprobs[1:], abs=1e-4)
+        assert again[1:] == pytest.approx(res.prompt_logprobs[1:], abs=1e-4)
 
         topk = sampler.sample(
             prompt, 1, types.SamplingParams(max_tokens=4), topk_sample_logprobs=3
