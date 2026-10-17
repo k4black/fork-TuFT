@@ -110,7 +110,6 @@
 <li class="toctree-l2"><a class="reference internal" href="../user-guide/lora-target-modules.html">LoRA 目标模块</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../user-guide/persistence.html">持久化</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../user-guide/telemetry.html">可观测性（OpenTelemetry）</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../user-guide/console.html">控制台</a></li>
 </ul>
 </li>
 <li class="toctree-l1 current" x-data="{ expanded: $el.classList.contains('current') ? true : false }"><a :class="{ 'expanded' : expanded }" @click="expanded = !expanded" class="reference internal expandable" href="index.html">开发指南<button @click.prevent.stop="expanded = !expanded" type="button" x-cloak=""><span class="sr-only"></span><svg fill="currentColor" height="18px" stroke="none" viewbox="0 0 24 24" width="18px" xmlns="http://www.w3.org/2000/svg"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"></path></svg></button></a><ul class="current" x-show="expanded">
@@ -241,12 +240,7 @@
 </section>
 <section id="id7">
 <h3>编写持久化测试<a class="headerlink" href="#id7" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#id7'">¶</a></h3>
-<p>测试通过 <code class="docutils literal notranslate"><span class="pre">configure_persistence</span></code> fixture 自动配置持久化。对于需要显式持久化控制的测试，使用 <code class="docutils literal notranslate"><span class="pre">enable_persistence</span></code> fixture：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><code><span id="line-1"><span class="k">def</span><span class="w"> </span><span class="nf">test_with_persistence</span><span class="p">(</span><span class="n">enable_persistence</span><span class="p">):</span>
-</span><span id="line-2">    <span class="c1"># 此测试在启用持久化的情况下运行</span>
-</span><span id="line-3">    <span class="k">pass</span>
-</span></code></pre></div>
-</div>
+<p>测试通过 <code class="docutils literal notranslate"><span class="pre">configure_persistence</span></code> fixture 自动配置持久化。</p>
 </section>
 </section>
 <section id="id8">
@@ -292,8 +286,6 @@
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">set_cpu_env</span></code>：（自动使用）在非 GPU 模式下设置 <code class="docutils literal notranslate"><span class="pre">TUFT_CPU_TEST=1</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">configure_persistence</span></code>：（自动使用）为每个测试配置持久化</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">enable_persistence</span></code>：为特定测试显式启用持久化</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">clean_redis</span></code>：确保测试前后的 Redis 状态干净</p></li>
 </ul>
 </section>
 </section>

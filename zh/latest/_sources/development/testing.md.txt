@@ -107,13 +107,7 @@ uv run pytest --no-persistence
 
 ### 编写持久化测试
 
-测试通过 `configure_persistence` fixture 自动配置持久化。对于需要显式持久化控制的测试，使用 `enable_persistence` fixture：
-
-```python
-def test_with_persistence(enable_persistence):
-    # 此测试在启用持久化的情况下运行
-    pass
-```
+测试通过 `configure_persistence` fixture 自动配置持久化。
 
 ## 持续集成
 
@@ -153,8 +147,6 @@ uv run pytest tests -v -s --gpu --basetemp /mnt/checkpoints
 
 - `set_cpu_env`：（自动使用）在非 GPU 模式下设置 `TUFT_CPU_TEST=1`
 - `configure_persistence`：（自动使用）为每个测试配置持久化
-- `enable_persistence`：为特定测试显式启用持久化
-- `clean_redis`：确保测试前后的 Redis 状态干净
 
 ## 编写测试
 
