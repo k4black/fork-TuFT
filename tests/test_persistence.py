@@ -12,7 +12,11 @@ from tinker.types.try_again_response import TryAgainResponse
 
 from tuft.auth import User
 from tuft.config import AppConfig, ModelConfig, TelemetryConfig
-from tuft.exceptions import ConfigMismatchError, UnknownModelException
+from tuft.exceptions import (
+    ConfigMismatchError,
+    FutureCancelledException,
+    UnknownModelException,
+)
 from tuft.futures import FutureStore
 from tuft.persistence import (
     ConfigCheckField,
@@ -52,7 +56,7 @@ def _create_test_config(checkpoint_dir: Path) -> AppConfig:
         )
         model_path = Path(os.environ.get("TUFT_TEST_MODEL", "Qwen/Qwen3-0.6B"))
     else:
-        model_path = Path("/dummy/model")
+        model_path = Path("/dummy/qwen-model")
 
     return AppConfig(
         checkpoint_dir=checkpoint_dir,
@@ -457,15 +461,11 @@ class TestTrainingRunPersistence:
 
 
 @pytest.mark.persistence
-@pytest.mark.gpu
 class TestServerStatePersistence:
     """This test simulates actual server crash/restart."""
 
     @pytest.fixture
-    def setup(self, tmp_path, request):
-        if not request.config.getoption("--gpu"):
-            pytest.skip("GPU mode required for this test")
-
+    def setup(self, tmp_path):
         _skip_if_no_persistence()
         store = get_redis_store()
 
@@ -705,6 +705,14 @@ class TestServerStatePersistence:
         assert state2.future_store._records[fb3_request_id].created_at > ckpt2_time
         assert state2.future_store._records[o3_request_id].created_at > ckpt2_time
 
+        # An operation still running at crash time stays pending in persistence.
+        pending = await state2.future_store.enqueue(
+            asyncio.Event().wait,
+            user_id="trainer",
+            model_id=training_run_id,
+            operation_type="forward_backward",
+        )
+
         await state2.future_store.shutdown()
 
         # =====================================================================
@@ -759,6 +767,20 @@ class TestServerStatePersistence:
             "o3 (after checkpoint-2) should be 'failed' after second restart"
         )
         assert state3.future_store._records[o3_request_id].error is not None
+        with pytest.raises(FutureCancelledException, match="restored from checkpoint checkpoint-2"):
+            await state3.future_store.retrieve(pending.request_id, user_id="trainer", timeout=5)
+
+        # The checkpoint saved before the crash loads into a new run.
+        new_run = await state3.create_model(
+            session_id=session_id,
+            base_model="Qwen/Qwen3-0.6B",
+            lora_config=types.LoraConfig(rank=8, train_unembed=False),
+            model_owner="trainer",
+            user_metadata=None,
+        )
+        await state3.load_checkpoint(
+            new_run.training_run_id, "trainer", ckpt2.tinker_path, optimizer=True
+        )
         # =====================================================================
         # PHASE 5: Verify training can continue from checkpoint-2
         # =====================================================================

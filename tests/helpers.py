@@ -350,7 +350,7 @@ def _create_server_endpoint(
     _log(f"Checkpoint dir: {checkpoint_dir}")
     app_config = AppConfig(checkpoint_dir=Path(checkpoint_dir))
     app_config.supported_models = config.model_configs
-    app_config.authorized_users = {"tml-test-key": "default"}
+    app_config.authorized_users = {"tml-test-key": "default", "tml-test-key-2": "other"}
     app_config.worker_venv_path = os.environ.get("TUFT_WORKER_VENV_PATH")
 
     # Update fsdp_master_port in model configs if using FSDP

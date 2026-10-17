@@ -31,6 +31,7 @@ import h2  # noqa: F401  # tinker opens HTTP/2 clients; h2 arrives via httpx[htt
 import httpx
 import pytest
 import ray
+import tinker
 import uvicorn
 from tinker import types
 from tinker.lib.public_interfaces.service_client import ServiceClient
@@ -546,5 +547,27 @@ def test_image_chunks_sample_but_do_not_train(sdk_server: str) -> None:
             training_client.forward_backward([datum], "cross_entropy").result(
                 timeout=CPU_TEST_TIMEOUT
             )
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
+def test_route_errors_surface_4xx(sdk_server: str) -> None:
+    """Unknown checkpoint and base model give 404; an incompatible load_state gives 400."""
+    service_client = _service_client(sdk_server)
+    try:
+        with pytest.raises(tinker.NotFoundError):
+            service_client.create_sampling_client(
+                model_path="tinker://no-such-run/sampler_weights/x"
+            )
+        with pytest.raises(tinker.NotFoundError):
+            service_client.create_lora_training_client(base_model="nope/none", rank=8)
+
+        rank8 = service_client.create_lora_training_client(base_model=BASE_MODEL, rank=8)
+        path = rank8.save_state("rank8").result(timeout=CPU_TEST_TIMEOUT).path
+        rank4 = service_client.create_lora_training_client(base_model=BASE_MODEL, rank=4)
+        # The failed future's detail reaches the SDK exception on every tinker version.
+        with pytest.raises(Exception, match="LoRA rank 4"):
+            rank4.load_state(path).result(timeout=CPU_TEST_TIMEOUT)
     finally:
         service_client.holder.close()
