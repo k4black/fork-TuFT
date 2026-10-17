@@ -478,7 +478,9 @@ class TestServerStatePersistence:
         _ensure_ray_shutdown()
 
     @pytest.mark.asyncio
-    async def test_full_training_workflow_survives_restart_with_two_crashes(self, setup):
+    async def test_full_training_workflow_survives_restart_with_two_crashes(
+        self, setup, monkeypatch
+    ):
         """Test complete training workflow with multiple restarts and checkpoint recovery.
 
         This comprehensive test simulates a full training session with crashes:
@@ -778,9 +780,17 @@ class TestServerStatePersistence:
             model_owner="trainer",
             user_metadata=None,
         )
+        backend = state3.training.training_backends["Qwen/Qwen3-0.6B"]
+        loaded = []
+
+        async def recording_load_state(*, lora_id, checkpoint_record, optimizer):
+            loaded.append((lora_id, checkpoint_record.path, optimizer))
+
+        monkeypatch.setattr(backend, "load_state", recording_load_state)
         await state3.load_checkpoint(
             new_run.training_run_id, "trainer", ckpt2.tinker_path, optimizer=True
         )
+        assert loaded == [(new_run.training_run_id, ckpt2.path, True)]
         # =====================================================================
         # PHASE 5: Verify training can continue from checkpoint-2
         # =====================================================================
