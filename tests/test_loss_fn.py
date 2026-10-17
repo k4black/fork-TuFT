@@ -8,7 +8,6 @@ from tuft.exceptions import (
 )
 
 
-@pytest.mark.gpu
 def test_get_loss_fn():
     from tuft.loss_fn import get_loss_fn
 
@@ -29,7 +28,6 @@ def test_get_loss_fn():
     assert str(exc_info.value) == f"[404] Loss function {invalid_name} not found."
 
 
-@pytest.mark.gpu
 def test_cross_entropy_loss():
     import torch
 
@@ -62,7 +60,6 @@ def test_cross_entropy_loss():
         loss_fn(loss_fn_inputs_missing, loss_fn_config)
 
 
-@pytest.mark.gpu
 def test_importance_sampling_loss():
     import torch
 
@@ -102,7 +99,6 @@ def test_importance_sampling_loss():
         loss_fn(loss_fn_inputs_missing, loss_fn_config)
 
 
-@pytest.mark.gpu
 def test_ppo_loss():
     import torch
 
@@ -143,7 +139,6 @@ def test_ppo_loss():
         loss_fn(loss_fn_inputs_missing, loss_fn_config)
 
 
-@pytest.mark.gpu
 def test_cispo_loss():
     import torch
 
@@ -184,7 +179,6 @@ def test_cispo_loss():
         loss_fn(loss_fn_inputs_missing, loss_fn_config)
 
 
-@pytest.mark.gpu
 def test_dro_loss():
     import torch
 
@@ -224,7 +218,6 @@ def test_dro_loss():
         loss_fn(loss_fn_inputs_missing, loss_fn_config)
 
 
-@pytest.mark.gpu
 def test_loss_fn_metrics_reduction():
     import torch
 

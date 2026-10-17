@@ -114,6 +114,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: /tmp/cb/bin/python -m tinker_cookbook.recipes.preference.dpo.train $C log_path=/tmp/r/dpo dataset=hhh batch_size=2 max_length=32 max_steps=2
 
+      - name: Recipe metrics are finite
+        if: ${{ !cancelled() }}
+        run: |
+          ls /tmp/r/*/metrics.jsonl
+          ! grep -liE '\bnan\b|\binf\b' /tmp/r/*/metrics.jsonl
+
       - name: Server log
         if: always()
         run: tail -n 100 server.log
