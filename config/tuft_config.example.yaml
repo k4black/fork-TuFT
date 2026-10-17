@@ -107,6 +107,8 @@ model_owner: local-user
 #       true or "sleep"; see README "Single-GPU modes"
 #   - sampling_memory_fraction: GPU memory fraction for sampling (default: 0.2)
 #   - quantization: Quantization method for sampling (default: none)
+#   - speculative_config: vLLM speculative_config, off by default; for MTP heads
+#       {method: mtp, num_speculative_tokens: 1}; see README "Speculative decoding"
 #   - enable_auto_tool_choice: vLLM OpenAI API auto tool choice (qwenpaw ReAct)
 #   - tool_call_parser: vLLM tool parser (e.g. hermes for Qwen3-Thinking)
 #   - reasoning_parser: vLLM reasoning parser (e.g. qwen3)

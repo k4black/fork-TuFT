@@ -192,6 +192,10 @@ class ModelConfig(BaseModel):
     # Upstream defaulted to True on vLLM 0.24 (warmup hangs when embedded or on a
     # fractional GPU); on vLLM 0.28 warmup finishes in both split and colocated layouts.
     sampling_enforce_eager: bool = False
+    # Passed as-is to vLLM's speculative_config, e.g. {"method": "mtp",
+    # "num_speculative_tokens": 1} for checkpoints with MTP heads. Off by default:
+    # speculative decoding changes sampling numerics slightly.
+    speculative_config: dict[str, Any] | None = None
 
     # OpenAI-compatible vLLM API: tool calling (required for qwenpaw ReAct agents).
     enable_auto_tool_choice: bool = False

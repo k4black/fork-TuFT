@@ -454,6 +454,14 @@ docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v 
     --entrypoint tuft k4black/tuft-infer:latest launch --port 10610 --config /data/tuft_config.yaml
 ```
 
+### Speculative decoding
+
+`speculative_config` under a model goes to vLLM as-is. For a checkpoint with MTP heads
+(Qwen3.5, Qwen3-Next, DeepSeek-V3) set `speculative_config: {method: mtp, num_speculative_tokens: 1}`.
+`num_speculative_tokens` is required. It is off by default. Accepted tokens follow the target
+distribution, but numerics and seeded outputs differ from plain decoding. This matters for RL
+train/sample mismatch.
+
 ## Deployment
 
 Don't have a GPU? Run TuFT on **pay-as-you-go cloud compute** — rent a GPU on demand and fine-tune from your laptop (no local GPU). The [`deploy/`](deploy/) helpers wrap the standard `tuft launch` server for popular cloud backends and walk you through configuring the deployment, running an end-to-end "talk like Yoda" training example on `Qwen/Qwen3-0.6B`, and downloading the trained adapter.

@@ -16,6 +16,7 @@ from tinker import types
 from tuft.backends.sampling_backend import VLLMSamplingBackend, _build_sample_response
 from tuft.backends.vllm_engine import VLLMEngine, _plain_output
 from tuft.checkpoints import read_adapter_files
+from tuft.config import ModelConfig
 
 
 # Carries both ':' and '/', as minted by oai.model_resolver.
@@ -333,3 +334,35 @@ def test_topk_sample_logprobs_are_ordered_by_rank():
     seq = _build_sample_response(output, topk_sample_logprobs=2).sequences[0]
     assert seq.logprobs == [-3.0]
     assert seq.topk_logprobs == [[(9, -1.0), (4, -2.0)]]
+
+
+async def test_speculative_config_reaches_vllm_engine_args(monkeypatch):
+    spec = {"method": "mtp", "num_speculative_tokens": 1}
+    model = ModelConfig(
+        model_name="m", model_path=Path("/m"), max_model_len=64, speculative_config=spec
+    )
+    backend = VLLMSamplingBackend.__new__(VLLMSamplingBackend)
+    engine = VLLMEngine.__new__(VLLMEngine)
+    engine.config = backend._build_engine_config(
+        model, tensor_parallel_size=1, gpu_memory_utilization=0.5
+    )
+    engine.config.enable_openai_api = False
+    engine._prepared, engine._prepare_lock = False, asyncio.Lock()
+
+    engine_args: dict = {}
+    fake, platforms = ModuleType("vllm"), ModuleType("vllm.platforms")
+    fake.AsyncEngineArgs = lambda **kw: engine_args.update(kw) or SimpleNamespace()  # type: ignore[attr-defined]
+    fake.AsyncLLMEngine = SimpleNamespace(  # type: ignore[attr-defined]
+        from_engine_args=lambda _args: SimpleNamespace(
+            collective_rpc=_remote(lambda _method: None).remote
+        )
+    )
+    platforms.current_platform = SimpleNamespace(  # type: ignore[attr-defined]
+        is_cpu=lambda: True, is_sleep_mode_available=lambda: False
+    )
+    monkeypatch.setitem(sys.modules, "vllm", fake)
+    monkeypatch.setitem(sys.modules, "vllm.platforms", platforms)
+
+    await engine.prepare()
+
+    assert engine_args["speculative_config"] == spec
