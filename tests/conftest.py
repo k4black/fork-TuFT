@@ -144,56 +144,6 @@ def configure_persistence(request):
     store.reset()
 
 
-@pytest.fixture(scope="function")
-def clean_redis():
-    """Explicit fixture for tests that need guaranteed clean Redis state.
-
-    Note: For FileRedis, each test already uses a unique temp file, so no explicit
-    cleanup is needed.
-    """
-    if _redis_available() and TEST_REDIS_URL is not None:
-        _clear_redis_db(TEST_REDIS_URL)
-    yield
-    if _redis_available() and TEST_REDIS_URL is not None:
-        _clear_redis_db(TEST_REDIS_URL)
-
-
-@pytest.fixture(scope="function")
-def enable_persistence(request):
-    """Fixture to enable persistence for a specific test.
-
-    Uses Redis if available, otherwise falls back to FileRedis with unique temp file.
-    """
-    from tuft.persistence import PersistenceConfig, get_redis_store
-
-    store = get_redis_store()
-    store.reset()
-
-    if _redis_available() and TEST_REDIS_URL is not None:
-        _clear_redis_db(TEST_REDIS_URL)
-        store.configure(PersistenceConfig.from_redis_url(TEST_REDIS_URL, namespace="tuft_test"))
-    else:
-        test_name = request.node.name
-        file_path = _get_file_redis_path(f"enable_persistence_{test_name}")
-        store.configure(
-            PersistenceConfig.from_file(
-                file_path=file_path,
-                namespace="tuft_test",
-            )
-        )
-
-    yield
-
-    store.close()
-
-    # Cleanup
-    if _redis_available() and TEST_REDIS_URL is not None:
-        _clear_redis_db(TEST_REDIS_URL)
-    # FileRedis temp files are automatically cleaned up by the OS
-
-    store.reset()
-
-
 def pytest_collection_modifyitems(config, items):
     if not config.getoption("--gpu"):
         skip_gpu = pytest.mark.skip(reason="need --gpu option to run")

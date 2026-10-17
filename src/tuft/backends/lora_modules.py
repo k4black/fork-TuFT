@@ -162,25 +162,6 @@ def resolve_lora_targets(
     )
 
 
-def resolve_target_modules(
-    model_path: str,
-    *,
-    train_attn: bool,
-    train_mlp: bool,
-    train_unembed: bool,
-    qwen_gated_deltanet_full_lora: bool = False,
-) -> list[str]:
-    """Resolve public LoRA modifier flags into concrete module names."""
-
-    return resolve_lora_targets(
-        model_path,
-        train_attn=train_attn,
-        train_mlp=train_mlp,
-        train_unembed=train_unembed,
-        qwen_gated_deltanet_full_lora=qwen_gated_deltanet_full_lora,
-    ).modules
-
-
 def get_lora_targets(
     model_path: str,
     lora_config: LoraConfig,
@@ -244,26 +225,6 @@ def achievable_lora_target_sets(
                 if (targets.modules or targets.parameters) and targets not in achievable:
                     achievable.append(targets)
     return achievable
-
-
-def achievable_target_module_sets(
-    model_path: str,
-    *,
-    qwen_gated_deltanet_full_lora: bool = False,
-) -> list[list[str]] | None:
-    """Every distinct module list client LoRA flags can produce."""
-
-    achievable = achievable_lora_target_sets(
-        model_path,
-        qwen_gated_deltanet_full_lora=qwen_gated_deltanet_full_lora,
-    )
-    if achievable is None:
-        return None
-    module_sets: list[list[str]] = []
-    for targets in achievable:
-        if targets.modules and targets.modules not in module_sets:
-            module_sets.append(targets.modules)
-    return module_sets
 
 
 def find_unmatched_target_modules(
