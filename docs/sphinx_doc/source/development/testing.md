@@ -107,13 +107,7 @@ uv run pytest --no-persistence
 
 ### Writing Persistence Tests
 
-Tests automatically have persistence configured via the `configure_persistence` fixture. For tests that need explicit persistence control, use the `enable_persistence` fixture:
-
-```python
-def test_with_persistence(enable_persistence):
-    # This test runs with persistence enabled
-    pass
-```
+Tests automatically have persistence configured via the `configure_persistence` fixture.
 
 ## Continuous Integration
 
@@ -153,8 +147,6 @@ uv run pytest tests -v -s --gpu --basetemp /mnt/checkpoints
 
 - `set_cpu_env`: (autouse) Sets `TUFT_CPU_TEST=1` when not running in GPU mode
 - `configure_persistence`: (autouse) Configures persistence for each test
-- `enable_persistence`: Explicitly enables persistence for a specific test
-- `clean_redis`: Ensures clean Redis state before and after a test
 
 ## Writing Tests
 
