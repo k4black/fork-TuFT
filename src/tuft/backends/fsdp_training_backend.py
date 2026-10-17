@@ -1165,6 +1165,7 @@ class FSDPTrainingBackend(BaseTrainingBackend):
                 "TUFT_FSDP_NO_RAY=1 (no Ray) requires fsdp_num_gpus=1. "
                 f"Got fsdp_num_gpus={n_gpus}. Multi-GPU requires Ray."
             )
+        await self._load_vocab_size()
         if not use_ray:
             # Local single-process: no Ray actors; for standalone tests (train/save logic)
             import torch.distributed as dist

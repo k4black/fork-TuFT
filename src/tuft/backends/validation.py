@@ -40,6 +40,8 @@ def validate_training_batch_inputs(
         # Validate target_tokens
         if "target_tokens" in inputs and inputs["target_tokens"] is not None:
             target_tokens = inputs["target_tokens"].to_torch()
+            if target_tokens.is_floating_point():
+                raise ValueError(f"Row {idx}: target_tokens must be integers")
             t_len = len(target_tokens)
             if t_len != seq_len:
                 raise ValueError(

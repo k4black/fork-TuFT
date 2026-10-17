@@ -31,6 +31,7 @@ class HFTrainingBackend(BaseTrainingBackend):
 
     async def async_init(self) -> None:
         await self.model.async_init.remote()
+        await self._load_vocab_size()
 
     async def ping(self) -> None:
         await self.model.async_init.remote()

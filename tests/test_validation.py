@@ -50,6 +50,12 @@ def test_validate_token_id_out_of_vocab(tokens, inputs):
     validate_training_batch_inputs([make_datum([1, 2, 3, 15])], "cross_entropy", 1024, 16)
 
 
+def test_validate_rejects_float_target_tokens():
+    d = make_datum([1, 2, 3], {"target_tokens": td([2.0, float("nan"), 3.0])})
+    with pytest.raises(ValueError, match="target_tokens must be integers"):
+        validate_training_batch_inputs([d], "cross_entropy", 1024, 16)
+
+
 def test_validate_target_tokens_mismatch():
     d = make_datum([1, 2, 3, 4], {"target_tokens": td([1, 2, 3], "int64")})
     with pytest.raises(ValueError, match="target_tokens length"):
