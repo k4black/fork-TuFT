@@ -298,6 +298,7 @@ def test_engine_output_unpickles_without_vllm(monkeypatch):
         setattr(fake, name, cls)
     monkeypatch.setitem(sys.modules, "fake_vllm", fake)
     raw = fake.RequestOutput(
+        prompt_token_ids=[3, 5],
         prompt_logprobs=[None, {5: fake.Logprob(logprob=-0.5, rank=1)}],
         outputs=[
             fake.CompletionOutput(

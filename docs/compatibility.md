@@ -30,7 +30,7 @@ The route column names the main request. Methods that compose several requests l
 | `ServiceClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
 | `TrainingClient.create_sampling_client` | supported | POST /api/v1/create_sampling_session | |
 | `TrainingClient.forward` | supported | POST /api/v1/forward_backward | Sends `forward_only=true`. |
-| `TrainingClient.forward_backward` | supported | POST /api/v1/forward_backward | |
+| `TrainingClient.forward_backward` | supported | POST /api/v1/forward_backward | Text only: `ImageChunk` inputs return 400. |
 | `TrainingClient.forward_backward_custom` | supported | POST /api/v1/forward_backward | The SDK computes the custom loss between a forward and a backward call. |
 | `TrainingClient.get_console_url` | client-side | - | Links to the Thinking Machines console. |
 | `TrainingClient.get_info` | supported | POST /api/v1/get_info | `model_data.arch` is `model_type` from `config.json` under a local `model_path` (None for a Hub id); `tokenizer_id` is `ModelConfig.tokenizer_id`, else `model_name`. |
@@ -51,7 +51,7 @@ The route column names the main request. Methods that compose several requests l
 | `SamplingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
 | `SamplingClient.get_tokenizer` | partial | GET /api/v1/samplers/{sampler_id} | Loads `base_model` from the HF Hub. TuFT sets it to the configured `model_name`. |
 | `SamplingClient.on_queue_state_change` | client-side | - | |
-| `SamplingClient.sample` | supported | POST /api/v1/asample | `topk_sample_logprobs` up to 20 (vLLM's `max_logprobs`), processed logprobs like the sampled-token ones. `prompt_alt_tokens_k` and `target_prompt_logprobs` return 400. |
+| `SamplingClient.sample` | supported | POST /api/v1/asample | `topk_sample_logprobs` up to 20 (vLLM's `max_logprobs`), processed logprobs like the sampled-token ones. `prompt_alt_tokens_k` and `target_prompt_logprobs` return 400. `ImageChunk` inputs work on vLLM vision-language models (e.g. Qwen3-VL) and need `expected_tokens`; a count that differs from vLLM's image expansion returns 400. |
 | `RestClient.assign_session_project` | unsupported | PUT /api/v1/sessions/{session_id}/project | |
 | `RestClient.delete_checkpoint` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id} | |
 | `RestClient.delete_checkpoint_from_tinker_path` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id} | |

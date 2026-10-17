@@ -86,8 +86,8 @@ Identity, quotas and routing belong to the control plane (Phase 9).
 ### Phase 8: Single-worker scale (P3, measure first)
 - [ ] **Multi-node FSDP** — shared checkpoint dir or trainer-side save and resume over Ray; one
   training replica spanning nodes.
-- [ ] **Vision inputs** — `ImageChunk` already decodes; add the HF/FSDP and vLLM paths and run
-  the cookbook `vlm_classifier` recipe.
+- [ ] **Vision inputs** — vLLM sampling accepts `ImageChunk`; still open: the HF/FSDP training
+  paths and a GPU run of the cookbook `vlm_classifier` recipe (Qwen3-VL-2B or Qwen3.5-4B).
 - [ ] **Audio inputs** — investigation; needs preprocessing and model support beyond vision.
 - [ ] **Mixed-adapter forwards** — several adapters in one training forward on one base.
 - [ ] **Faster adapter sync** — delta or in-memory transport instead of a full adapter stage per

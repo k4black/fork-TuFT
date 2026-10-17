@@ -15,6 +15,7 @@ from tinker import types
 
 from .backends import BaseSamplingBackend
 from .backends.gpu_phase import GpuPhase, use_phase
+from .backends.image_prompt import PromptParts, split_prompt
 from .checkpoints import CheckpointRecord
 from .config import SAMPLING_CAPABILITY, AppConfig, ModelConfig
 from .exceptions import (
@@ -309,17 +310,20 @@ class SamplingController:
                 span.set_status(StatusCode.ERROR)
                 raise
 
-    def _hash_prompt(self, prompt: types.ModelInput) -> str:
-        tokens = ",".join(str(token) for token in prompt.to_ints())
-        return hashlib.sha1(tokens.encode("utf-8")).hexdigest()[:16]
+    def _hash_prompt(self, tokens: list[int | None], images: list[bytes]) -> str:
+        digest = hashlib.sha1(",".join(str(token) for token in tokens).encode("utf-8"))
+        for image in images:
+            digest.update(image)
+        return digest.hexdigest()[:16]
 
     async def _record_sequence(
-        self, record: SamplingSessionRecord, seq_id: int, prompt: types.ModelInput
+        self, record: SamplingSessionRecord, seq_id: int, parts: PromptParts
     ) -> None:
+        tokens, images, length = parts
         entry = SamplingHistoryEntry(
             seq_id=seq_id,
-            prompt_token_count=len(prompt.to_ints()),
-            prompt_hash=self._hash_prompt(prompt),
+            prompt_token_count=length,
+            prompt_hash=self._hash_prompt(tokens, images),
         )
         record._history_by_seq_id[seq_id] = entry
         record.history = [record._history_by_seq_id[k] for k in sorted(record._history_by_seq_id)]
@@ -357,13 +361,14 @@ class SamplingController:
             if record.base_model not in self._base_backends:
                 self.require_sampling_capability(record.base_model)
                 raise UnknownModelException(model_name=record.base_model)
+            parts = split_prompt(request.prompt)  # same rule: reject a bad prompt first
 
             await record.executor.submit(
                 sequence_id=request.seq_id,
                 func=self._record_sequence,
                 record=record,
                 seq_id=request.seq_id,
-                prompt=request.prompt,
+                parts=parts,
             )
             if record.model_path is None:
                 lora_id = None

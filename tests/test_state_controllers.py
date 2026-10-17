@@ -277,9 +277,9 @@ async def test_sampling_seq_id_history_is_monotonic(request, tmp_path, monkeypat
     in_flight_while_recording = []
     original_record_sequence = state.sampling._record_sequence
 
-    async def recording(record, seq_id, prompt):
+    async def recording(record, seq_id, parts):
         in_flight_while_recording.append(record.in_flight)
-        await original_record_sequence(record, seq_id, prompt)
+        await original_record_sequence(record, seq_id, parts)
 
     monkeypatch.setattr(state.sampling, "_record_sequence", recording)
     await state.run_sample(req1, user_id="tester")

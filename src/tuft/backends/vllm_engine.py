@@ -19,6 +19,7 @@ imported on CPU-only machines (unit tests, config validation).
 """
 
 import asyncio
+import io
 import itertools
 import os
 import shutil
@@ -86,6 +87,9 @@ class VLLMEngineConfig:
     enable_sleep_mode: bool = False
 
 
+IMAGE_DECODE_ERROR = "ImageChunk data is not a decodable image"
+
+
 def _plain_output(output: Any) -> SimpleNamespace:
     """Copy the ``RequestOutput`` fields ``_build_sample_response`` reads into builtins.
 
@@ -107,6 +111,7 @@ def _plain_output(output: Any) -> SimpleNamespace:
         ]
 
     return SimpleNamespace(
+        prompt_token_ids=list(output.prompt_token_ids or []),
         prompt_logprobs=logprobs(output.prompt_logprobs),
         outputs=[
             SimpleNamespace(
@@ -297,12 +302,27 @@ class VLLMEngine:
         lora_int_id, lora_name, lora_path = lora
         return LoRARequest(lora_name=lora_name, lora_int_id=lora_int_id, lora_path=lora_path)
 
+    def image_token_id(self) -> Optional[int]:
+        """The token vLLM expands into one image's placeholders, or None for text models."""
+        return getattr(self.async_llm.model_config.hf_config, "image_token_id", None)
+
     async def generate(self, prompt: Any, lora_request: Any = None, **kwargs: Any) -> Any:
         """Generate and return the ``RequestOutput`` fields TuFT reads, as builtins.
 
         ``prompt`` is a vLLM prompt dict (e.g. ``{"prompt_token_ids": [...]}``);
         ``kwargs`` override fields of the default ``SamplingParams``.
         """
+        images = prompt.pop("images", None)
+        if images:  # raw bytes: the TuFT server has no Pillow
+            from PIL import Image
+
+            try:
+                decoded = [Image.open(io.BytesIO(data)) for data in images]
+                for image in decoded:
+                    image.load()  # open() is lazy; fail here, not in vLLM's processor
+            except Exception as e:
+                raise ValueError(IMAGE_DECODE_ERROR) from e
+            prompt["multi_modal_data"] = {"image": decoded}
         stream = self.async_llm.generate(
             request_id=str(next(self._request_counter)),
             prompt=prompt,

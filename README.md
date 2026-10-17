@@ -87,6 +87,7 @@ The installer also honors these environment variables:
 
 This example demonstrates how to use TuFT for training and sampling with the [Tinker SDK](https://pypi.org/project/tinker/).
 TuFT supports `tinker>=0.25,<0.33`. The server returns 400 for features it does not implement: non-Adam optimizers (Dimuon), top-k sample logprobs, target prompt logprobs and prompt alt tokens.
+`SamplingClient.sample` accepts `ImageChunk` inputs (with `expected_tokens`) on vision-language models served by vLLM, e.g. Qwen3-VL. Training accepts text only and returns 400 for image inputs.
 Make sure the server is running on port 10610 before running the code. See the [Run the server](#run-the-server) section below for instructions on starting the server.
 
 ### 1. Data Preparation
