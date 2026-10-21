@@ -2,7 +2,7 @@ name: Docker Build and Publish
 
 # Builds the single TuFT image (docker/Dockerfile) for CUDA 12 and 13.
 # Pull requests build and smoke-test only. Pushes to main publish :dev tags,
-# manual runs publish the branch name (/ replaced by -), and published releases
+# manual runs publish `branch-<name>` (unsafe characters become -), and published releases
 # publish version and :latest tags to docker.io/k4black/tuft.
 on:
   push:
@@ -68,7 +68,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # release v0.3.0 -> 0.3.0 and latest (not for pre-releases); main -> dev;
-      # manual run on build/x -> build-x; pull requests build under a local tag
+      # manual run on build/x -> branch-build-x; pull requests build under a local tag
       # and push nothing.
       - name: Compute tags
         id: tags
@@ -81,7 +81,7 @@ jobs:
           case "$GITHUB_EVENT_NAME" in
             release) names="${GITHUB_REF_NAME#v}"; [ "$PRERELEASE" = true ] || names="$names latest" ;;
             push) names=dev ;;
-            workflow_dispatch) names="${GITHUB_REF_NAME//\//-}" ;;
+            workflow_dispatch) names="branch-$(printf %s "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9_.-' -)" ;;
             *) echo "tags=tuft-test:${{ matrix.variant }}" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
           tags=""
