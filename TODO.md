@@ -132,7 +132,7 @@ definition, schema) are decided in a design pass when the phase starts.
 - [ ] **Quotas and fair share** — per-subject run and in-flight caps; bounded turns per subject
   per pool, then a queue; 429 with `Retry-After` only when the queue is full. Usage attributed from
   worker per-adapter counters (`/stats`).
-- [ ] **Standalone sampling workers** — `tuft-infer` as a plain vLLM server over HTTP with
+- [ ] **Standalone sampling workers** — the fork image as a plain vLLM server over HTTP with
   dynamic LoRA load and the prompt-logprobs patch; Ray only inside a training worker.
 - [ ] **Drains in the fleet** — sampling drain (stop accepting, wait for in-flight, unload) and
   training drain (see Phase 7) driven by the control plane; a lost worker fails its futures fast.
@@ -223,8 +223,8 @@ definition, schema) are decided in a design pass when the phase starts.
 - [x] tinker SDK 0.25–0.28 qualification (#12): protobuf wire, `compat.py` absorbs drift.
 - [x] Adapter staging on inference nodes (#14, #17, #18): adapter bytes over Ray to `/dev/shm`, no
   shared filesystem for vLLM nodes; idle TTL and `max_loras` LRU; server runs without vLLM.
-- [x] Split images `tuft-train` / `tuft-infer` (#10, #16) for CUDA 12 and 13 on Docker Hub; CUDA
-  graphs on by default (#20).
+- [x] One Docker image on the official vLLM image (vLLM and the trainers) for CUDA 12 and 13
+  on Docker Hub, replacing the split images (#10, #16); CUDA graphs on by default (#20).
 
 ### Serving lifecycle
 - [x] Immutable adapter ids `{run}:{checkpoint}` and reload sync (#5).

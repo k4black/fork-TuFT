@@ -21,8 +21,8 @@ TuFT (**T**enant-**u**nified **F**ine**T**uning) is a multi-tenant platform that
 
 > [!NOTE]
 > **This is [k4black/fork-TuFT](https://github.com/k4black/fork-TuFT)**, a fork of [agentscope-ai/TuFT](https://github.com/agentscope-ai/TuFT).
-> It tracks upstream and adds: split `tuft-train` / `tuft-infer` Docker images (CUDA 12 and 13), Ray placement of training and inference actors on separate nodes, LoRA adapter streaming to vLLM nodes without a shared filesystem, and a wider `tinker` SDK range. See [TODO.md](TODO.md) for the roadmap.
-> The fork is not on PyPI: install it from source or use the [fork images](#fork-images-split-training-and-inference). The quick-install script and the PyPI package below install the upstream release.
+> It tracks upstream and adds: a single Docker image on the official vLLM image (CUDA 12 and 13), Ray placement of training and inference actors on separate nodes, LoRA adapter streaming to vLLM nodes without a shared filesystem, and a wider `tinker` SDK range. See [TODO.md](TODO.md) for the roadmap.
+> The fork is not on PyPI: install it from source or use the [fork image](#use-the-pre-built-docker-image). The quick-install script and the PyPI package below install the upstream release.
 
 We're open source and welcome contributions! Join the community:
 - [DingTalk Group](https://qr.dingtalk.com/action/joingroup?code=v1,k1,UWvzO6HHSeuvRQ5WXCOMJEijadQV+hDjhMIpiVr8qCs=&_dt_no_comment=1&origin=11?)
@@ -346,12 +346,21 @@ export TUFT_TINY_MODEL=/tmp/tiny-qwen3 VLLM_CPU_KVCACHE_SPACE=1 TUFT_NO_GPU=1
 If you face issues with local installation or want to get started quickly,
 you can use the pre-built Docker image.
 
-1. Pull the latest fork image from Docker Hub. `tuft-infer` holds the full stack and runs
-   as an all-in-one image on a single GPU; use the `-cu12` tag on CUDA 12 drivers.
-   The upstream all-in-one image is `ghcr.io/agentscope-ai/tuft:latest`.
+1. Pull the latest fork image from Docker Hub. It is the official `vllm/vllm-openai` image plus
+   TuFT and the trainers, and it runs the full stack on a single GPU.
+   The upstream image is `ghcr.io/agentscope-ai/tuft:latest`.
 
     ```bash
-    docker pull k4black/tuft-infer:latest
+    docker pull k4black/tuft:latest       # or :latest-cu12, :0.3.0, :dev
+    ```
+
+    CI publishes releases as `<version>` and `latest`, and `main` as `dev`.
+    Tags carry a `-cu12` / `-cu13` suffix. The bare tag is CUDA 13. Use `-cu12` on CUDA 12 drivers.
+    To build the image yourself:
+
+    ```bash
+    docker build -f docker/Dockerfile -t tuft:cu13 .
+    docker build -f docker/Dockerfile -t tuft:cu12 --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.28.0-cu129 .
     ```
 
 2. Run the Docker container and start the TuFT server on port 10610:
@@ -363,8 +372,9 @@ you can use the pre-built Docker image.
         --rm \
         -p 10610:10610 \
         -v <host_dir>:/data \
-        k4black/tuft-infer:latest \
-        tuft launch --port 10610 --config /data/tuft_config.yaml
+        --entrypoint tuft \
+        k4black/tuft:latest \
+        launch --port 10610 --config /data/tuft_config.yaml
     ```
 
     Please replace `<host_dir>` with a directory on your host machine where you want to store model checkpoints and other data.
@@ -394,36 +404,6 @@ you can use the pre-built Docker image.
     On a single GPU add `colocate: true` under each model, so training and sampling share the
     device. Without it the vLLM actor waits for a second GPU and the server never becomes ready.
 
-### Fork images: split training and inference
-
-This fork also builds two single-purpose images instead of one all-in-one image.
-vLLM requires `nvidia-cudnn-frontend` and `nvidia-cutlass-dsl[cu13]`, which ship
-CUDA 13 binaries only, so an image holding both the training stack and vLLM
-cannot target CUDA 12 (driver 550 hosts).
-
-| Image | Dockerfile | Contents |
-|---|---|---|
-| `tuft-train` | [`docker/Dockerfile.train`](docker/Dockerfile.train) | PyTorch, FSDP2, PEFT, Transformers, Ray and the TuFT server. No vLLM. Builds for CUDA 12 and CUDA 13. |
-| `tuft-infer` | [`docker/Dockerfile.infer`](docker/Dockerfile.infer) | The official `vllm/vllm-openai` image plus TuFT, so vLLM workers can import the prompt-logprobs patch. CUDA 12 builds from vLLM's `-cu129` image. |
-
-```bash
-docker build -f docker/Dockerfile.train -t tuft-train:cu13 .
-docker build -f docker/Dockerfile.train -t tuft-train:cu12 \
-    --build-arg CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04 \
-    --build-arg TORCH_BACKEND=cu129 .
-docker build -f docker/Dockerfile.infer -t tuft-infer:cu13 .
-docker build -f docker/Dockerfile.infer -t tuft-infer:cu12 \
-    --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.28.0-cu129 .
-```
-
-CI publishes them to Docker Hub: releases as `<version>` and `latest`, `main` as `dev`.
-Tags carry a `-cu12` / `-cu13` suffix; the bare tag is CUDA 13.
-
-```bash
-docker pull k4black/tuft-train:latest       # or :latest-cu12, :0.3.0, :dev
-docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
-```
-
 ### GPU layouts
 
 - HF training (`training_backend: hf`): 1 GPU per model.
@@ -447,7 +427,7 @@ modules and offloads activations to host memory (~30% slower forward_backward); 
 
 ```bash
 docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v <host_dir>:/data \
-    --entrypoint tuft k4black/tuft-infer:latest launch --port 10610 --config /data/tuft_config.yaml
+    --entrypoint tuft k4black/tuft:latest launch --port 10610 --config /data/tuft_config.yaml
 ```
 
 ### Speculative decoding
