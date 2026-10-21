@@ -5,7 +5,7 @@
 # engine argument set by src/tuft/backends/vllm_engine.py).
 #
 # CUDA, PyTorch and vLLM all come from the base image and are never reinstalled:
-# TuFT pins exactly the versions it ships (vllm 0.28.0, torch 2.13.0), so the
+# TuFT pins exactly the versions it ships (vllm 0.32.0, torch 2.13.0), so the
 # install below only adds TuFT's pure-Python dependencies.
 #
 # Build (CUDA 13, default):
@@ -13,7 +13,7 @@
 #
 # Build (CUDA 12.9, for driver 550 hosts):
 #   docker build -f docker/Dockerfile -t tuft:cu12 \
-#     --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.28.0-cu129 .
+#     --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.32.0-cu129 .
 #
 # Run `tuft launch`. The base image ENTRYPOINT is vLLM's server, so pass
 # `--entrypoint tuft` with `launch ...` as the command:
@@ -22,7 +22,7 @@
 
 # Keep in step with the vllm pin in pyproject.toml; the constraint below fails
 # the build when they drift.
-ARG VLLM_IMAGE=vllm/vllm-openai:v0.28.0
+ARG VLLM_IMAGE=vllm/vllm-openai:v0.32.0
 FROM ${VLLM_IMAGE}
 
 COPY --from=ghcr.io/astral-sh/uv:0.9.21 /uv /bin/uv

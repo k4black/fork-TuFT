@@ -147,7 +147,8 @@ class VLLMEngine:
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
         os.environ["VLLM_RAY_BUNDLE_INDICES"] = config.bundle_indices
         if self.vllm_version >= parse_version("0.22.0"):
-            # Stay on the V1 model runner for now.
+            # Stay on the V1 model runner for now. Model Runner V2 is the default since
+            # vLLM 0.29, and the prompt-logprob patch targets GPUModelRunner (V1).
             os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "0"
         os.environ["VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE"] = "shm"
         os.environ["VLLM_RAY_PER_WORKER_GPUS"] = "1"

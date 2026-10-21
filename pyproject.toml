@@ -31,7 +31,8 @@ dependencies = [
     "uvicorn[standard]>=0.38.0",
     "omegaconf>=2.3.0",
     "ray>=2.50.0",
-    "transformers>=5.5.3,<5.17.0",
+    # Window set by the pinned vLLM release (requirements/common.txt).
+    "transformers>=5.16.1,<5.20.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
@@ -54,7 +55,7 @@ dependencies = [
     # the in-process OpenAI API server shim and the prompt-logprobs worker
     # patch are validated against this exact release. Before changing the pin,
     # review agentscope-ai/TuFT#131 and rerun its GPU verification checklist.
-    "vllm==0.28.0; sys_platform == 'linux'",
+    "vllm==0.32.0; sys_platform == 'linux'",
 ]
 
 [project.scripts]
