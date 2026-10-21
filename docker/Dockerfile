@@ -37,10 +37,13 @@ RUN pip3 list --format=freeze | grep -iE '^(torch|vllm|triton)==' \
         -r /opt/tuft/pyproject.toml --extra backend --extra persistence
 
 # Colocated HF trainer kernels from pinned prebuilt wheels; then restore vLLM's nccl.
+# The cu129 base ships a CUDA 13 torchcodec (it needs libnvrtc.so.13); vLLM tolerates
+# a missing torchcodec but not a broken one, and TuFT decodes no audio or video.
 RUN set -eu; \
     nccl="$(pip3 list --format=freeze | grep -iE '^nvidia-nccl-cu[0-9]+==' || true)"; \
     case "$(python3 -c 'import torch; print(torch.version.cuda)')" in \
-      12.*) cuda=cu126; sha=41806f85fae421e0b0e70edde3121fd7126126aeba610fefa5d1b6cff88197af ;; \
+      12.*) cuda=cu126; sha=41806f85fae421e0b0e70edde3121fd7126126aeba610fefa5d1b6cff88197af; \
+            uv pip uninstall --system torchcodec ;; \
       13.*) cuda=cu130; sha=c65d762d24b7dd1ea8dbd9f5a98708fa8abbfd8f33f46bfc6123e76f1e174d3f ;; \
       *) echo "no pinned flash-attn wheel for this CUDA"; exit 1 ;; \
     esac; \
