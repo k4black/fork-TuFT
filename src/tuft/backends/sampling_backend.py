@@ -17,7 +17,7 @@ from tinker import types
 from ..checkpoints import read_adapter_files
 from ..compat import sampled_sequence
 from ..config import ModelConfig
-from ..exceptions import InvalidRequestException
+from ..exceptions import InvalidRequestException, ServiceUnavailableException
 from ..telemetry.tracing import get_tracer
 from .base_backend import BaseSamplingBackend, gpu_request
 from .image_prompt import split_prompt
@@ -607,11 +607,12 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             await self.engine.shutdown.remote()  # type: ignore[attr-defined]
         except Exception:
             pass
-        try:
-            ray.kill(self.engine, no_restart=True)  # type: ignore[arg-type]
-        except Exception:
-            pass
-        self.lora_adapters.clear()
+        finally:  # also when a caller's timeout cancels the graceful shutdown
+            try:
+                ray.kill(self.engine, no_restart=True)  # type: ignore[arg-type]
+            except Exception:
+                pass
+            self.lora_adapters.clear()
 
     async def ping(self) -> None:
         import httpx
@@ -625,70 +626,68 @@ class VLLMSamplingBackend(BaseSamplingBackend):
 
 
 class DPSamplingBackend(BaseSamplingBackend):
-    """Data-Parallel sampling backend: N independent vLLM instances with round-robin LB.
+    """Sampling over a list of replicas (vLLM instances), one per data-parallel rank.
 
-    Each instance runs on its own GPU(s) (tensor_parallel_size per instance).
-    Requests are distributed across instances using round-robin for uniform load.
-    All instances share the same LoRA adapters.
+    Each request goes to the ``serving`` replica with the fewest requests in flight.
+    Replicas can join with ``add`` and leave with ``drain`` at runtime.
+    All serving replicas share the same LoRA adapters.
     """
 
-    def __init__(
-        self,
-        config: ModelConfig,
-        worker_venv_path: Optional[str] = None,
-    ) -> None:
+    def __init__(self, config: ModelConfig, replicas: list[BaseSamplingBackend]) -> None:
         super().__init__(config)
-        self._dp_size = config.data_parallel_size
-        self._instances: list[VLLMSamplingBackend] = []
-        for i in range(self._dp_size):
-            instance = VLLMSamplingBackend(
-                config, worker_venv_path=worker_venv_path, instance_index=i
-            )
-            self._instances.append(instance)
-        # Atomic round-robin counter
-        self._rr_counter = 0
-        self._rr_lock = asyncio.Lock()
-        logger.info(
-            "DPSamplingBackend: created %d instances for model %s",
-            self._dp_size,
-            config.model_name,
-        )
-
-    def _next_instance(self) -> VLLMSamplingBackend:
-        """Round-robin selection (no lock needed for simple modular arithmetic)."""
-        idx = self._rr_counter % self._dp_size
-        self._rr_counter += 1
-        return self._instances[idx]
+        self._replicas = replicas
+        logger.info("DPSamplingBackend: %d replicas for model %s", len(replicas), config.model_name)
 
     async def async_init(self) -> None:
-        """Initialize all DP instances in parallel."""
-        await asyncio.gather(*[inst.async_init() for inst in self._instances])
-        logger.info(
-            "DPSamplingBackend: all %d instances initialized for model %s",
-            self._dp_size,
-            self.base_model,
-        )
+        """Initialize all replicas in parallel, then route to them."""
+        await asyncio.gather(*[r.async_init() for r in self._replicas])
+        for r in self._replicas:
+            r.state = "serving"
+
+    def _serving(self) -> list[BaseSamplingBackend]:
+        return [r for r in self._replicas if r.state == "serving"]
 
     def get_openai_api_url(self) -> Optional[str]:
-        """Return a single URL (first instance) for backward compat.
+        serving = self._serving()
+        return serving[0].get_openai_api_url() if serving else None
 
-        For DP-aware routing, use get_openai_api_urls() instead.
+    def acquire(self) -> BaseSamplingBackend:
+        """Count one more request on the serving replica with the fewest; ``release`` it after.
+
+        No ``await`` here, so two requests cannot both see the same count.
         """
-        return self._instances[0].get_openai_api_url() if self._instances else None
+        serving = self._serving()
+        if not serving:
+            raise ServiceUnavailableException(f"No serving sampling replica for {self.base_model}")
+        replica = min(serving, key=lambda r: r.requests)
+        replica.requests += 1
+        return replica
 
-    def get_openai_api_urls(self) -> list[str]:
-        """Return all vLLM instance URLs for DP-aware load balancing."""
-        urls = []
-        for inst in self._instances:
-            url = inst.get_openai_api_url()
-            if url:
-                urls.append(url)
-        return urls
+    @staticmethod
+    def release(replica: BaseSamplingBackend) -> None:
+        replica.requests -= 1
 
-    def get_next_openai_api_url(self) -> Optional[str]:
-        """Return the next URL via round-robin for load-balanced proxying."""
-        inst = self._next_instance()
-        return inst.get_openai_api_url()
+    def add(self, replica: BaseSamplingBackend) -> None:
+        """Register a replica as ``pending``: it gets no requests until its state is ``serving``."""
+        replica.state = "pending"
+        self._replicas.append(replica)
+
+    async def drain(self, replica: BaseSamplingBackend, timeout_s: float = 60.0) -> None:
+        """Stop routing to the replica, wait for its requests, then shut it down.
+
+        Each wait is bounded by ``timeout_s``. A timed-out shutdown kills the actor.
+        """
+        replica.state = "draining"
+        deadline = time.monotonic() + timeout_s
+        while replica.requests > 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        if replica.requests > 0:
+            logger.warning("Drain timeout: %d requests cut on a replica", replica.requests)
+        try:
+            await asyncio.wait_for(replica.shutdown(), timeout_s)
+        except Exception:
+            logger.warning("Replica shutdown failed or timed out", exc_info=True)
+        self._replicas.remove(replica)
 
     async def sample(
         self,
@@ -700,60 +699,63 @@ class DPSamplingBackend(BaseSamplingBackend):
         lora_id: Optional[str] = None,
         topk_sample_logprobs: int = 0,
     ) -> types.SampleResponse:
-        """Route sampling to a DP instance via round-robin."""
-        instance = self._next_instance()
-        return await instance.sample(
-            prompt=prompt,
-            num_samples=num_samples,
-            sampling_params=sampling_params,
-            include_prompt_logprobs=include_prompt_logprobs,
-            topk_prompt_logprobs=topk_prompt_logprobs,
-            lora_id=lora_id,
-            topk_sample_logprobs=topk_sample_logprobs,
-        )
+        replica = self.acquire()
+        try:
+            return await replica.sample(
+                prompt=prompt,
+                num_samples=num_samples,
+                sampling_params=sampling_params,
+                include_prompt_logprobs=include_prompt_logprobs,
+                topk_prompt_logprobs=topk_prompt_logprobs,
+                lora_id=lora_id,
+                topk_sample_logprobs=topk_sample_logprobs,
+            )
+        finally:
+            self.release(replica)
 
     async def add_adapter(self, lora_id: str, adapter_path: Path) -> None:
-        """Add LoRA adapter to ALL DP instances; roll back on partial failure.
+        """Add LoRA adapter to all serving replicas; roll back on partial failure.
 
-        Without rollback, a failure on one replica would leave the DP instances with
-        inconsistent adapter sets (some registered, some not), causing round-robin
-        sampling to intermittently fail with an unknown lora_id.
+        Without rollback, a failure on one replica would leave the replicas with
+        inconsistent adapter sets, so sampling would fail intermittently.
+        shortcut: a session added while ``add`` replays adapters can miss the new
+        replica; serialise adapter adds with replica adds when the admin route lands.
         """
+        targets = self._serving()  # a snapshot: the list can change during the await
         results = await asyncio.gather(
-            *[inst.add_adapter(lora_id, adapter_path) for inst in self._instances],
+            *[r.add_adapter(lora_id, adapter_path) for r in targets],
             return_exceptions=True,
         )
-        failures = [i for i, res in enumerate(results) if isinstance(res, BaseException)]
-        if failures:
-            # Roll back the instances that succeeded so the adapter set stays consistent.
-            for i, res in enumerate(results):
+        errors = [res for res in results if isinstance(res, BaseException)]
+        if errors:
+            for replica, res in zip(targets, results, strict=True):
                 if not isinstance(res, BaseException):
                     try:
-                        await self._instances[i].remove_adapter(lora_id)
+                        await replica.remove_adapter(lora_id)
                     except Exception:  # pylint: disable=broad-except
-                        logger.warning("Failed to roll back adapter %s on instance %d", lora_id, i)
-            first_error = results[failures[0]]
-            if isinstance(first_error, BaseException):
-                raise first_error
-
-    async def ensure_oai_lora_loaded(self, lora_name: str, adapter_path: Path) -> None:
-        """Load the adapter on every DP instance; each stages its own copy."""
-        await asyncio.gather(
-            *[inst.ensure_oai_lora_loaded(lora_name, adapter_path) for inst in self._instances]
-        )
+                        logger.warning("Failed to roll back adapter %s on a replica", lora_id)
+            raise errors[0]
 
     async def remove_adapter(self, lora_id: str) -> None:
-        """Remove LoRA adapter from ALL DP instances."""
-        await asyncio.gather(*[inst.remove_adapter(lora_id) for inst in self._instances])
+        """Remove LoRA adapter from all replicas that still run."""
+        await asyncio.gather(
+            *[r.remove_adapter(lora_id) for r in self._replicas if r.state != "draining"]
+        )
+
+    async def sleep(self) -> None:
+        await asyncio.gather(*[r.sleep() for r in self._replicas])
+
+    async def wake_up(self) -> None:
+        await asyncio.gather(*[r.wake_up() for r in self._replicas])
 
     async def ping(self) -> None:
-        await asyncio.gather(*[inst.ping() for inst in self._instances])
+        await asyncio.gather(*[r.ping() for r in self._serving()])
 
     async def shutdown(self) -> None:
-        """Shut down all DP vLLM instances."""
-        for inst in self._instances:
+        """Shut down all replicas."""
+        for r in self._replicas:
             try:
-                await inst.shutdown()
+                await r.shutdown()
             except Exception:
                 pass
 

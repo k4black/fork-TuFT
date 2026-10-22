@@ -18,7 +18,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..auth import User
 from ..backends.gpu_phase import use_phase
-from ..backends.sampling_backend import DPSamplingBackend
 from ..exceptions import (
     InvalidRequestException,
     ServerException,
@@ -199,54 +198,62 @@ def create_oai_router() -> APIRouter:
                 # deterministic capability error, not a backend-lookup failure.
                 state.sampling.require_sampling_capability(resolved.base_model)
 
-                # Get backend OpenAI URL (DP-aware: round-robin across instances)
                 backend = state.sampling._base_backends.get(resolved.base_model)
                 if backend is None:
                     raise UnknownModelException(model_name=resolved.base_model)
 
-                if isinstance(backend, DPSamplingBackend):
-                    backend_url = backend.get_next_openai_api_url()
-                else:
-                    backend_url = backend.get_openai_api_url()
-                if backend_url is None:
-                    raise ServiceUnavailableException(
-                        f"OpenAI API not available for model: {resolved.base_model}"
-                    )
+                # The replica counts this request until the response, or its stream, ends.
+                replica = backend.acquire()
+                streaming = False
+                try:
+                    backend_url = replica.get_openai_api_url()
+                    if backend_url is None:
+                        raise ServiceUnavailableException(
+                            f"OpenAI API not available for model: {resolved.base_model}"
+                        )
 
-                # Ensure LoRA is loaded on ALL DP instances via the vLLM OpenAI API
-                phases = state.sampling.phases  # colocate "sleep": vLLM must be awake
-                if resolved.lora_adapter_path and resolved.lora_id:
-                    try:
-                        async with use_phase(phases, resolved.base_model, "sample"):
-                            await backend.ensure_oai_lora_loaded(
-                                resolved.lora_id, resolved.lora_adapter_path
-                            )
-                    except Exception as exc:
-                        raise ServerException(f"Failed to load LoRA adapter: {exc}") from exc
+                    # Load the LoRA on the chosen replica only, via its vLLM OpenAI API
+                    phases = state.sampling.phases  # colocate "sleep": vLLM must be awake
+                    if resolved.lora_adapter_path and resolved.lora_id:
+                        try:
+                            async with use_phase(phases, resolved.base_model, "sample"):
+                                await replica.ensure_oai_lora_loaded(
+                                    resolved.lora_id, resolved.lora_adapter_path
+                                )
+                        except Exception as exc:
+                            raise ServerException(f"Failed to load LoRA adapter: {exc}") from exc
 
-                # Replace model name with backend model name for vLLM
-                user_model_name = body["model"]
-                body["model"] = resolved.backend_model_name
-                stream = body.get("stream", False)
+                    # Replace model name with backend model name for vLLM
+                    user_model_name = body["model"]
+                    body["model"] = resolved.backend_model_name
+                    stream = body.get("stream", False)
 
-                # Build the response-id prefix.
-                # Final id = "{session_part}:sample:{vllm_original_id}"
-                # session_part is the sampling session id (from the
-                # SamplingController) when a LoRA adapter is used, otherwise
-                # the base model backend identifier.
-                session_part = resolved.lora_id or "base"
-                response_id_prefix = f"{session_part}:sample"
+                    # Build the response-id prefix.
+                    # Final id = "{session_part}:sample:{vllm_original_id}"
+                    # session_part is the sampling session id (from the
+                    # SamplingController) when a LoRA adapter is used, otherwise
+                    # the base model backend identifier.
+                    session_part = resolved.lora_id or "base"
+                    response_id_prefix = f"{session_part}:sample"
 
-                async with use_phase(phases, resolved.base_model, "sample"):
-                    return await proxy_request(
-                        client=client,
-                        backend_url=backend_url,
-                        path=vllm_path,
-                        body=body,
-                        stream=stream,
-                        user_model_name=user_model_name,
-                        response_id_prefix=response_id_prefix,
-                    )
+                    async with use_phase(phases, resolved.base_model, "sample"):
+                        response = await proxy_request(
+                            client=client,
+                            backend_url=backend_url,
+                            path=vllm_path,
+                            body=body,
+                            stream=stream,
+                            user_model_name=user_model_name,
+                            response_id_prefix=response_id_prefix,
+                            # shortcut: a stream that never starts (the client left
+                            # first) keeps its count; wrap the response if counts drift.
+                            on_close=lambda: backend.release(replica),
+                        )
+                    streaming = isinstance(response, StreamingResponse)
+                    return response
+                finally:
+                    if not streaming:  # a stream releases in on_close
+                        backend.release(replica)
         except TuFTException as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
