@@ -832,6 +832,7 @@ class TrainingController:
                     checkpoint_root_dir=self.config.checkpoint_dir,
                     exist_ok=True,
                 )
+                checkpoint.stage()
                 checkpoint.future_id = future_id
                 checkpoint.seq_id = seq_id
                 checkpoint.expires_at = expires_at
@@ -842,43 +843,48 @@ class TrainingController:
                     if checkpoint_type == "training"
                     else training_run.sampler_checkpoints
                 )
-                if training_run.backend is not None:
-                    await training_run.backend.save_state(
-                        lora_id=training_run.training_run_id,
-                        checkpoint_record=checkpoint,
-                        optimizer=(checkpoint_type == "training"),
+                try:
+                    if training_run.backend is not None:
+                        await training_run.backend.save_state(
+                            lora_id=training_run.training_run_id,
+                            checkpoint_record=checkpoint,
+                            optimizer=(checkpoint_type == "training"),
+                        )
+
+                    lora_alpha = self._effective_lora_alpha(training_run)
+
+                    # Write metadata once so metadata.json exists
+                    checkpoint.save_metadata(
+                        base_model=training_run.base_model,
+                        session_id=training_run.session_id,
+                        lora_rank=training_run.lora_rank,
+                        lora_alpha=lora_alpha,
+                        train_attn=training_run.train_attn,
+                        train_mlp=training_run.train_mlp,
+                        train_unembed=training_run.train_unembed,
+                        target_modules=training_run.target_modules,
+                        target_parameters=training_run.target_parameters,
                     )
 
-                lora_alpha = self._effective_lora_alpha(training_run)
+                    # Compute total size including metadata.json
+                    checkpoint.size_bytes = compute_tree_size(checkpoint.path)
 
-                # Write metadata once so metadata.json exists
-                checkpoint.save_metadata(
-                    base_model=training_run.base_model,
-                    session_id=training_run.session_id,
-                    lora_rank=training_run.lora_rank,
-                    lora_alpha=lora_alpha,
-                    train_attn=training_run.train_attn,
-                    train_mlp=training_run.train_mlp,
-                    train_unembed=training_run.train_unembed,
-                    target_modules=training_run.target_modules,
-                    target_parameters=training_run.target_parameters,
-                )
-
-                # Compute total size including metadata.json
-                checkpoint.size_bytes = compute_tree_size(checkpoint.path)
-
-                # Persist the correct size into metadata.json
-                checkpoint.save_metadata(
-                    base_model=training_run.base_model,
-                    session_id=training_run.session_id,
-                    lora_rank=training_run.lora_rank,
-                    lora_alpha=lora_alpha,
-                    train_attn=training_run.train_attn,
-                    train_mlp=training_run.train_mlp,
-                    train_unembed=training_run.train_unembed,
-                    target_modules=training_run.target_modules,
-                    target_parameters=training_run.target_parameters,
-                )
+                    # Persist the correct size into metadata.json
+                    checkpoint.save_metadata(
+                        base_model=training_run.base_model,
+                        session_id=training_run.session_id,
+                        lora_rank=training_run.lora_rank,
+                        lora_alpha=lora_alpha,
+                        train_attn=training_run.train_attn,
+                        train_mlp=training_run.train_mlp,
+                        train_unembed=training_run.train_unembed,
+                        target_modules=training_run.target_modules,
+                        target_parameters=training_run.target_parameters,
+                    )
+                    checkpoint.commit()
+                except BaseException:
+                    checkpoint.delete()  # the staging dir; the older save stays
+                    raise
                 # save the checkpoint record in the training run
                 target_map[checkpoint_name] = checkpoint
 
@@ -1378,15 +1384,25 @@ class TrainingController:
         )
 
     def get_latest_checkpoint(self, model_id: str) -> CheckpointRecord | None:
+        """The checkpoint a restart restores: the newest training save, else the newest sampler.
+
+        A sampler save holds no optimizer state, so it must not win over a training save.
+        """
         record = self.training_runs.get(model_id)
         if record is None:
             return None
-        all_checkpoints = list(record.checkpoints.values()) + list(
-            record.sampler_checkpoints.values()
-        )
-        if not all_checkpoints:
+        checkpoints = record.checkpoints or record.sampler_checkpoints
+        if not checkpoints:
             return None
-        return max(all_checkpoints, key=lambda c: c.created_at)
+        latest = max(checkpoints.values(), key=lambda c: c.created_at)
+        if not record.checkpoints:
+            logger.warning(
+                "Run %s has no training checkpoint: restoring weights only from %s, "
+                "without optimizer state",
+                model_id,
+                latest.checkpoint_id,
+            )
+        return latest
 
     def _restored_run_geometry_mismatch(self, record: TrainingRunRecord) -> str | None:
         """Explain why a persisted run no longer matches current target resolution."""
