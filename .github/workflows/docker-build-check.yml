@@ -1,9 +1,7 @@
 name: Docker Build and Publish
 
-# Builds the single TuFT image (docker/Dockerfile) for CUDA 12 and 13.
-# Pull requests build and smoke-test only. Pushes to main publish :dev tags,
-# manual runs publish `branch-<name>` (unsafe characters become -), and published releases
-# publish version and :latest tags to docker.io/k4black/tuft.
+# Builds docker/Dockerfile for CUDA 12 and 13. Pull requests build only.
+# main -> :dev, releases -> :<version> and :latest, manual runs -> :branch-<name>.
 on:
   push:
     branches: [main]
@@ -67,9 +65,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # release v0.3.0 -> 0.3.0 and latest (not for pre-releases); main -> dev;
-      # manual run on build/x -> branch-build-x; pull requests build under a local tag
-      # and push nothing.
+      # Pull requests build under a local tag and push nothing.
       - name: Compute tags
         id: tags
         env:

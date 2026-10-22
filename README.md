@@ -346,17 +346,15 @@ export TUFT_TINY_MODEL=/tmp/tiny-qwen3 VLLM_CPU_KVCACHE_SPACE=1 TUFT_NO_GPU=1
 If you face issues with local installation or want to get started quickly,
 you can use the pre-built Docker image.
 
-1. Pull the latest fork image from Docker Hub. It is the official `vllm/vllm-openai` image plus
-   TuFT and the trainers, and it runs the full stack on a single GPU.
-   The upstream image is `ghcr.io/agentscope-ai/tuft:latest`.
+1. Pull the fork image from Docker Hub: the official `vllm/vllm-openai` image plus TuFT and
+   the trainers. The upstream image is `ghcr.io/agentscope-ai/tuft:latest`.
 
     ```bash
     docker pull k4black/tuft:latest       # or :latest-cu12, :0.3.0, :dev
     ```
 
-    CI publishes releases as `<version>` and `latest`, and `main` as `dev`.
-    Tags carry a `-cu12` / `-cu13` suffix. The bare tag is CUDA 13. Use `-cu12` on CUDA 12 drivers.
-    To build the image yourself:
+    Releases publish `<version>` and `latest`, `main` publishes `dev`, and a manual workflow run
+    publishes `branch-<name>`. The bare tag is CUDA 13; add `-cu12` on CUDA 12 drivers. To build it:
 
     ```bash
     docker build -f docker/Dockerfile -t tuft:cu13 .
