@@ -223,8 +223,8 @@ definition, schema) are decided in a design pass when the phase starts.
 - [x] tinker SDK 0.25–0.28 qualification (#12): protobuf wire, `compat.py` absorbs drift.
 - [x] Adapter staging on inference nodes (#14, #17, #18): adapter bytes over Ray to `/dev/shm`, no
   shared filesystem for vLLM nodes; idle TTL and `max_loras` LRU; server runs without vLLM.
-- [x] One Docker image on the official vLLM image (vLLM and the trainers) for CUDA 12 and 13
-  on Docker Hub, replacing the split images (#10, #16); CUDA graphs on by default (#20).
+- [x] One image on the official vLLM image for CUDA 12 and 13 on Docker Hub (#10, #16, #43);
+  CUDA graphs on by default (#20).
 
 ### Serving lifecycle
 - [x] Immutable adapter ids `{run}:{checkpoint}` and reload sync (#5).
