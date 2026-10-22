@@ -9,8 +9,6 @@
 ARG VLLM_IMAGE=vllm/vllm-openai:v0.32.0
 FROM ${VLLM_IMAGE}
 
-COPY --from=ghcr.io/astral-sh/uv:0.9.21 /uv /bin/uv
-
 # Dependencies first, source last, so source edits keep this layer cached.
 COPY ./pyproject.toml /opt/tuft/
 RUN pip3 list --format=freeze | grep -iE '^(torch|vllm|triton)==' \
