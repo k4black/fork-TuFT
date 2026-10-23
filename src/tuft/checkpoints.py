@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +37,9 @@ def compute_tree_size(path: Path) -> int:
 
 # FSDP-internal reload and optimizer state; vLLM never reads them.
 TRAINER_ONLY_ADAPTER_FILES = frozenset({"adapter.pt", "optimizer.pt"})
+
+# Saves are written to <run>/.staging/<dir> first. Discovery reads <run>/<name>/metadata.json only.
+STAGING_DIR = ".staging"
 
 
 def read_adapter_files(adapter_path: Path) -> dict[str, bytes]:
@@ -440,6 +444,33 @@ class CheckpointRecord(BaseModel):
         record.transient = metadata.transient
         return record
 
+    def stage(self) -> None:
+        """Point ``path`` at a fresh staging dir. ``commit`` moves it to <run>/<name>.
+
+        A failed save then keeps the older checkpoint of this name.
+        A copy may hard-link the older files. The save never writes to them.
+        """
+        # Not mkdtemp: its 0700 mode would lock other processes out of the final dir.
+        self.path = self.path.parent / STAGING_DIR / f"{self.checkpoint_id}-{uuid.uuid4().hex}"
+        self.path.mkdir(parents=True)
+
+    def commit(self) -> None:
+        """Replace <run>/<name> with the staged save."""
+        final = self.path.parent.parent / self.checkpoint_id
+        old = self.path.with_name(f"{self.path.name}.old")
+        with contextlib.suppress(FileNotFoundError):
+            final.rename(old)
+        # shortcut: a crash between the two renames leaves the older save in .staging.
+        # Use renameat2(RENAME_EXCHANGE) if that window matters.
+        try:
+            self.path.rename(final)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                old.rename(final)
+            raise
+        self.path = final
+        shutil.rmtree(old, ignore_errors=True)
+
     def delete(self) -> None:
         """Delete the checkpoint from disk."""
         with contextlib.suppress(FileNotFoundError):
@@ -456,15 +487,17 @@ class CheckpointRecord(BaseModel):
         exist_ok: bool = True,
     ) -> "CheckpointRecord":
         """Create a CheckpointRecord from a training run."""
-        if not (is_path_component(training_run_id) and is_path_component(checkpoint_name)):
+        if not (
+            is_path_component(training_run_id)
+            and is_path_component(checkpoint_name)
+            and checkpoint_name != STAGING_DIR
+        ):
             raise InvalidRequestException(
                 f"Invalid checkpoint name {checkpoint_name!r}: use one path segment."
             )
         checkpoint_dir = checkpoint_root_dir / training_run_id / checkpoint_name
         if not exist_ok and checkpoint_dir.exists():
             raise FileExistsError(f"Checkpoint directory already exists: {checkpoint_dir}")
-        # A copy may hard-link these files; an in-place save would rewrite the source too.
-        shutil.rmtree(checkpoint_dir, ignore_errors=True)
         checkpoint_dir.mkdir(parents=True, exist_ok=exist_ok)
         return cls(
             checkpoint_id=checkpoint_name,

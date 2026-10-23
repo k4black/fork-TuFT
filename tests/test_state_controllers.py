@@ -1405,6 +1405,89 @@ async def test_restore_releases_fallback_adapter_when_load_keeps_failing(
 
 
 @pytest.mark.asyncio
+async def test_failed_save_keeps_older_checkpoint_of_that_name(
+    request, tmp_path, monkeypatch
+) -> None:
+    """A save that fails mid-write must not destroy the last completed save of that name."""
+    use_gpu = request.config.getoption("--gpu")
+    state = await _build_state(tmp_path, use_gpu)
+    training = await state.create_model(
+        _create_session(state),
+        model_owner="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=types.LoraConfig(rank=4, train_unembed=False),
+        user_metadata=None,
+    )
+    run_id = training.training_run_id
+    first = await state.save_checkpoint(
+        run_id, user_id="tester", name="ckpt", checkpoint_type="training"
+    )
+    old_metadata = first.metadata_path.read_bytes()
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    original_save_state = backend.save_state
+
+    async def failing_save_state(lora_id, checkpoint_record, optimizer):
+        (checkpoint_record.path / "partial.bin").write_bytes(b"half")
+        raise RuntimeError("simulated actor death")
+
+    monkeypatch.setattr(backend, "save_state", failing_save_state)
+    with pytest.raises(RuntimeError, match="simulated actor death"):
+        await state.save_checkpoint(
+            run_id, user_id="tester", name="ckpt", checkpoint_type="training"
+        )
+
+    assert first.metadata_path.read_bytes() == old_metadata
+    assert not (first.path / "partial.bin").exists()
+    assert not any((tmp_path / run_id / ".staging").iterdir())
+    names = [c.checkpoint_id for c in state.training.disk_checkpoints("*/*/metadata.json")]
+    assert names == ["ckpt"]
+
+    monkeypatch.setattr(backend, "save_state", original_save_state)
+    second = await state.save_checkpoint(
+        run_id, user_id="tester", name="ckpt", checkpoint_type="training"
+    )
+    assert second.path == first.path
+    assert second.metadata.created_at != json.loads(old_metadata)["created_at"]
+    assert not any((tmp_path / run_id / ".staging").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_restore_prefers_training_checkpoint_over_newer_sampler(
+    request, tmp_path, monkeypatch
+) -> None:
+    """A newer sampler save holds no optimizer state, so restart restores the training save."""
+    use_gpu = request.config.getoption("--gpu")
+    state = await _build_state(tmp_path, use_gpu)
+    training = await state.create_model(
+        _create_session(state),
+        model_owner="tester",
+        base_model="Qwen/Qwen3-0.6B",
+        lora_config=types.LoraConfig(rank=4, train_unembed=False),
+        user_metadata=None,
+    )
+    run_id = training.training_run_id
+    trained = await state.save_checkpoint(
+        run_id, user_id="tester", name="trained", checkpoint_type="training"
+    )
+    sampled = await state.save_checkpoint(
+        run_id, user_id="tester", name="sampled", checkpoint_type="sampler"
+    )
+    sampled.created_at = trained.created_at + timedelta(seconds=1)
+    backend = state.training.training_backends["Qwen/Qwen3-0.6B"]
+    loads: list[tuple[str, bool]] = []
+
+    async def recording_load_state(lora_id, checkpoint_record, optimizer):
+        loads.append((checkpoint_record.checkpoint_id, optimizer))
+
+    monkeypatch.setattr(backend, "load_state", recording_load_state)
+
+    restored = await state.training.restore_from_checkpoint(run_id)
+
+    assert restored is trained
+    assert loads == [("trained", True)]
+
+
+@pytest.mark.asyncio
 async def test_rest_client(request, tmp_path) -> None:
     use_gpu = request.config.getoption("--gpu")
     state = await _build_state(tmp_path, use_gpu)
