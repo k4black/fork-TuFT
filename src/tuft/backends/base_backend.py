@@ -3,12 +3,16 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from tinker import types
 
 from ..checkpoints import CheckpointRecord
 from ..config import TRAINING_CAPABILITY, ModelConfig
+
+
+if TYPE_CHECKING:
+    from .sampling_backend import DPSamplingBackend
 
 
 def gpu_request(num_gpus: float) -> float:
@@ -79,6 +83,10 @@ class BaseBackend(ABC):
 class BaseSamplingBackend(BaseBackend):
     """Abstract sampling backend."""
 
+    # Replica fields, owned by DPSamplingBackend: routing state and requests in flight.
+    state: Literal["pending", "serving", "draining", "unavailable"] = "pending"
+    requests: int = 0
+
     @abstractmethod
     async def sample(
         self,
@@ -107,27 +115,36 @@ class BaseSamplingBackend(BaseBackend):
         """Return the vLLM OpenAI API base URL, or None if not available."""
         return None
 
+    async def sleep(self) -> None:  # noqa: B027
+        """Release the GPU for colocate "sleep"; no-op without vLLM."""
+
+    async def wake_up(self) -> None:  # noqa: B027
+        """Take the GPU back after ``sleep``; no-op without vLLM."""
+
     @classmethod
     def create_backend(
         cls, config: ModelConfig, worker_venv_path: Optional[str] = None
-    ) -> "BaseSamplingBackend":
-        """Factory method to create a sampling backend instance.
+    ) -> "DPSamplingBackend":
+        """Factory method: a DPSamplingBackend over ``data_parallel_size`` replicas.
 
-        TUFT_CPU_TEST=1: use DummySamplingBackend (no vLLM, for CPU-only unit tests).
-        data_parallel_size > 1: use DPSamplingBackend (multiple vLLM instances with LB).
+        TUFT_CPU_TEST=1: the replicas are DummySamplingBackend (no vLLM, for CPU-only tests).
         Otherwise: VLLMSamplingBackend (creates Ray/vLLM actor in __init__, may block startup).
         """
+        from ..backends.sampling_backend import (
+            DPSamplingBackend,
+            DummySamplingBackend,
+            VLLMSamplingBackend,
+        )
+
+        n = config.data_parallel_size
         if os.getenv("TUFT_CPU_TEST", "0") == "1":
-            from ..backends.sampling_backend import DummySamplingBackend
-
-            return DummySamplingBackend(config)
-        if config.data_parallel_size > 1:
-            from ..backends.sampling_backend import DPSamplingBackend
-
-            return DPSamplingBackend(config, worker_venv_path=worker_venv_path)
-        from ..backends.sampling_backend import VLLMSamplingBackend
-
-        return VLLMSamplingBackend(config, worker_venv_path=worker_venv_path)
+            replicas: list[BaseSamplingBackend] = [DummySamplingBackend(config) for _ in range(n)]
+        else:
+            replicas = [
+                VLLMSamplingBackend(config, worker_venv_path=worker_venv_path, instance_index=i)
+                for i in range(n)
+            ]
+        return DPSamplingBackend(config, replicas)
 
 
 class BaseTrainingBackend(BaseBackend):

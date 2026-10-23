@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import httpx
@@ -28,6 +28,7 @@ async def proxy_request(
     *,
     user_model_name: str,
     response_id_prefix: str,
+    on_close: Callable[[], None] = lambda: None,
 ) -> JSONResponse | StreamingResponse:
     """Proxy an OpenAI API request to a vLLM backend.
 
@@ -41,6 +42,8 @@ async def proxy_request(
         response_id_prefix: Prefix for the response ID
             (e.g. ``"{session}:sample"``).  The final ID becomes
             ``"{prefix}:{vllm_original_id}"``.
+        on_close: Called once when a returned stream closes. The caller handles
+            every other response.
 
     Returns:
         A JSONResponse (non-streaming) or StreamingResponse (streaming).
@@ -62,7 +65,7 @@ async def proxy_request(
                 error_json = {"error": {"message": error_body.decode()}}
             return JSONResponse(content=error_json, status_code=resp.status_code)
         return StreamingResponse(
-            _stream_proxy(resp, user_model_name, response_id_prefix),
+            _stream_proxy(resp, user_model_name, response_id_prefix, on_close),
             media_type="text/event-stream",
         )
     else:
@@ -93,6 +96,7 @@ async def _stream_proxy(
     resp: httpx.Response,
     user_model_name: str,
     response_id_prefix: str,
+    on_close: Callable[[], None],
 ) -> AsyncIterator[str]:
     """Forward a streaming response, rewriting each SSE chunk."""
     try:
@@ -114,6 +118,7 @@ async def _stream_proxy(
             else:
                 yield f"{line}\n"
     finally:
+        on_close()
         await resp.aclose()
 
 

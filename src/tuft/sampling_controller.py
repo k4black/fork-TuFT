@@ -13,7 +13,7 @@ from opentelemetry.trace import StatusCode
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from tinker import types
 
-from .backends import BaseSamplingBackend
+from .backends import BaseSamplingBackend, DPSamplingBackend
 from .backends.gpu_phase import GpuPhase, use_phase
 from .backends.image_prompt import PromptParts, split_prompt
 from .checkpoints import CheckpointRecord
@@ -89,7 +89,7 @@ class SamplingController:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.sampling_sessions: Dict[str, SamplingSessionRecord] = {}
-        self._base_backends: Dict[str, BaseSamplingBackend] = self._create_backends(
+        self._base_backends: Dict[str, DPSamplingBackend] = self._create_backends(
             config.supported_models
         )
         self.phases: Dict[str, GpuPhase] = {}  # colocate "sleep" models, set by ServerState
@@ -183,27 +183,55 @@ class SamplingController:
                         # adapter rebuild until sampling is enabled again.
                         continue
                     invalid_sessions.append(session_id)
-                    continue
-                adapter_path = Path(record.model_path)
-                if not adapter_path.exists():
-                    invalid_sessions.append(session_id)
-                    continue
-                try:
-                    backend = self._base_backends[record.base_model]
-                    await backend.add_adapter(
-                        lora_id=record.sampling_session_id, adapter_path=adapter_path
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to rebuild adapter for sampling session %s", session_id
-                    )
+                elif not Path(record.model_path).exists():
                     invalid_sessions.append(session_id)
         for session_id in invalid_sessions:
             del self.sampling_sessions[session_id]
             self._delete_session(session_id)
+        for name, backend in self._base_backends.items():
+            for session_id in await self._replay_adapters(backend, name):
+                del self.sampling_sessions[session_id]
+                self._delete_session(session_id)
 
-    def _create_backends(self, model_configs: List[ModelConfig]) -> Dict[str, BaseSamplingBackend]:
-        backends: Dict[str, BaseSamplingBackend] = {}
+    async def _replay_adapters(self, target: BaseSamplingBackend, base_model: str) -> list[str]:
+        """Load the adapter of every session of ``base_model`` on ``target``.
+
+        Returns the session ids whose adapter failed to load. Skips missing adapter dirs.
+        """
+        failed = []
+        for session_id, record in list(self.sampling_sessions.items()):
+            if record.base_model != base_model or not record.model_path:
+                continue
+            adapter_path = Path(record.model_path)
+            if not adapter_path.exists():
+                continue
+            try:
+                await target.add_adapter(
+                    lora_id=record.sampling_session_id, adapter_path=adapter_path
+                )
+            except Exception:
+                logger.exception("Failed to load adapter for sampling session %s", session_id)
+                failed.append(session_id)
+        return failed
+
+    async def add_replica(self, base_model: str, replica: BaseSamplingBackend) -> None:
+        """Start one more sampling replica and route to it once every adapter is loaded.
+
+        On any failure only this replica is discarded; the others keep serving.
+        """
+        backend = self._base_backends[base_model]
+        backend.add(replica)
+        try:
+            await replica.async_init()
+            if failed := await self._replay_adapters(replica, base_model):
+                raise RuntimeError(f"Adapter replay failed for sampling sessions {failed}")
+        except BaseException:
+            await backend.drain(replica)
+            raise
+        replica.state = "serving"
+
+    def _create_backends(self, model_configs: List[ModelConfig]) -> Dict[str, DPSamplingBackend]:
+        backends: Dict[str, DPSamplingBackend] = {}
         # Only sampling-capable models get a backend; a training-only model
         # must not create vLLM/Ray actors or reserve sampling GPU resources.
         for config in model_configs:

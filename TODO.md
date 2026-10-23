@@ -139,6 +139,8 @@ definition, schema) are decided in a design pass when the phase starts.
   dynamic LoRA load and the prompt-logprobs patch; Ray only inside a training worker.
 - [ ] **Drains in the fleet** — sampling drain (stop accepting, wait for in-flight, unload) and
   training drain (see Phase 7) driven by the control plane; a lost worker fails its futures fast.
+  Done: sampling replicas route by fewest in-flight requests, and `DPSamplingBackend.add` /
+  `drain` add or remove one replica at runtime. Open: the admin route that calls them.
 - [ ] **Scaling signals** — per-pool metrics (slot occupancy, queue depth, tokens/s, idle time)
   for an external autoscaler; scale-to-zero only for sampling pools.
 - [ ] **Adapter-aware sampling routing** — route a sample to the worker that already holds the

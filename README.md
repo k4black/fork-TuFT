@@ -410,6 +410,9 @@ you can use the pre-built Docker image.
   Checkpoints hold the optimizer state as one full state dict, so a run restores on another
   GPU count or slot. Without a GPU the worker runs in fp32 under gloo (tests only).
 - Sampling: `tensor_parallel_size` × `data_parallel_size` GPUs per model (vLLM).
+  A request goes to the replica with the fewest in-flight requests. Within a small load margin
+  a conversation stays on the replica that already holds its prompt prefix in the KV cache.
+  The OpenAI proxy loads a LoRA on the chosen replica only.
 - `colocate: true` or `"sleep"`: training and sampling share 1 GPU (HF backend, one model only).
 - Several models in `supported_models`: their GPUs add up.
 - Startup warns when the total, or a `train_gpu_resource`/`infer_gpu_resource` count,
