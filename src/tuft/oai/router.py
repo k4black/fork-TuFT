@@ -8,6 +8,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -203,7 +204,10 @@ def create_oai_router() -> APIRouter:
                     raise UnknownModelException(model_name=resolved.base_model)
 
                 # The replica counts this request until the response, or its stream, ends.
-                replica = backend.acquire()
+                # Turn 2 of a chat extends this string, so it goes to the same prefix cache.
+                replica = backend.acquire(
+                    json.dumps(body.get("messages") or body.get("prompt"), sort_keys=True)
+                )
                 streaming = False
                 try:
                     backend_url = replica.get_openai_api_url()

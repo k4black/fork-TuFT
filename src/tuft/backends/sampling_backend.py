@@ -6,7 +6,8 @@ import os
 import socket
 import threading
 import time
-from collections import Counter
+from collections import Counter, OrderedDict
+from collections.abc import Sequence
 from logging import getLogger
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -636,6 +637,8 @@ class DPSamplingBackend(BaseSamplingBackend):
     def __init__(self, config: ModelConfig, replicas: list[BaseSamplingBackend]) -> None:
         super().__init__(config)
         self._replicas = replicas
+        # Prefix block hashes each replica served, oldest first: a proxy for its KV cache.
+        self._served: dict[BaseSamplingBackend, OrderedDict[int, None]] = {}
         logger.info("DPSamplingBackend: %d replicas for model %s", len(replicas), config.model_name)
 
     async def async_init(self) -> None:
@@ -651,15 +654,38 @@ class DPSamplingBackend(BaseSamplingBackend):
         serving = self._serving()
         return serving[0].get_openai_api_url() if serving else None
 
-    def acquire(self) -> BaseSamplingBackend:
-        """Count one more request on the serving replica with the fewest; ``release`` it after.
+    PREFIX_SLACK = 2  # a prefix match wins only within this many requests of the least loaded
+    PREFIX_LRU_CAP = 100_000
 
+    def acquire(self, prefix: Sequence[int | None] | str | None = None) -> BaseSamplingBackend:
+        """Count one more request on a serving replica; ``release`` it after.
+
+        Load comes first: candidates have at most ``PREFIX_SLACK`` more requests than
+        the least loaded. Among them the replica that served most of the prompt's
+        leading blocks wins, so a conversation stays on its prefix cache.
         No ``await`` here, so two requests cannot both see the same count.
         """
         serving = self._serving()
         if not serving:
             raise ServiceUnavailableException(f"No serving sampling replica for {self.base_model}")
-        replica = min(serving, key=lambda r: r.requests)
+        block = 1024 if isinstance(prefix, str) else 256  # characters or tokens
+        hashes: list[int] = []
+        h = 0
+        for i in range(0, len(prefix or ()) - block + 1, block):
+            h = hash((h, tuple(prefix[i : i + block])))  # type: ignore[index]
+            hashes.append(h)
+        low = min(r.requests for r in serving)
+        candidates = [r for r in serving if r.requests <= low + self.PREFIX_SLACK]
+        lru = [self._served.setdefault(r, OrderedDict()) for r in candidates]
+        hits = [sum(x in seen for x in hashes) for seen in lru]
+        # max() keeps the first of equal keys: most hits, then fewest requests, then list order.
+        i = max(range(len(candidates)), key=lambda i: (hits[i], -candidates[i].requests))
+        for x in hashes:
+            lru[i][x] = None
+            lru[i].move_to_end(x)
+        while len(lru[i]) > self.PREFIX_LRU_CAP:
+            lru[i].popitem(last=False)
+        replica = candidates[i]
         replica.requests += 1
         return replica
 
@@ -688,6 +714,7 @@ class DPSamplingBackend(BaseSamplingBackend):
         except Exception:
             logger.warning("Replica shutdown failed or timed out", exc_info=True)
         self._replicas.remove(replica)
+        self._served.pop(replica, None)
 
     async def sample(
         self,
@@ -699,7 +726,7 @@ class DPSamplingBackend(BaseSamplingBackend):
         lora_id: Optional[str] = None,
         topk_sample_logprobs: int = 0,
     ) -> types.SampleResponse:
-        replica = self.acquire()
+        replica = self.acquire(split_prompt(prompt)[0])
         try:
             return await replica.sample(
                 prompt=prompt,

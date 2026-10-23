@@ -11,6 +11,7 @@ import httpx
 import pytest
 import ray
 from fastapi.testclient import TestClient
+from tinker import types
 
 from tuft.backends.base_backend import BaseSamplingBackend
 from tuft.backends.sampling_backend import DPSamplingBackend, VLLMSamplingBackend
@@ -64,11 +65,44 @@ async def test_routes_to_fewest_in_flight() -> None:
     assert dp.acquire() is a
 
 
+TURN1 = list(range(512))  # two full blocks
+
+
+async def test_prefix_keeps_a_conversation_within_the_slack() -> None:
+    a, b = Stub(), Stub()
+    dp = await _serving(a, b)
+    assert dp.acquire(TURN1) is a
+    assert dp.acquire(TURN1 + [7] * 300) is a  # a has one more request than b
+
+
+async def test_load_beats_prefix_above_the_slack() -> None:
+    a, b = Stub(), Stub()
+    dp = await _serving(a, b)
+    dp.acquire(TURN1)
+    a.requests += dp.PREFIX_SLACK  # a: 3 requests, b: 0
+    assert dp.acquire(TURN1) is b
+
+
+async def test_short_shared_prefix_spreads_by_load() -> None:
+    a, b = Stub(), Stub()
+    dp = await _serving(a, b)
+    assert dp.acquire([1] * 100 + [2] * 200) is a
+    assert dp.acquire([1] * 100 + [3] * 200) is b
+
+
+async def test_prefix_lru_evicts_the_oldest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(DPSamplingBackend, "PREFIX_LRU_CAP", 1)
+    a = Stub()
+    dp = await _serving(a)
+    dp.acquire(TURN1)
+    assert list(dp._served[a]) == [hash((hash((0, tuple(TURN1[:256]))), tuple(TURN1[256:])))]
+
+
 async def test_failed_sample_releases_the_replica() -> None:
     a = Stub()
     dp = await _serving(a)
     with pytest.raises(RuntimeError):
-        await dp.sample(None, 1, None)  # type: ignore[arg-type]
+        await dp.sample(types.ModelInput.from_ints([1]), 1, types.SamplingParams())
     assert a.requests == 0
 
 
