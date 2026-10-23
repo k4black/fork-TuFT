@@ -69,7 +69,7 @@ def _explicit_target_tokens(datum: types.Datum, device: torch.device | str) -> t
     return value.to_torch().to(device=device, dtype=torch.long).reshape(-1)
 
 
-def build_base_model(config: FSDPModelConfig) -> Any:
+def build_base_model(config: FSDPModelConfig, dtype: torch.dtype = torch.bfloat16) -> Any:
     """Load a single CPU copy of the base model and enable checkpointed training."""
 
     override = dict(config.override_config)
@@ -83,7 +83,7 @@ def build_base_model(config: FSDPModelConfig) -> Any:
 
     model_kwargs: dict[str, Any] = {
         "config": hf_config,
-        "dtype": torch.bfloat16,
+        "dtype": dtype,
         "low_cpu_mem_usage": True,
         "trust_remote_code": config.trust_remote_code,
     }

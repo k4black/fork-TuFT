@@ -19,6 +19,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -607,6 +608,176 @@ def test_seeded_reinit_shards_one_lora_a_across_ranks(tmp_path):
     expected = torch.empty(5, 16)
     torch.nn.init.kaiming_uniform_(expected, a=5**0.5, generator=torch.Generator().manual_seed(7))
     assert rank0.equal(expected) and rank1.equal(expected)
+
+
+@pytest.mark.asyncio
+async def test_unseeded_create_adapter_sends_one_seed_to_every_rank(monkeypatch):
+    """Without a request seed, the leader and the other ranks get the same generated seed."""
+    import ray
+
+    from tuft.backends.fsdp_training_backend import FSDPTrainingBackend
+
+    config = ModelConfig(
+        model_name="test",
+        model_path=Path("/tmp/qwen-model"),
+        max_model_len=1024,
+        max_lora_rank=8,
+        training_backend="fsdp",
+    )
+    backend = FSDPTrainingBackend(config)
+    leader, follower = MagicMock(), MagicMock()
+    leader.allocate_slot.remote.return_value = "adapter_r8_0"
+    backend._actors = [leader, follower]
+    backend._world_size = 2
+    monkeypatch.setattr(ray, "get", lambda ref: ref)
+
+    await backend.create_adapter("run", types.LoraConfig(rank=8))
+
+    (_, seed), _ = leader.allocate_slot.remote.call_args
+    follower.reserve_slot.remote.assert_called_once_with("adapter_r8_0", seed)
+    assert seed is not None
+
+
+# A real MultiAdapterFSDPWorker on CPU over gloo, with a tiny Qwen3 model.
+_TINY_WORKER_CONFIG = {
+    "max_model_len": 64,
+    "slot_config": {"rank_slots": {4: 2}, "target_modules": ["q_proj", "v_proj"]},
+}
+
+
+def _tiny_model_dir(tmp_path: Path) -> str:
+    import torch
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    torch.manual_seed(0)
+    model = Qwen3ForCausalLM(
+        Qwen3Config(
+            vocab_size=32,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=8,
+        )
+    )
+    model.save_pretrained(tmp_path / "model")
+    return str(tmp_path / "model")
+
+
+def _tiny_batch() -> list[types.Datum]:
+    rows = ([1, 2, 3, 4], [5, 6, 7], [8, 9, 10, 11, 12], [13, 14])
+    return [
+        types.Datum(
+            model_input=types.ModelInput.from_ints(tokens=list(tokens)),
+            loss_fn_inputs={
+                # The last label rolls in from the next row, so it carries no weight.
+                "weights": types.TensorData(data=[1.0] * (len(tokens) - 1) + [0.0], dtype="float32")
+            },
+        )
+        for tokens in rows
+    ]
+
+
+def _tiny_worker(rank: int, world_size: int, port: int, model_dir: str) -> Any:
+    from tuft.backends.fsdp_training_backend import FSDPWorkerActor
+
+    actor = FSDPWorkerActor(rank, world_size, {**_TINY_WORKER_CONFIG, "model_path": model_dir})
+    actor.init_dist("127.0.0.1", port)
+    actor.build_worker()
+    assert actor.device == "cpu"
+    return actor._worker
+
+
+def _adapter_tensors(worker: Any, name: str, grads: bool = False) -> dict:
+    """Full (gathered) LoRA weights or gradients by canonical key. Collective."""
+    from tuft.backends.fsdp_training_backend import _canonical_lora_key
+
+    return {
+        _canonical_lora_key(n): (p.grad if grads else p).full_tensor()
+        for n, p in worker.module.named_parameters()
+        if f".{name}." in n
+    }
+
+
+def _train_step(worker: Any, name: str, rows: list[types.Datum]) -> dict:
+    """One forward/backward and AdamW step. Returns the gradients before the step."""
+    worker.forward_backward(name, rows, "cross_entropy", None, micro_batch_size=len(rows))
+    grads = _adapter_tensors(worker, name, grads=True)
+    worker.optim_step(name, learning_rate=0.05)
+    return grads
+
+
+def _two_rank_save(rank: int, port: int, model_dir: str, out: str) -> None:
+    import torch
+    import torch.distributed as dist
+
+    from tuft.backends.fsdp_training_backend import _shard_list
+
+    worker = _tiny_worker(rank, 2, port, model_dir)
+    shard = _shard_list(_tiny_batch(), 2)[rank]
+    name = worker.allocate_slot(4, seed=0)
+    worker._create_optimizer_for_adapter(name)
+    worker.save_checkpoint(name, f"{out}/empty")
+    # Saving an empty state must not run DCP's zero-lr initialising step.
+    assert not worker._adapters[name].optimizer.state
+    grads = _train_step(worker, name, shard)
+    worker.save_checkpoint(name, f"{out}/ckpt")
+    _train_step(worker, name, shard)
+    weights = _adapter_tensors(worker, name)
+    if rank == 0:
+        torch.save({"grads": grads, "weights": weights}, f"{out}/two_rank.pt")
+    dist.destroy_process_group()
+
+
+def _one_rank_load(rank: int, port: int, model_dir: str, out: str) -> None:
+    import torch
+    import torch.distributed as dist
+
+    worker = _tiny_worker(rank, 1, port, model_dir)
+    data = _tiny_batch()
+    reference = worker.allocate_slot(4, seed=0)
+    grads = _train_step(worker, reference, data)
+
+    target = worker.allocate_slot(4)
+    assert target != reference
+    _train_step(worker, target, data)
+    worker.load_checkpoint(target, f"{out}/empty", ["q_proj", "v_proj"])
+    info = worker._adapters[target]
+    assert info.optimizer is None and info.step_count == 0
+
+    worker.load_checkpoint(target, f"{out}/ckpt", ["q_proj", "v_proj"])
+    assert worker._adapters[target].step_count == 1
+    _train_step(worker, target, data)
+    weights = _adapter_tensors(worker, target)
+    torch.save({"grads": grads, "weights": weights}, f"{out}/one_rank.pt")
+    dist.destroy_process_group()
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_real_worker_on_cpu_two_ranks_match_one_rank_and_restore_on_one(tmp_path):
+    """Two gloo ranks give single-process gradients; their checkpoint resumes on one rank."""
+    import torch
+    import torch.multiprocessing as mp
+
+    model_dir = _tiny_model_dir(tmp_path)
+    out = str(tmp_path)
+    mp.spawn(_two_rank_save, args=(_free_port(), model_dir, out), nprocs=2, join=True)
+    mp.spawn(_one_rank_load, args=(_free_port(), model_dir, out), nprocs=1, join=True)
+
+    two, one = torch.load(tmp_path / "two_rank.pt"), torch.load(tmp_path / "one_rank.pt")
+    assert two["grads"].keys() == one["grads"].keys()
+    assert any(g.abs().sum() > 0 for g in one["grads"].values())
+    for key in one["grads"]:
+        torch.testing.assert_close(two["grads"][key], one["grads"][key])
+        torch.testing.assert_close(two["weights"][key], one["weights"][key])
 
 
 def test_worker_load_checkpoint_reads_imported_safetensors(tmp_path):

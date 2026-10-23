@@ -6,9 +6,11 @@ import asyncio
 import logging
 import math
 import os
+import random
 import re
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +18,11 @@ import torch
 from packaging import version
 from peft import LoraConfig, TaskType, get_peft_model
 from tinker import types
+from torch.distributed.checkpoint.state_dict import (
+    StateDictOptions,
+    get_optimizer_state_dict,
+    set_optimizer_state_dict,
+)
 from torch.distributed.tensor import DTensor
 
 
@@ -79,6 +86,17 @@ def _canonical_lora_key(key: str) -> str:
     canonical ('...lora_A.weight') is returned unchanged.
     """
     return _LORA_AB_NAME_RE.sub(r".lora_\1.weight", key)
+
+
+def _rekey_optimizer_state(osd: dict, rekey: Any) -> dict:
+    """Rename the parameter keys of a full DCP optimizer state dict."""
+    return {
+        "state": {rekey(k): v for k, v in osd["state"].items()},
+        "param_groups": [
+            {**group, "params": [rekey(p) for p in group["params"]]}
+            for group in osd["param_groups"]
+        ],
+    }
 
 
 def _copy_full_tensor_into_dtensor(
@@ -450,9 +468,12 @@ class MultiAdapterFSDPWorker:
         self,
         model_config: FSDPModelConfig,
         slot_config: SlotPoolConfig,
+        device: str = "cuda",
     ):
         self.model_config = model_config
         self.slot_config = slot_config
+        # "cuda" trains in bf16 under NCCL. "cpu" trains in fp32 under gloo (tests).
+        self.device = device
         self.module: Any = None
         self._adapters: Dict[str, AdapterInfo] = {}
         self._adapters_by_rank: Dict[int, List[str]] = {}
@@ -473,7 +494,12 @@ class MultiAdapterFSDPWorker:
 
         if self._initialized:
             return
-        base_model = build_base_model(self.model_config)
+        on_cuda = self.device == "cuda"
+        model_config = self.model_config
+        if not on_cuda and "flash" in (model_config.attn_implementation or ""):
+            model_config = replace(model_config, attn_implementation="sdpa")
+        dtype = torch.bfloat16 if on_cuda else torch.float32
+        base_model = build_base_model(model_config, dtype)
 
         # PEFT silently skips target names that match nothing, so a mislabeled
         # model would get slots that train fewer modules than they record.
@@ -537,22 +563,25 @@ class MultiAdapterFSDPWorker:
 
         first = next(iter(self._adapters))
         peft_model.set_adapter(first)
-        model_bf16 = peft_model.to(torch.bfloat16)
-        model_cuda = model_bf16.cuda()
+        model = peft_model.to(dtype).to(self.device)
 
         # FSDP v2: fully_shard (same as fsdp_standalone_reference.py)
-        mp_policy = MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float32,
-            cast_forward_inputs=True,
+        mp_policy = (
+            MixedPrecisionPolicy(
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.float32,
+                cast_forward_inputs=True,
+            )
+            if on_cuda
+            else MixedPrecisionPolicy()
         )
         import torch.distributed as dist
         from torch.distributed.device_mesh import init_device_mesh
 
-        world_size = dist.get_world_size() if dist.is_initialized() else 1
-        device_mesh = init_device_mesh("cuda", (world_size,)) if world_size > 1 else None
+        # The caller owns the process group. One rank gets a size-one mesh.
+        device_mesh = init_device_mesh(self.device, (dist.get_world_size(),))
 
-        transformer_layer_cls_names = getattr(model_cuda, "_no_split_modules", None) or [
+        transformer_layer_cls_names = getattr(model, "_no_split_modules", None) or [
             "DecoderLayer",
             "TransformerBlock",
             "LlamaDecoderLayer",
@@ -560,13 +589,13 @@ class MultiAdapterFSDPWorker:
             "Qwen3DecoderLayer",
         ]
         wrapped_modules = []
-        for _name, module in model_cuda.named_modules():
+        for _name, module in model.named_modules():
             if module.__class__.__name__ in transformer_layer_cls_names:
                 wrapped_modules.append(module)
         for module in wrapped_modules:
             fully_shard(module, mesh=device_mesh, mp_policy=mp_policy)
-        fully_shard(model_cuda, mesh=device_mesh, mp_policy=mp_policy)
-        self.module = model_cuda
+        fully_shard(model, mesh=device_mesh, mp_policy=mp_policy)
+        self.module = model
         self._create_optimizer_for_adapter(first)
         self._initialized = True
 
@@ -760,14 +789,28 @@ class MultiAdapterFSDPWorker:
                 shutil.move(str(item), str(dest))
             lora_subdir.rmdir()
 
+        # Every rank joins the DCP gather. Only rank 0 receives and writes the full state.
+        opt_payload = None
+        if optimizer:
+            info = self._adapters[adapter_name]
+            opt_state = None
+            # Empty state stays None: DCP would fill it with a zero-lr step.
+            if info.optimizer is not None and info.optimizer.state:
+                full = get_optimizer_state_dict(
+                    self.module,
+                    info.optimizer,
+                    options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+                )
+                # cpu_offload gathers onto rank 0 only. Other ranks get an empty dict.
+                if is_rank_0:
+                    opt_state = _rekey_optimizer_state(full, _canonical_lora_key)
+            opt_payload = {"optimizer": opt_state, "step_count": info.step_count}
+
         if is_rank_0:
             # 1) Internal format for FSDP load_state
             torch.save(state, path / "adapter.pt")
-
-            if optimizer:
-                info = self._adapters[adapter_name]
-                if info.optimizer is not None:
-                    torch.save(info.optimizer.state_dict(), path / "optimizer.pt")
+            if opt_payload is not None:
+                torch.save(opt_payload, path / "optimizer.pt")
 
             # 2) PEFT format (adapter_config.json, adapter_model.safetensors)
             # so sampling/VLLM can load
@@ -893,13 +936,26 @@ class MultiAdapterFSDPWorker:
                 f"load_checkpoint matched 0 parameters for adapter '{adapter_name}' from "
                 f"{path / 'adapter.pt'}; the checkpoint key layout is incompatible."
             )
-        if optimizer:
-            opt_path = path / "optimizer.pt"
-            if opt_path.exists():
-                if self._adapters[adapter_name].optimizer is None:
-                    self._create_optimizer_for_adapter(adapter_name)
-                opt_state = torch.load(opt_path, map_location="cpu", weights_only=True)
-                self._adapters[adapter_name].optimizer.load_state_dict(opt_state)
+        opt_path = path / "optimizer.pt"
+        if optimizer and opt_path.exists():
+            saved = torch.load(opt_path, map_location="cpu", weights_only=True)
+            info = self._adapters[adapter_name]
+            # Start from a fresh AdamW. An empty saved state stays empty.
+            info.optimizer = None
+            info.step_count = saved["step_count"]
+            if saved["optimizer"] is not None:
+                self._create_optimizer_for_adapter(adapter_name)
+                current = {
+                    _canonical_lora_key(name): name
+                    for name, _ in self.module.named_parameters()
+                    if f".{adapter_name}." in name
+                }
+                set_optimizer_state_dict(
+                    self.module,
+                    info.optimizer,
+                    _rekey_optimizer_state(saved["optimizer"], current.__getitem__),
+                    options=StateDictOptions(full_state_dict=True),
+                )
 
     def allocate_slot(self, rank: int, seed: int | None = None) -> Optional[str]:
         """Allocate an unused slot for rank, reset it to a fresh state, return name."""
@@ -942,6 +998,7 @@ class FSDPWorkerActor:
         self.rank = rank
         self.world_size = world_size
         self.config_dict = config_dict
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._worker: Optional[MultiAdapterFSDPWorker] = None
         self._dist_initialized = False
         self.logger = logging.getLogger(f"{__name__}.FSDPWorkerActor")
@@ -967,13 +1024,15 @@ class FSDPWorkerActor:
         # global rank (self.rank) here — rank>=1 would select a nonexistent
         # local device and fail before NCCL init. Exactly one device is visible,
         # so always pin index 0.
-        if torch.cuda.is_available():
+        if self.device == "cuda":
             torch.cuda.set_device(0)
+        # CPU torch rejects a backend that names NCCL, so CPU workers use gloo only.
         dist.init_process_group(
-            backend="nccl" if torch.cuda.is_available() else "gloo",
+            backend="nccl" if self.device == "cuda" else "gloo",
             rank=self.rank,
             world_size=self.world_size,
             init_method=f"tcp://{master_addr}:{master_port}",
+            timeout=timedelta(seconds=600),
         )
         self._dist_initialized = True
 
@@ -984,6 +1043,7 @@ class FSDPWorkerActor:
         self._worker = MultiAdapterFSDPWorker(
             model_config=model_config,
             slot_config=slot_config,
+            device=self.device,
         )
         logging.info("[SERVER][Actor] build_worker 调用 initialize 前 rank=%s", self.rank)
         self._worker.initialize()
@@ -1189,6 +1249,7 @@ class FSDPTrainingBackend(BaseTrainingBackend):
             self._worker = MultiAdapterFSDPWorker(
                 model_config=model_config,
                 slot_config=slot_config,
+                device="cuda" if torch.cuda.is_available() else "cpu",
             )
             try:
                 await asyncio.to_thread(self._worker.initialize)
@@ -1363,7 +1424,8 @@ class FSDPTrainingBackend(BaseTrainingBackend):
     async def create_adapter(self, lora_id: str, lora_config: types.LoraConfig) -> None:
         self._validate_lora_config(lora_config)
         rank = getattr(lora_config, "rank", 8)
-        seed = lora_config.seed
+        # One seed for every rank, so all replicas start from the same LoRA weights.
+        seed = lora_config.seed if lora_config.seed is not None else random.randrange(2**63)
         if rank not in self._slot_config.rank_slots:
             raise InvalidRequestException(
                 f"FSDP LoRA rank {rank} is not configured. This server preallocates slots "
