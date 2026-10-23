@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  VLLM_CPU_WHEEL: https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0+cpu-cp38-abi3-manylinux_2_34_x86_64.whl
+  VLLM_CPU_WHEEL: https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0+cpu-cp38-abi3-manylinux_2_39_x86_64.whl
   VLLM_CPU_KVCACHE_SPACE: '1'
   RAY_ENABLE_UV_RUN_RUNTIME_ENV: '0'
   TUFT_TINY_MODEL: /tmp/tiny-qwen3
@@ -32,7 +32,7 @@ jobs:
           key: hf-${{ github.job }}-v1
 
       - name: Install server with the vLLM CPU wheel
-        # uv.lock is gitignored, so resolve from pyproject; vllm==0.28.0 and
+        # uv.lock is gitignored, so resolve from pyproject; vllm==0.32.0 and
         # torch==2.13.0 accept the +cpu local versions.
         run: |
           uv venv --python 3.12

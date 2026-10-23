@@ -320,12 +320,12 @@ Session lifecycle: `ServiceClient.close()` (`POST /api/v1/sessions/{id}/finish`)
 
 ### CPU integration tests
 
-The `Integration tests (CPU)` workflow runs a real server without a GPU: the HF training backend and the vLLM `0.28.0+cpu` wheel on a tiny random Qwen3 with the real Qwen3 tokenizer. Run it locally on Linux x86_64:
+The `Integration tests (CPU)` workflow runs a real server without a GPU: the HF training backend and the vLLM `0.32.0+cpu` wheel on a tiny random Qwen3 with the real Qwen3 tokenizer. Run it locally on Linux x86_64:
 
 ```bash
 uv venv --python 3.12
 uv pip install --torch-backend cpu -e ".[dev]" \
-  https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0+cpu-cp38-abi3-manylinux_2_34_x86_64.whl
+  https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0+cpu-cp38-abi3-manylinux_2_39_x86_64.whl
 uv pip uninstall torchcodec
 export TUFT_TINY_MODEL=/tmp/tiny-qwen3 VLLM_CPU_KVCACHE_SPACE=1 TUFT_NO_GPU=1
 .venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
@@ -358,7 +358,7 @@ you can use the pre-built Docker image.
 
     ```bash
     docker build -f docker/Dockerfile -t tuft:cu13 .
-    docker build -f docker/Dockerfile -t tuft:cu12 --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.28.0-cu129 .
+    docker build -f docker/Dockerfile -t tuft:cu12 --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.32.0-cu129 .
     ```
 
 2. Run the Docker container and start the TuFT server on port 10610:

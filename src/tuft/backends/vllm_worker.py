@@ -153,7 +153,7 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
 
             # Compute prompt logprobs.
             logprobs = self.sampler.compute_logprobs(logits)
-            token_ids, logprobs, ranks, _ = self.sampler.gather_logprobs(
+            token_ids, logprobs, ranks, *_ = self.sampler.gather_logprobs(
                 logprobs, num_prompt_logprobs, tgt_token_ids
             )
 
@@ -181,7 +181,7 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
         )
     model_runner._get_prompt_logprobs_dict = MethodType(_get_prompt_logprobs_dict_v21, model_runner)
 
-    # vLLM 0.28 runs a padded EAGLE/MTP drafter before prompt-logprob bookkeeping and its
+    # vLLM 0.28 to 0.32 run a padded EAGLE/MTP drafter before prompt-logprob bookkeeping and its
     # CUDA graphs share the target's memory pool, so the target hidden states are
     # overwritten first (vllm-project/vllm#53488). Snapshot them before the drafter runs.
     propose = model_runner.propose_draft_token_ids

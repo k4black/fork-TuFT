@@ -19,8 +19,8 @@ Two accommodations are required to run inside a Ray actor:
 
 MAINTENANCE NOTE: this embedding recipe touches vLLM internals that have
 historically churned across minor releases (0.12 / 0.13 / 0.17 / 0.22 / 0.23
-all moved or renamed pieces of it). The imports below are valid for the vLLM
-range pinned in pyproject.toml (>=0.19.1,<=0.23.0); revisit this module when
+all moved or renamed pieces of it). The imports below are validated against
+the vLLM release pinned in pyproject.toml (vllm 0.32.0); revisit this module when
 bumping the pin. See docs/sphinx_doc/source/development/vllm-backend.md.
 """
 
@@ -30,14 +30,14 @@ import logging
 from typing import Optional
 
 import vllm.envs as envs
-from vllm.entrypoints.launcher import serve_http
-from vllm.entrypoints.openai.api_server import (
-    build_app,
+from vllm.entrypoints.launchers.api_server.app_state import init_app_state
+from vllm.entrypoints.launchers.app import build_app
+from vllm.entrypoints.launchers.cli_args import make_arg_parser
+from vllm.entrypoints.launchers.launcher import (
     create_server_socket,
-    init_app_state,
+    serve_http,
     validate_api_server_args,
 )
-from vllm.entrypoints.openai.cli_args import make_arg_parser
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 from vllm.utils.network_utils import is_valid_ipv6_address
 from vllm.utils.system_utils import set_ulimit
@@ -99,10 +99,7 @@ async def run_api_server(
     # Bind the port before serving to avoid race conditions with Ray
     # (https://github.com/vllm-project/vllm/issues/8204).
     sock_addr = (args.host or "", args.port)
-    try:
-        sock = create_server_socket(sock_addr, reuse_port=False)  # type: ignore[call-arg]
-    except TypeError:
-        sock = create_server_socket(sock_addr)  # pyright: ignore[reportCallIssue]
+    sock = create_server_socket(sock_addr, reuse_port=False)
 
     # Avoid uvicorn dropping requests when many are active concurrently.
     set_ulimit()

@@ -164,7 +164,7 @@ class ModelConfig(BaseModel):
     # If None, transformers picks its own default (usually "sdpa").
     attn_implementation: str | None = None
     # Quantization method for the sampling (vLLM) engine.
-    # Supported values: "fp8", "awq", "gptq", "bitsandbytes", etc.
+    # Supported values: "fp8_per_tensor", "awq", "gptq", etc.
     # If None, no quantization is applied (model runs in dtype as-is).
     quantization: str | None = None
 
