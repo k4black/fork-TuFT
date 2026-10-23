@@ -428,6 +428,8 @@ docker pull k4black/tuft-infer:latest       # or :latest-cu12, :0.3.0, :dev
 
 - HF training (`training_backend: hf`): 1 GPU per model.
 - FSDP training (`training_backend: fsdp`, `fsdp_num_gpus: N`): N GPUs, parameters fully sharded.
+  Checkpoints hold the optimizer state as one full state dict, so a run restores on another
+  GPU count or slot. Without a GPU the worker runs in fp32 under gloo (tests only).
 - Sampling: `tensor_parallel_size` × `data_parallel_size` GPUs per model (vLLM).
 - `colocate: true` or `"sleep"`: training and sampling share 1 GPU (HF backend, one model only).
 - Several models in `supported_models`: their GPUs add up.
