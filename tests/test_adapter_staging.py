@@ -96,7 +96,7 @@ def _backend(
 
     statuses = statuses or {}
 
-    # The server side must run without vLLM (the tuft-train image has none).
+    # The server process must import no vLLM.
     monkeypatch.setitem(sys.modules, "vllm", None)
 
     class _FakeClient:

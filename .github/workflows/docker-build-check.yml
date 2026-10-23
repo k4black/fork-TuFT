@@ -1,7 +1,7 @@
 name: Docker Build and Publish
 
-# Pull requests build and smoke-test only. Pushes to main publish :dev tags and
-# published releases publish version and :latest tags to docker.io/k4black.
+# Builds docker/Dockerfile for CUDA 12 and 13. Pull requests build only.
+# main -> :dev, releases -> :<version> and :latest, manual runs -> :branch-<name>.
 on:
   push:
     branches: [main]
@@ -11,8 +11,6 @@ on:
     paths:
       - 'docker/**'
       - '.dockerignore'
-      - 'scripts/install.sh'
-      - 'scripts/install_flash_attn.py'
       - 'scripts/verify_runtime_versions.py'
       - 'pyproject.toml'
       - '.github/workflows/docker-build-check.yml'
@@ -31,36 +29,23 @@ jobs:
     name: Build Docker (${{ matrix.variant }})
     runs-on: ubuntu-latest
     env:
-      PUBLISH: ${{ github.event_name == 'push' || github.event_name == 'release' }}
+      PUBLISH: ${{ github.event_name == 'push' || github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # Published as docker.io/k4black/<image>:<name><suffix>; the default
           # variant also gets the bare <name> tag.
-          - variant: train-cu12
-            image: tuft-train
+          - variant: cu12
+            image: tuft
             suffix: -cu12
-            dockerfile: docker/Dockerfile.train
-            build-args: |
-              CUDA_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
-              TORCH_BACKEND=cu129
-          - variant: train-cu13
-            image: tuft-train
-            suffix: -cu13
-            default: true
-            dockerfile: docker/Dockerfile.train
-            build-args: ''
-          - variant: infer-cu12
-            image: tuft-infer
-            suffix: -cu12
-            dockerfile: docker/Dockerfile.infer
+            dockerfile: docker/Dockerfile
             build-args: VLLM_IMAGE=vllm/vllm-openai:v0.28.0-cu129
-          - variant: infer-cu13
-            image: tuft-infer
+          - variant: cu13
+            image: tuft
             suffix: -cu13
             default: true
-            dockerfile: docker/Dockerfile.infer
+            dockerfile: docker/Dockerfile
             build-args: ''
     steps:
       - name: Checkout code
@@ -80,8 +65,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # release v0.3.0 -> 0.3.0 and latest (not for pre-releases); main -> dev;
-      # pull requests build under a local tag and push nothing.
+      # Pull requests build under a local tag and push nothing.
       - name: Compute tags
         id: tags
         env:
@@ -93,6 +77,7 @@ jobs:
           case "$GITHUB_EVENT_NAME" in
             release) names="${GITHUB_REF_NAME#v}"; [ "$PRERELEASE" = true ] || names="$names latest" ;;
             push) names=dev ;;
+            workflow_dispatch) names="branch-$(printf %s "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9_.-' -)" ;;
             *) echo "tags=tuft-test:${{ matrix.variant }}" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
           tags=""
@@ -109,7 +94,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # The smoke test runs as the Dockerfiles' last RUN, so nothing is loaded
+      # The smoke test runs as the Dockerfile's last RUN, so nothing is loaded
       # into the local daemon. Layers come from the published :dev image; only
       # publishing runs write that (inline) cache.
       - name: Build Docker Image (${{ matrix.variant }})

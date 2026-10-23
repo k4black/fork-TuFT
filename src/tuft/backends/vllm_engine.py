@@ -95,8 +95,7 @@ IMAGE_DECODE_ERROR = "ImageChunk data is not a decodable image"
 def _plain_output(output: Any) -> SimpleNamespace:
     """Copy the ``RequestOutput`` fields ``_build_sample_response`` reads into builtins.
 
-    Ray unpickles the return value on the TuFT server, which has no vLLM
-    (tuft-train image).
+    Ray unpickles the return value on the TuFT server, which imports no vLLM.
     """
 
     def logprobs(positions: Any) -> Optional[list]:
@@ -296,7 +295,7 @@ class VLLMEngine:
     def _lora_request(lora: Any) -> Any:
         """vLLM's LoRARequest from a ``(lora_int_id, lora_name, lora_path)`` tuple.
 
-        Built on the engine node, so the TuFT server needs no vLLM (tuft-train image).
+        Built on the engine node, so the TuFT server process imports no vLLM.
         """
         if lora is None:
             return None

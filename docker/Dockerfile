@@ -1,52 +1,44 @@
-# This Dockerfile sets up a TuFT environment using uv.
-# Build and run the docker image with the following command:
+# TuFT on the official vLLM image: vLLM, the HF and FSDP trainers and flash-attn.
+# torch and vLLM stay as the base ships them; keep VLLM_IMAGE in step with the
+# vllm pin in pyproject.toml (the constraints below fail the build on drift).
 #
-# cd <TuFT root dir>
-# docker build -f docker/Dockerfile -t tuft:latest .
-# docker run -it --gpus all --shm-size="128g" --rm -v $PWD:/workspace -v <host_dir>:/data tuft:latest
-#
-# Note:
-# This Dockerfile uses 'uv' to create a virtual environment for better package management.
-# The uv virtual environment is created at `/root/.tuft/venv`, use `source /root/.tuft/venv/bin/activate` to activate it.
-# Make sure to use `uv pip` to install packages within the virtual environment.
+#   docker build -f docker/Dockerfile -t tuft .
+#   docker build -f docker/Dockerfile -t tuft:cu12 --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.28.0-cu129 .
+#   docker run --gpus all --rm -p 10610:10610 -v <host_dir>:/data \
+#       --entrypoint tuft tuft launch --port 10610 --config /data/tuft_config.yaml
+ARG VLLM_IMAGE=vllm/vllm-openai:v0.28.0
+FROM ${VLLM_IMAGE}
 
-# torch 2.11 and vLLM 0.24 use the CUDA 13.0 wheel ABI. Keep the system
-# toolkit aligned so optional compiled kernels can also resolve libnvrtc.so.13.
-FROM nvcr.io/nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04
+COPY --from=ghcr.io/astral-sh/uv:0.9.21 /uv /bin/uv
 
-WORKDIR /workspace
+# Dependencies first, source last, so source edits keep this layer cached.
+COPY ./pyproject.toml /opt/tuft/
+RUN pip3 list --format=freeze | grep -iE '^(torch|vllm|triton)==' \
+        > /tmp/base-pins.txt \
+    && uv pip install --system --no-cache --constraints /tmp/base-pins.txt \
+        -r /opt/tuft/pyproject.toml --extra backend --extra persistence
 
-RUN chmod 1777 /tmp && apt update && apt install -y --no-install-recommends \
-    build-essential \
-    curl git wget vim tmux net-tools \
-    python3 python3-pip python3-dev python3-packaging python3-venv \
-    libomp-dev infiniband-diags libibverbs-dev librdmacm-dev rdma-core perftest \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
-    && ln -sf /usr/bin/pip3 /usr/bin/pip
+# flash-attn from a pinned prebuilt wheel; restore vLLM's nccl afterwards.
+RUN set -eu; \
+    nccl="$(pip3 list --format=freeze | grep -iE '^nvidia-nccl-cu[0-9]+==' || true)"; \
+    case "$(python3 -c 'import torch; print(torch.version.cuda)')" in \
+      12.*) cuda=cu126; sha=41806f85fae421e0b0e70edde3121fd7126126aeba610fefa5d1b6cff88197af ;; \
+      13.*) cuda=cu130; sha=c65d762d24b7dd1ea8dbd9f5a98708fa8abbfd8f33f46bfc6123e76f1e174d3f ;; \
+      *) echo "no pinned flash-attn wheel for this CUDA"; exit 1 ;; \
+    esac; \
+    whl="flash_attn-2.8.3+${cuda}torch2.13-cp312-cp312-linux_x86_64.whl"; \
+    curl -fsSL -o "/tmp/$whl" \
+      "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/$(echo "$whl" | sed 's/+/%2B/')"; \
+    echo "$sha  /tmp/$whl" | sha256sum -c -; \
+    uv pip install --system --no-cache --constraints /tmp/base-pins.txt \
+        "/tmp/$whl" "fla-core>=0.5.0" "flash-linear-attention>=0.4.2"; \
+    [ -z "$nccl" ] || uv pip install --system --no-cache --no-deps "$nccl"; \
+    rm "/tmp/$whl"; \
+    python3 -c "import flash_attn; print('flash_attn', flash_attn.__version__)"
 
-ENV VIRTUAL_ENV=/root/.tuft/venv
-
-# copy the TuFT dir into the workspace
-COPY ./pyproject.toml .
-COPY ./LICENSE .
-COPY ./README.md .
-COPY ./src ./src
-COPY ./scripts ./scripts
-
-#  Uncomment the following line if you want to use AliCloud Mirror to speed up pip install
-# ENV UV_DEFAULT_INDEX=http://mirrors.cloud.aliyuncs.com/pypi/simple/
-
-# Uncomment the following line to use a Hugging Face mirror if you have network connection problem with Hugging Face
-# ENV HF_ENDPOINT=https://hf-mirror.com
-
-# Install
-RUN bash ./scripts/install.sh --local-source /workspace \
-    && . $HOME/.local/bin/env \
-    && . /root/.tuft/venv/bin/activate \
-    && uv pip install .[dev] \
-    && uv pip install "fla-core>=0.5.0" "flash-linear-attention>=0.4.2" || true \
-    && python scripts/verify_runtime_versions.py
-
-ENTRYPOINT ["/bin/bash", "-c", "source ${VIRTUAL_ENV}/bin/activate && exec \"$@\"", "--"]
-CMD ["bash"]
+COPY ./scripts/verify_runtime_versions.py /opt/tuft/scripts/
+COPY ./LICENSE ./README.md /opt/tuft/
+COPY ./src /opt/tuft/src
+RUN uv pip install --system --no-cache --no-deps /opt/tuft \
+    && python3 /opt/tuft/scripts/verify_runtime_versions.py \
+    && python3 -c "from tuft.backends.vllm_worker import TuFTGPUWorker; print('smoke OK')"
