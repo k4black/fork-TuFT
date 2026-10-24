@@ -154,7 +154,7 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
                 prompt_alt_tokens_k=2,
             ).result(timeout=TIMEOUT)
             assert drawn.prompt_alt_tokens is not None and drawn.topk_prompt_logprobs is not None
-            top1 = [row[0] for row in drawn.topk_prompt_logprobs[1:]]
+            top1 = [row[0] for row in drawn.topk_prompt_logprobs[1:] if row]
             tokens = drawn.prompt_alt_tokens.tokens.to_numpy().tolist()
             assert tokens == [[tid, tid] for tid, _ in top1]
             assert drawn.prompt_alt_tokens.logprobs.data == pytest.approx(
