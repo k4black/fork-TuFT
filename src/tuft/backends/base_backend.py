@@ -86,6 +86,7 @@ class BaseSamplingBackend(BaseBackend):
     # Replica fields, owned by DPSamplingBackend: routing state and requests in flight.
     state: Literal["pending", "serving", "draining", "unavailable"] = "pending"
     requests: int = 0
+    lora_adapters: dict  # adapter id -> backend handle, for /stats
 
     @abstractmethod
     async def sample(
@@ -114,6 +115,10 @@ class BaseSamplingBackend(BaseBackend):
     def get_openai_api_url(self) -> Optional[str]:
         """Return the vLLM OpenAI API base URL, or None if not available."""
         return None
+
+    async def metrics_text(self) -> str:
+        """Prometheus text of the engine's own metrics; empty without an engine."""
+        return ""
 
     async def sleep(self) -> None:  # noqa: B027
         """Release the GPU for colocate "sleep"; no-op without vLLM."""

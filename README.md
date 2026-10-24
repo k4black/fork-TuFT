@@ -319,6 +319,17 @@ LoRA ranks: the HF backend accepts ranks `1..max_lora_rank`. The FSDP backend ac
 
 Session lifecycle: `ServiceClient.close()` (`POST /api/v1/sessions/{id}/finish`) or no heartbeat for `session_heartbeat_ttl_minutes` (default 30, `0` disables) finishes the session. The server then frees each training run's adapter and slot and keeps its checkpoints; to continue, create a new run and `load_state` from a checkpoint. Completed futures leave server memory after `persistence.future_ttl_seconds` (default 1 hour).
 
+### Stats and metrics
+
+`GET /stats` and `GET /metrics` need no API key, the same as `/api/v1/readyz`. Do not expose them outside the cluster.
+
+- `/stats` returns JSON per base model:
+  - `sampling`: one entry per replica with `replica` (index), `state` (`pending`, `serving`, `draining`), `in_flight` requests and the loaded `adapters`.
+  - `training`: `slots_used` and `slots_free` per LoRA rank. `slots_free` is `null` for the HF backend, which has no slot cap. `training` is `null` for a sampling-only model.
+- `/metrics` returns the Prometheus text format:
+  - The `/stats` numbers as gauges: `tuft_sampling_in_flight`, `tuft_sampling_adapters`, `tuft_training_slots_used`, `tuft_training_slots_free`.
+  - The metrics of each vLLM replica (`vllm:*`, plus that actor's `process_*` and `python_*`), with the labels `model` and `replica` added.
+
 ### CPU integration tests
 
 The `Integration tests (CPU)` workflow runs a real server without a GPU: the HF training backend and the vLLM `0.32.0+cpu` wheel on a tiny random Qwen3 with the real Qwen3 tokenizer. Run it locally on Linux x86_64:

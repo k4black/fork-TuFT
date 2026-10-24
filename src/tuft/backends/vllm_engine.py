@@ -218,7 +218,7 @@ class VLLMEngine:
                 enforce_eager=self.config.enforce_eager,
                 override_generation_config=override_generation_config,
                 reasoning_parser=self.config.reasoning_parser,  # type: ignore[arg-type]
-                disable_log_stats=True,
+                disable_log_stats=False,  # registers vLLM's Prometheus stat logger
                 enable_log_requests=self.config.enable_log_requests,
                 enable_lora=self.config.enable_lora,
                 max_lora_rank=self.config.max_lora_rank,  # type: ignore[arg-type]
@@ -291,6 +291,12 @@ class VLLMEngine:
         if self.api_server_host is None or self.api_server_port is None:
             return None
         return f"http://{self.api_server_host}:{self.api_server_port}"
+
+    def metrics_text(self) -> str:
+        """vLLM's Prometheus metrics: its stat logger writes to this process's registry."""
+        from prometheus_client import REGISTRY, generate_latest
+
+        return generate_latest(REGISTRY).decode()
 
     @staticmethod
     def _lora_request(lora: Any) -> Any:
