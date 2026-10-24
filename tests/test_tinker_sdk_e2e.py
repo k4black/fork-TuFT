@@ -508,6 +508,36 @@ def test_checkpoint_ttl_round_trip(sdk_server: str) -> None:
 
 @pytest.mark.integration
 @pytest.mark.skipif(
+    not hasattr(types, "ExternalWeightsUrlsResponse"),
+    reason="external weights need tinker 0.32+",
+)
+def test_save_weights_external_and_download(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        training_client = service_client.create_lora_training_client(
+            base_model=BASE_MODEL, rank=8, train_unembed=False
+        )
+        path = training_client.save_weights_external("ext-e2e").result(timeout=CPU_TEST_TIMEOUT)
+        assert path.path == f"tinker://{training_client.model_id}/external_weights/ext-e2e"
+        rest_client = service_client.create_rest_client()
+        [checkpoint] = (
+            rest_client.list_checkpoints(training_client.model_id)
+            .result(timeout=CPU_TEST_TIMEOUT)
+            .checkpoints
+        )
+        assert (checkpoint.checkpoint_type, checkpoint.tinker_path) == ("external", path.path)
+        response = rest_client.get_external_weights_urls(path.path).result(timeout=CPU_TEST_TIMEOUT)
+        assert "adapter_config.json" in response.urls
+        for url in response.urls.values():
+            assert httpx.get(url).status_code == 200  # no API key: the URL is signed
+        tampered = response.urls["adapter_config.json"].replace("sig=", "sig=0")
+        assert httpx.get(tampered).status_code == 403
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
     not hasattr(ServiceClient, "copy_weights"), reason="copy_weights needs tinker 0.32+"
 )
 def test_copy_weights_then_resume(sdk_server: str) -> None:

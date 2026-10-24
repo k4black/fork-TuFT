@@ -308,7 +308,9 @@ class DummyTrainingBackend(BaseTrainingBackend):
     ) -> None:
         if lora_id not in self._adapters:
             raise ValueError(f"Adapter {lora_id} does not exist.")
-        # dummy save
+        # dummy save: a config only, so file listings and downloads have something to serve
+        checkpoint_record.adapter_path.mkdir(parents=True, exist_ok=True)
+        (checkpoint_record.adapter_path / "adapter_config.json").write_text("{}")
 
     async def load_state(
         self, lora_id: str, checkpoint_record: "CheckpointRecord", optimizer: bool

@@ -10,6 +10,7 @@ import secrets
 import tarfile
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from email.utils import formatdate
 from functools import partial
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any, Callable
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.security import APIKeyHeader
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
@@ -25,7 +26,7 @@ from ray.exceptions import RayActorError
 from tinker import types
 
 from .auth import User
-from .checkpoints import read_adapter_files
+from .checkpoints import adapter_files, read_adapter_files
 from .compat import (
     PROTO_PAYLOAD_TYPES,
     RequestTooLargeError,
@@ -85,11 +86,19 @@ class CopyWeightsBody(BaseModel):
     weights_access_token: str | None = None
 
 
+class SaveWeightsExternalBody(BaseModel):
+    # Local model: tinker < 0.32 has no SaveWeightsExternalRequest.
+    model_id: str
+    path: str
+    seq_id: int | None = None
+    ttl_seconds: int | None = None
+
+
 def _normalize_checkpoint_id(raw: str) -> str:
     if "/" not in raw:
         return raw
     prefix, remainder = raw.split("/", 1)
-    if prefix not in {"weights", "sampler_weights"} or not remainder:
+    if prefix not in {"weights", "sampler_weights", "external_weights"} or not remainder:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid checkpoint reference",
@@ -573,6 +582,41 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         )
 
     @app.post(
+        "/api/v1/save_weights_external",
+        response_model=types.UntypedAPIFuture,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def save_weights_external(
+        body: SaveWeightsExternalBody,
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> types.UntypedAPIFuture:
+        # An adapter-only save, like a sampler save; its files are already the HF peft layout.
+        async def _operation() -> dict[str, Any]:
+            checkpoint = await state.save_checkpoint(
+                body.model_id,
+                user.user_id,
+                body.path,
+                "external",
+                seq_id=body.seq_id,
+                ttl_seconds=body.ttl_seconds,
+            )
+            return {
+                "path": checkpoint.tinker_path,
+                "size_bytes": checkpoint.size_bytes,
+                "type": "save_weights_external",
+            }
+
+        return await _queue_future(
+            _operation,
+            state,
+            model_id=body.model_id,
+            user_id=user.user_id,
+            operation_type="save_weights_external",
+            operation_args={"model_id": body.model_id, "user_id": user.user_id, "name": body.path},
+        )
+
+    @app.post(
         "/api/v1/save_weights_for_sampler",
         response_model=types.UntypedAPIFuture,
         status_code=status.HTTP_202_ACCEPTED,
@@ -943,6 +987,53 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         return Response(content, media_type="application/x-tar")
 
     @app.get(
+        "/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_path:path}/external_weights_urls"
+    )
+    async def external_weights_urls(
+        request: Request,
+        model_id: str,
+        checkpoint_path: str,
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> dict[str, Any]:
+        checkpoint_id = _normalize_checkpoint_id(checkpoint_path)
+        checkpoint = state.get_checkpoint(model_id, checkpoint_id, user.user_id)
+        exp = int(time.time()) + 900
+        key = request.app.state.archive_key
+        urls = {}
+        for path in await asyncio.to_thread(adapter_files, checkpoint.adapter_path):
+            sig = _archive_signature(key, model_id, f"{checkpoint_id}/{path.name}", exp)
+            url = request.url_for(
+                "download_external_weights_file",
+                model_id=model_id,
+                checkpoint_id=checkpoint_id,
+                filename=path.name,
+            )
+            urls[path.name] = f"{url}?exp={exp}&sig={sig}"
+        return {"urls": urls, "expires": datetime.fromtimestamp(exp, timezone.utc)}
+
+    # No API key, like the archive download: the URL carries its own signature.
+    @app.get("/api/v1/external_weights/{model_id}/{checkpoint_id}/{filename}")
+    async def download_external_weights_file(
+        request: Request,
+        model_id: str,
+        checkpoint_id: str,
+        filename: str,
+        exp: int,
+        sig: str,
+        state: ServerState = Depends(_get_state),
+    ) -> Response:
+        key = request.app.state.archive_key
+        expected = _archive_signature(key, model_id, f"{checkpoint_id}/{filename}", exp)
+        if exp < time.time() or not hmac.compare_digest(sig, expected):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid URL")
+        checkpoint = state.get_checkpoint(model_id, checkpoint_id, user_id=None)
+        path = checkpoint.adapter_path / filename
+        if path not in await asyncio.to_thread(adapter_files, checkpoint.adapter_path):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such file")
+        return FileResponse(path)
+
+    @app.get(
         "/api/v1/checkpoints",
         response_model=types.CheckpointsListResponse,
     )
@@ -1091,6 +1182,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
             path in ("/api/v1/healthz", "/api/v1/readyz")
             or path.startswith("/oai/")
             or path.startswith("/api/v1/archives/")
+            or path.startswith("/api/v1/external_weights/")
         ):
             continue
         if hasattr(route, "dependencies"):

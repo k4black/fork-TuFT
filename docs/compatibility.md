@@ -41,7 +41,7 @@ The route column names the main request. Methods that compose several requests l
 | `TrainingClient.optim_step` | supported | POST /api/v1/optim_step | |
 | `TrainingClient.save_state` | supported | POST /api/v1/save_weights | Stores `ttl_seconds` and `user_metadata`. A save under an existing name replaces it; `overwrite` is ignored. |
 | `TrainingClient.save_weights_and_get_sampling_client` | supported | POST /api/v1/create_sampling_session | Calls `save_weights_for_sampler` first. The server keeps the newest `sampler_checkpoints_keep` unnamed saves per live run (none after release), plus older ones sampled within the model's `adapter_idle_ttl_minutes`; it deletes the rest, and their clients get 404. |
-| `TrainingClient.save_weights_external` | unsupported | POST /api/v1/save_weights_external | |
+| `TrainingClient.save_weights_external` | supported | POST /api/v1/save_weights_external | 0.32+. An adapter-only save in the HF peft layout (`adapter_config.json`, `adapter_model.safetensors`) at `tinker://<run>/external_weights/<name>`, on the same disk as other checkpoints. It shares the `<run>/<name>` namespace with them and honours `ttl_seconds`. |
 | `TrainingClient.save_weights_for_sampler` | supported | POST /api/v1/save_weights_for_sampler | Stores `ttl_seconds` and `user_metadata`. |
 | `SamplingClient.compute_logprobs` | supported | POST /api/v1/asample | Samples one token with prompt logprobs. |
 | `SamplingClient.create` | supported | POST /api/v1/create_sampling_session | |
@@ -61,7 +61,7 @@ The route column names the main request. Methods that compose several requests l
 | `RestClient.get_current_checkpoint_storage_usage` | supported | GET /api/v1/billing/usage/checkpoints/current | 0.32+. One row for the caller: count and `size_bytes` of their checkpoints on disk. `project_id` is ignored; no cost fields. |
 | `RestClient.get_checkpoint_archive_url` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
 | `RestClient.get_checkpoint_archive_url_from_tinker_path` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
-| `RestClient.get_external_weights_urls` | unsupported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/external_weights_urls | |
+| `RestClient.get_external_weights_urls` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/external_weights_urls | 0.32+. One signed URL per adapter file, valid for 15 minutes and until the server restarts, like the archive download; no API key on the download. |
 | `RestClient.get_sampler` | supported | GET /api/v1/samplers/{sampler_id} | |
 | `RestClient.get_session` | supported | GET /api/v1/sessions/{session_id} | Returns the session's `user_metadata` (read by 0.32+). |
 | `RestClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
