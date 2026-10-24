@@ -143,6 +143,23 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
             assert scored.target_prompt_logprobs.data == pytest.approx(
                 res.prompt_logprobs[1:], abs=1e-4
             )
+        if "prompt_alt_tokens_k" in types.SampleRequest.model_fields:  # tinker >= 0.31
+            # Greedy draws all equal the top-1 prompt token.
+            drawn = sampler.sample(
+                prompt,
+                1,
+                types.SamplingParams(max_tokens=1, temperature=0.0),
+                include_prompt_logprobs=True,
+                topk_prompt_logprobs=1,
+                prompt_alt_tokens_k=2,
+            ).result(timeout=TIMEOUT)
+            assert drawn.prompt_alt_tokens is not None and drawn.topk_prompt_logprobs is not None
+            top1 = [row[0] for row in drawn.topk_prompt_logprobs[1:]]
+            tokens = drawn.prompt_alt_tokens.tokens.to_numpy().tolist()
+            assert tokens == [[tid, tid] for tid, _ in top1]
+            assert drawn.prompt_alt_tokens.logprobs.data == pytest.approx(
+                [lp for _, lp in top1 for _ in range(2)], abs=1e-4
+            )
         assert trainer.get_info().model_data.arch == "qwen3"
 
         def greedy(stop: list[str] | list[int] | None = None) -> types.SampledSequence:

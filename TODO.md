@@ -110,8 +110,9 @@ Identity, quotas and routing belong to the control plane (Phase 9).
 - [ ] **Tensor, pipeline and expert parallelism** — a Megatron-style backend for models that do not
   fit FSDP well (large MoE); only with a target model (SkyRL and Twinkle have Megatron paths).
 - [ ] **Full fine-tuning** — optional; the Tinker API is LoRA-only.
-- [ ] **`target_prompt_logprobs` and `prompt_alt_tokens_k`** — score chosen ids and draw k
+- [x] **`target_prompt_logprobs` and `prompt_alt_tokens_k`** — score chosen ids and draw k
   alternatives at prompt positions inside the prompt-logprobs patch, including sparse CSR input.
+  Up to 20 per row; the draws ignore top-k/top-p.
 - [ ] **External export** — `save_weights_external` and `get_external_weights_urls` in the HF
   adapter layout.
 - [x] **Reproducible adapter init** — `LoraConfig.seed` on both backends, including reused FSDP slots.

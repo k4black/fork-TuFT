@@ -709,11 +709,10 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> types.UntypedAPIFuture:
-        # tinker 0.31 sampling feature this server does not implement.
-        if getattr(request, "prompt_alt_tokens_k", None):
+        if not 0 <= (getattr(request, "prompt_alt_tokens_k", 0) or 0) <= 20:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="prompt_alt_tokens_k is not supported",
+                detail="prompt_alt_tokens_k must be between 0 and 20",
             )
         target = getattr(request, "target_prompt_logprobs", None)
         if target is not None and (

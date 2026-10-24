@@ -288,6 +288,30 @@ def test_target_prompt_logprobs_round_trip(sdk_server: str) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    "prompt_alt_tokens_k" not in types.SampleRequest.model_fields,
+    reason="prompt_alt_tokens_k only exists from tinker 0.31",
+)
+def test_prompt_alt_tokens_round_trip(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        sampling_client = service_client.create_sampling_client(base_model=BASE_MODEL)
+        result = sampling_client.sample(
+            prompt=types.ModelInput.from_ints([21, 22, 23]),
+            num_samples=1,
+            sampling_params=types.SamplingParams(max_tokens=1),
+            prompt_alt_tokens_k=2,
+        ).result(timeout=CPU_TEST_TIMEOUT)
+        alt = result.prompt_alt_tokens
+        assert alt is not None
+        # The dummy backend draws the prompt token itself at every row.
+        assert alt.tokens.to_numpy().tolist() == [[22, 22], [23, 23]]
+        assert alt.logprobs.data == pytest.approx([-0.1] * 4)
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
 def test_pipelined_futures_resolve_out_of_order(sdk_server: str) -> None:
     """Several in-flight training futures resolve correctly when retrieved reordered."""
     service_client = _service_client(sdk_server)

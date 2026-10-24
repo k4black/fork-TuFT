@@ -24,11 +24,11 @@ version-adaptive (see the module-level capability probes below):
   (``server.optim_step`` reads either).
 
 - 0.30 added ``target_prompt_logprobs`` (request tensor, response tensor in the
-  same layout), served up to 20 ids per prompt row.
+  same layout) and 0.31 ``prompt_alt_tokens_k``; both are served up to 20 per
+  prompt row.
 
-Not implemented, rejected with 400: non-Adam optimizers (0.29.1), and the
-sampling field ``prompt_alt_tokens_k`` (0.31). ``topk_sample_logprobs`` (0.29)
-is served up to k=20.
+Not implemented, rejected with 400: non-Adam optimizers (0.29.1).
+``topk_sample_logprobs`` (0.29) is served up to k=20.
 """
 
 from __future__ import annotations
@@ -556,6 +556,11 @@ def serialize_sample_response_proto(response: SampleResponse) -> bytes:
     if target is not None:
         assert _tensor_data_to_proto is not None  # the field exists only from 0.30
         proto.target_prompt_logprobs.CopyFrom(_tensor_data_to_proto(target))
+    alt = getattr(response, "prompt_alt_tokens", None)
+    if alt is not None:
+        assert _tensor_data_to_proto is not None  # the field exists only from 0.31
+        proto.prompt_alt_tokens.tokens.CopyFrom(_tensor_data_to_proto(alt.tokens))
+        proto.prompt_alt_tokens.logprobs.CopyFrom(_tensor_data_to_proto(alt.logprobs))
 
     return proto.SerializeToString()
 

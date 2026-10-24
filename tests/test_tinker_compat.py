@@ -452,7 +452,7 @@ def test_target_prompt_logprobs_round_trip_through_protobuf(crow, col) -> None:
     )
     rows = _target_rows(target)
     # The worker scores each id; -1 cells score 0.0.
-    scores = [[-float(i) if i >= 0 else 0.0 for i in row] for row in rows]
+    scores = np.array([[-float(i) if i >= 0 else 0.0 for i in row] for row in rows])
     response = types.SampleResponse(
         sequences=[], target_prompt_logprobs=_target_response(target, scores)
     )
@@ -467,6 +467,23 @@ def test_target_prompt_logprobs_round_trip_through_protobuf(crow, col) -> None:
         assert rows == [[5, 7], [-1, -1], [9, -1]]
         assert (out.sparse_crow_indices, out.sparse_col_indices) == (crow, col)
         assert out.data == [-5, -7, -9]
+
+
+@pytest.mark.skipif(
+    "prompt_alt_tokens_k" not in types.SampleRequest.model_fields,
+    reason="prompt_alt_tokens_k only exists from tinker 0.31",
+)
+def test_prompt_alt_tokens_round_trip_through_protobuf() -> None:
+    from tuft.backends.sampling_backend import _prompt_extras
+
+    # Two prompt rows, k=2: ids [3, 4] and [5, 5], then their logprobs.
+    scores = [[3, 4, -0.5, -1.5], [5, 5, -0.25, -0.25]]
+    response = types.SampleResponse(sequences=[], **_prompt_extras(None, 2, scores))
+    alt = deserialize_sample_response(serialize_sample_response_proto(response)).prompt_alt_tokens
+    assert alt is not None
+    assert alt.tokens.dtype == "int64" and alt.tokens.shape == [2, 2]
+    assert alt.tokens.to_numpy().tolist() == [[3, 4], [5, 5]]
+    assert alt.logprobs.to_numpy().tolist() == [[-0.5, -1.5], [-0.25, -0.25]]
 
 
 @_TARGET_SKIP

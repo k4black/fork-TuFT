@@ -49,9 +49,8 @@ def _target_rows(target: Any) -> list[list[int]]:
     return [row + [-1] * (width - len(row)) for row in rows]
 
 
-def _target_response(target: Any, scores: Any) -> types.TensorData:
+def _target_response(target: Any, scores: np.ndarray) -> types.TensorData:
     """Scores of ``_target_rows`` in the request's layout: dense, or CSR with its indices."""
-    scores = np.asarray(scores, dtype=np.float32)
     crow = target.sparse_crow_indices
     if crow is not None:
         scores = np.concatenate(
@@ -66,12 +65,34 @@ def _target_response(target: Any, scores: Any) -> types.TensorData:
     )
 
 
+def _prompt_extras(target: Any, alt_k: int, scores: Any) -> dict[str, Any]:
+    """SampleResponse fields from the worker's score matrix (``_score_prompt_rows``).
+
+    Columns: the target ids' scores, then ``alt_k`` drawn ids and their ``alt_k`` logprobs.
+    tinker < 0.30 lacks these fields, so only the requested ones are set.
+    """
+    scores = np.asarray(scores, dtype=np.float32)
+    split = scores.shape[1] - 2 * alt_k
+    extras: dict[str, Any] = {}
+    if target is not None:
+        extras["target_prompt_logprobs"] = _target_response(target, scores[:, :split])
+    if alt_k:
+        shape = [len(scores), alt_k]
+        ids, logprobs = scores[:, split : split + alt_k], scores[:, split + alt_k :]
+        extras["prompt_alt_tokens"] = types.PromptAltTokens(
+            tokens=types.TensorData(data=ids.astype(np.int64).ravel(), dtype="int64", shape=shape),
+            logprobs=types.TensorData(data=logprobs.ravel(), dtype="float32", shape=shape),
+        )
+    return extras
+
+
 def _build_sample_response(
     req_output: Any,
     include_prompt_logprobs: bool = False,
     topk_prompt_logprobs: int = 0,
     topk_sample_logprobs: int = 0,
     target_prompt_logprobs: Any = None,
+    prompt_alt_tokens_k: int = 0,
 ) -> types.SampleResponse:
     """Build a tinker 0.18.2 SampleResponse from a vLLM RequestOutput.
 
@@ -111,19 +132,16 @@ def _build_sample_response(
         )
         sequences.append(seq)
 
-    # tinker < 0.30 lacks the field, so pass it only when requested.
-    target = (
-        {
-            "target_prompt_logprobs": _target_response(
-                target_prompt_logprobs, req_output.prompt_token_id_logprobs
-            )
-        }
-        if target_prompt_logprobs is not None
+    extras = (
+        _prompt_extras(
+            target_prompt_logprobs, prompt_alt_tokens_k, req_output.prompt_token_id_logprobs
+        )
+        if target_prompt_logprobs is not None or prompt_alt_tokens_k
         else {}
     )
     return types.SampleResponse(
         sequences=sequences,
-        **target,
+        **extras,
         _prompt_logprobs_list=prompt_logprobs if include_prompt_logprobs else None,
         _topk_prompt_logprobs_list=(
             topk_prompt_logprobs_list
@@ -359,6 +377,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
         lora_id: Optional[str] = None,
         topk_sample_logprobs: int = 0,
         target_prompt_logprobs: Any = None,
+        prompt_alt_tokens_k: int = 0,
     ) -> types.SampleResponse:
         """Sampling using vLLM engine."""
         with _get_tracer().start_as_current_span("sampling_backend.sample") as span:
@@ -404,11 +423,14 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     "prompt_logprobs": (topk_prompt_logprobs if include_prompt_logprobs else None),
                     "logprobs": topk_sample_logprobs,
                     # Scored in the prompt-logprobs patch (vllm_worker._score_prompt_rows).
-                    "extra_args": (
-                        {"tuft_target_ids": _target_rows(target_prompt_logprobs)}
-                        if target_prompt_logprobs is not None
-                        else None
-                    ),
+                    "extra_args": {
+                        "tuft_target_ids": (
+                            _target_rows(target_prompt_logprobs)
+                            if target_prompt_logprobs is not None
+                            else None
+                        ),
+                        "tuft_alt_k": prompt_alt_tokens_k,
+                    },
                     # tinker returns token ids only; string stops need the text.
                     "detokenize": False,
                 }
@@ -417,7 +439,8 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 # and corrupt the returned logprobs). Native vLLM SamplingParams
                 # field since 0.12; newer vLLM auto-sets it when prompt_logprobs
                 # is requested -- kept explicit here for clarity.
-                if target_prompt_logprobs is not None and not include_prompt_logprobs:
+                scored = target_prompt_logprobs is not None or prompt_alt_tokens_k > 0
+                if scored and not include_prompt_logprobs:
                     params["prompt_logprobs"] = 0  # the patch runs for prompt-logprob requests
                 if params["prompt_logprobs"] is not None:
                     params["skip_reading_prefix_cache"] = True
@@ -464,6 +487,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                     topk_prompt_logprobs=topk_prompt_logprobs,
                     topk_sample_logprobs=topk_sample_logprobs,
                     target_prompt_logprobs=target_prompt_logprobs,
+                    prompt_alt_tokens_k=prompt_alt_tokens_k,
                 )
             except Exception as e:
                 span.record_exception(e)
@@ -777,6 +801,7 @@ class DPSamplingBackend(BaseSamplingBackend):
         lora_id: Optional[str] = None,
         topk_sample_logprobs: int = 0,
         target_prompt_logprobs: Any = None,
+        prompt_alt_tokens_k: int = 0,
     ) -> types.SampleResponse:
         replica = self.acquire(split_prompt(prompt)[0])
         try:
@@ -789,6 +814,7 @@ class DPSamplingBackend(BaseSamplingBackend):
                 lora_id=lora_id,
                 topk_sample_logprobs=topk_sample_logprobs,
                 target_prompt_logprobs=target_prompt_logprobs,
+                prompt_alt_tokens_k=prompt_alt_tokens_k,
             )
         finally:
             self.release(replica)
@@ -1103,6 +1129,7 @@ class DummySamplingBackend(BaseSamplingBackend):
         lora_id: Optional[str] = None,
         topk_sample_logprobs: int = 0,
         target_prompt_logprobs: Any = None,
+        prompt_alt_tokens_k: int = 0,
     ) -> types.SampleResponse:
         """Return a fixed dummy response."""
         split_prompt(prompt)  # same validation as vLLM
@@ -1147,21 +1174,22 @@ class DummySamplingBackend(BaseSamplingBackend):
                 else None
                 for token in prompt_tokens
             ]
-        target = (
-            {
-                "target_prompt_logprobs": _target_response(
-                    target_prompt_logprobs,
-                    np.where(np.array(_target_rows(target_prompt_logprobs)) >= 0, -0.1, 0.0),
-                )
-            }
-            if target_prompt_logprobs is not None
+        # Fake worker scores: -0.1 per target id; each alternative is the prompt token.
+        n, k = len(prompt_tokens) - 1, prompt_alt_tokens_k
+        columns = [np.array(prompt_tokens[1:] * k).reshape(k, n).T, np.full((n, k), -0.1)]
+        if target_prompt_logprobs is not None:
+            ids = np.array(_target_rows(target_prompt_logprobs))
+            columns.insert(0, np.where(ids >= 0, -0.1, 0.0))
+        extras = (
+            _prompt_extras(target_prompt_logprobs, k, np.hstack(columns))
+            if target_prompt_logprobs is not None or k
             else {}
         )
         return types.SampleResponse(
             sequences=sequences,
             _prompt_logprobs_list=prompt_logprobs,
             _topk_prompt_logprobs_list=topk_prompt,
-            **target,
+            **extras,
         )
 
     def _generate_tokens(self, prompt_tokens: list[int], max_tokens: int) -> list[int]:

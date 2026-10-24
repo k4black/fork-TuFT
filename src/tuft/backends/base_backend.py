@@ -98,6 +98,7 @@ class BaseSamplingBackend(BaseBackend):
         lora_id: Optional[str] = None,
         topk_sample_logprobs: int = 0,
         target_prompt_logprobs: Any = None,
+        prompt_alt_tokens_k: int = 0,
     ) -> types.SampleResponse:
         """Abstract method for sampling."""
 
