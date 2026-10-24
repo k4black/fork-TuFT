@@ -53,12 +53,6 @@ from tinker.types.sample_response import SampleResponse
 from .loss_fn import LOSS_FN
 
 
-try:  # tinker >= 0.30; older SDKs never build a response that needs it.
-    from tinker.proto.request_conv import _tensor_data_to_proto
-except ImportError:
-    _tensor_data_to_proto = None
-
-
 #: Payload types the SDK decodes as protobuf. Anything else falls back to JSON.
 PROTO_PAYLOAD_TYPES: tuple[type, ...] = (SampleResponse, ForwardBackwardOutput)
 
@@ -512,6 +506,20 @@ def _write_topk(msg: Any, entries: list[list[tuple[int, float]] | None]) -> None
     setattr(msg, _TOPK_LENGTH_FIELD, n)
 
 
+def _tensor_to_proto(tensor: types.TensorData) -> public_pb.Tensor:
+    """Encode a TensorData as a proto Tensor; a sparse CSR tensor stays sparse."""
+    msg = public_pb.Tensor(dtype=_TENSOR_DTYPE_TO_PROTO[tensor.dtype], shape=tensor.shape or [])
+    # ``data`` holds only the listed values of a CSR tensor; to_numpy() would densify it.
+    values = np.asarray(tensor.data, dtype=_TENSOR_DTYPE_TO_NUMPY[tensor.dtype]).tobytes()
+    if tensor.sparse_crow_indices is None:
+        msg.dense = values
+        return msg
+    msg.sparse_csr.values = values
+    msg.sparse_csr.crow_indices = np.asarray(tensor.sparse_crow_indices, np.int64).tobytes()
+    msg.sparse_csr.col_indices = np.asarray(tensor.sparse_col_indices, np.int64).tobytes()
+    return msg
+
+
 def serialize_sample_response_proto(response: SampleResponse) -> bytes:
     """Serialize a SampleResponse to protobuf wire format.
 
@@ -554,13 +562,11 @@ def serialize_sample_response_proto(response: SampleResponse) -> bytes:
 
     target = getattr(response, "target_prompt_logprobs", None)
     if target is not None:
-        assert _tensor_data_to_proto is not None  # the field exists only from 0.30
-        proto.target_prompt_logprobs.CopyFrom(_tensor_data_to_proto(target))
+        proto.target_prompt_logprobs.CopyFrom(_tensor_to_proto(target))
     alt = getattr(response, "prompt_alt_tokens", None)
     if alt is not None:
-        assert _tensor_data_to_proto is not None  # the field exists only from 0.31
-        proto.prompt_alt_tokens.tokens.CopyFrom(_tensor_data_to_proto(alt.tokens))
-        proto.prompt_alt_tokens.logprobs.CopyFrom(_tensor_data_to_proto(alt.logprobs))
+        proto.prompt_alt_tokens.tokens.CopyFrom(_tensor_to_proto(alt.tokens))
+        proto.prompt_alt_tokens.logprobs.CopyFrom(_tensor_to_proto(alt.logprobs))
 
     return proto.SerializeToString()
 
