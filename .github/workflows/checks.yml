@@ -67,14 +67,15 @@ jobs:
       #   run: |
       #     uv lock --check
 
-  # Qualify the tinker SDK wire protocol (D2) against both wire generations in the
-  # supported range: 0.25.0 (floor) and 0.32.0 (latest), from one server binary.
+  # Qualify the tinker SDK wire protocol (D2) against the supported range from one
+  # server binary: 0.25.0 (floor), 0.32.0 (last copy_weights with a session) and
+  # 0.35.0 (latest, copy_weights with a project).
   tinker-compat:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        tinker-version: ['0.25.0', '0.32.0']
+        tinker-version: ['0.25.0', '0.32.0', '0.35.0']
 
     services:
       redis:

@@ -169,7 +169,7 @@ definition, schema) are decided in a design pass when the phase starts.
 
 | Capability | Hosted Tinker | OpenRL | SkyRL | Twinkle | This fork |
 |---|---|---|---|---|---|
-| Core train/sample/save/load | yes | SDK 0.29+, 47 methods unsupported | SDK 0.25+ | SDK 0.16.1 via translation | SDK 0.25–0.32 |
+| Core train/sample/save/load | yes | SDK 0.29+, 47 methods unsupported | SDK 0.25+ | SDK 0.16.1 via translation | SDK 0.25–0.35 |
 | Client-defined custom losses | yes | no | partial | ? | yes |
 | Session finish, release, heartbeat 410 | yes | partial | partial | ? | yes |
 | Archive download | signed | roadmap | unsigned redirect | checkpoint service | signed, expiring |
@@ -211,6 +211,9 @@ definition, schema) are decided in a design pass when the phase starts.
   1800 s proxy timeout, replicated small FSDP requests, bounded micro-batches.
 - [x] tinker SDK 0.25 through 0.32 (#24): `optim_params` rename absorbed; unsupported optimizer and
   sampling fields return 400; CI runs both ends of the range.
+- [x] tinker SDK up to 0.35: session-less `copy_weights` (0.34) absorbed; `prompt_logprobs_last_n`,
+  `gspo` and `stable_reinforce` rejected; CI runs 0.25, 0.32 and 0.35.
+- [x] `unpublish_checkpoint` reached the checkpoint DELETE route and returned 404; the route order is fixed.
 - [x] Tenant isolation (#21): one shared `require_access` for the tinker and OpenAI paths; missing
   adapter is 404, not base-model fallback; foreign `retrieve` no longer mutates a future.
 - [x] Resource release (#25): `POST /sessions/{id}/finish`; heartbeat-TTL sweep releases runs

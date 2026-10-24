@@ -1,6 +1,6 @@
 # Tinker SDK compatibility
 
-One row per public method of the Tinker SDK clients (checked against `tinker==0.32.0`; CI also runs it on 0.25.0).
+One row per public method of the Tinker SDK clients (checked against `tinker==0.35.0`; CI also runs it on 0.25.0 and 0.32.0).
 An `_async` twin has the same status as its sync method.
 `tests/test_compat_matrix.py` fails when the SDK gains a method without a row here, or when a
 row's route disagrees with the routes the server registers.
@@ -19,7 +19,7 @@ The route column names the main request. Methods that compose several requests l
 | Method | Status | Route | Note |
 |---|---|---|---|
 | `ServiceClient.close` | supported | POST /api/v1/sessions/{session_id}/finish | Marks the session finished and releases its runs; later heartbeats get 410. |
-| `ServiceClient.copy_weights` | supported | POST /api/v1/copy_weights | `tinker://` copies hard-link the files and keep the kind. `hf://org/repo[@rev][/subdir]` (request token only) and `s3://` (under `import_s3_prefixes`) import safetensors adapters as sampler checkpoints. The adapter must match a configured model (`base_model_name_or_path`), a supported rank, the server alpha rule (PEFT's usual `lora_alpha == r` needs `lora_alpha_ratio: 1`) and the targets of some `train_attn/train_mlp/train_unembed` combination, so a `q_proj,v_proj`-only adapter is rejected. The copy lives in a new released run: load it into a new run to train. |
+| `ServiceClient.copy_weights` | supported | POST /api/v1/copy_weights | 0.34+ calls `RestClient.copy_weights` and needs `project_id` or `TINKER_PROJECT_ID` client-side. `tinker://` copies hard-link the files and keep the kind. `hf://org/repo[@rev][/subdir]` (request token only) and `s3://` (under `import_s3_prefixes`) import safetensors adapters as sampler checkpoints. The adapter must match a configured model (`base_model_name_or_path`), a supported rank, the server alpha rule (PEFT's usual `lora_alpha == r` needs `lora_alpha_ratio: 1`) and the targets of some `train_attn/train_mlp/train_unembed` combination, so a `q_proj,v_proj`-only adapter is rejected. The copy lives in a new released run: load it into a new run to train. |
 | `ServiceClient.create_lora_training_client` | supported | POST /api/v1/create_model | |
 | `ServiceClient.create_rest_client` | client-side | - | |
 | `ServiceClient.create_sampling_client` | supported | POST /api/v1/create_sampling_session | |
@@ -30,7 +30,7 @@ The route column names the main request. Methods that compose several requests l
 | `ServiceClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
 | `TrainingClient.create_sampling_client` | supported | POST /api/v1/create_sampling_session | |
 | `TrainingClient.forward` | supported | POST /api/v1/forward_backward | Sends `forward_only=true`. |
-| `TrainingClient.forward_backward` | supported | POST /api/v1/forward_backward | Text only: `ImageChunk` inputs return 400. |
+| `TrainingClient.forward_backward` | supported | POST /api/v1/forward_backward | Text only: `ImageChunk` inputs return 400. The `gspo` and `stable_reinforce` losses (0.34+) return 422. |
 | `TrainingClient.forward_backward_custom` | supported | POST /api/v1/forward_backward | The SDK computes the custom loss between a forward and a backward call. |
 | `TrainingClient.get_console_url` | client-side | - | Links to the Thinking Machines console. |
 | `TrainingClient.get_info` | supported | POST /api/v1/get_info | `model_data.arch` is `model_type` from `config.json` under a local `model_path` (None for a Hub id); `tokenizer_id` is `ModelConfig.tokenizer_id`, else `model_name`. |
@@ -43,7 +43,7 @@ The route column names the main request. Methods that compose several requests l
 | `TrainingClient.save_weights_and_get_sampling_client` | supported | POST /api/v1/create_sampling_session | Calls `save_weights_for_sampler` first. The server keeps the newest `sampler_checkpoints_keep` unnamed saves per live run (none after release), plus older ones sampled within the model's `adapter_idle_ttl_minutes`; it deletes the rest, and their clients get 404. |
 | `TrainingClient.save_weights_external` | unsupported | POST /api/v1/save_weights_external | |
 | `TrainingClient.save_weights_for_sampler` | supported | POST /api/v1/save_weights_for_sampler | Stores `ttl_seconds` and `user_metadata`. |
-| `SamplingClient.compute_logprobs` | supported | POST /api/v1/asample | Samples one token with prompt logprobs. |
+| `SamplingClient.compute_logprobs` | supported | POST /api/v1/asample | Samples one token with prompt logprobs. `prompt_logprobs_last_n` (0.33+) returns 400. |
 | `SamplingClient.create` | supported | POST /api/v1/create_sampling_session | |
 | `SamplingClient.from_sampler_handle` | client-side | - | 0.32+; rebuilds a client from a handle string. |
 | `SamplingClient.get_base_model` | supported | GET /api/v1/samplers/{sampler_id} | |
@@ -53,6 +53,7 @@ The route column names the main request. Methods that compose several requests l
 | `SamplingClient.on_queue_state_change` | client-side | - | |
 | `SamplingClient.sample` | supported | POST /api/v1/asample | `topk_sample_logprobs` up to 20 (vLLM's `max_logprobs`), processed logprobs like the sampled-token ones. `prompt_alt_tokens_k` and `target_prompt_logprobs` return 400. `ImageChunk` inputs work on vLLM vision-language models (e.g. Qwen3-VL) and need `expected_tokens`; a count that differs from vLLM's image expansion returns 400. |
 | `RestClient.assign_session_project` | unsupported | PUT /api/v1/sessions/{session_id}/project | |
+| `RestClient.copy_weights` | supported | POST /api/v1/copy_weights | 0.34+. Same as `ServiceClient.copy_weights`. TuFT has no projects: it ignores `destination_project_id`, and the copy belongs to the caller. It ignores `X-Idempotency-Key`. |
 | `RestClient.delete_checkpoint` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id} | |
 | `RestClient.delete_checkpoint_from_tinker_path` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id} | |
 | `RestClient.export_session_trace` | unsupported | GET /api/v1/sessions/{session_id}/trace_export | |
@@ -63,7 +64,7 @@ The route column names the main request. Methods that compose several requests l
 | `RestClient.get_checkpoint_archive_url_from_tinker_path` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
 | `RestClient.get_external_weights_urls` | unsupported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/external_weights_urls | |
 | `RestClient.get_sampler` | supported | GET /api/v1/samplers/{sampler_id} | |
-| `RestClient.get_session` | supported | GET /api/v1/sessions/{session_id} | Returns the session's `user_metadata` (read by 0.32+). |
+| `RestClient.get_session` | supported | GET /api/v1/sessions/{session_id} | Returns the session's `user_metadata` (read by 0.32+). The server does not store `display_name` (0.34+) and returns None. |
 | `RestClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
 | `RestClient.get_training_run` | supported | GET /api/v1/training_runs/{model_id} | Rebuilds a run from its `metadata.json` files when it is not in memory. |
 | `RestClient.get_training_run_by_tinker_path` | supported | GET /api/v1/training_runs/{model_id} | Rebuilds a run from its `metadata.json` files when it is not in memory. |

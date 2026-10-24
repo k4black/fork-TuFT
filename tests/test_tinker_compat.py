@@ -20,6 +20,7 @@ from tinker.proto.response_conv import (
 )
 from tinker.types.try_again_response import TryAgainResponse
 
+from tuft import weights_import
 from tuft.auth import User
 from tuft.compat import (
     MAX_DECOMPRESSED_REQUEST_BYTES,
@@ -292,15 +293,17 @@ async def test_malformed_request_bodies_are_rejected(
     assert response.status_code == status_code
 
 
+# gspo and stable_reinforce are tinker 0.34+/0.35+ loss names TuFT does not implement.
+@pytest.mark.parametrize("loss_fn", ["not_a_loss_fn", "gspo", "stable_reinforce"])
 @pytest.mark.asyncio
-async def test_unknown_loss_fn_is_rejected(compatibility_app) -> None:
+async def test_unknown_loss_fn_is_rejected(compatibility_app, loss_fn) -> None:
     app, _ = compatibility_app
     request = _proto_request(forward_only=False)
-    request.loss_fn = "not_a_loss_fn"
+    request.loss_fn = loss_fn
     async with _client(app) as client:
         response = await _post_proto(client, request.SerializeToString())
     assert response.status_code == 422
-    assert "not_a_loss_fn" in response.json()["detail"]
+    assert loss_fn in response.json()["detail"]
 
 
 @pytest.mark.skipif(
@@ -480,6 +483,29 @@ async def test_topk_sample_logprobs_out_of_range_is_rejected(compatibility_app, 
     assert "topk_sample_logprobs" in response.json()["detail"]
 
 
+@pytest.mark.skipif(
+    "prompt_logprobs_last_n" not in types.SampleRequest.model_fields,
+    reason="prompt_logprobs_last_n only exists from tinker 0.33",
+)
+@pytest.mark.asyncio
+async def test_prompt_logprobs_last_n_is_rejected(compatibility_app) -> None:
+    app, _ = compatibility_app
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/asample",
+            json={
+                "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
+                "sampling_params": {"max_tokens": 1},
+                "base_model": "test-model",
+                "prompt_logprobs": True,
+                "prompt_logprobs_last_n": 1,
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+    assert response.status_code == 400
+    assert "prompt_logprobs_last_n" in response.json()["detail"]
+
+
 @pytest.mark.asyncio
 async def test_sdk_029_default_sample_fields_are_accepted(compatibility_app) -> None:
     # SDK 0.29+ always sends these zero defaults. No skip: a server env with
@@ -630,6 +656,36 @@ async def test_finish_session_is_idempotent_and_ends_heartbeats(compatibility_ap
             "/api/v1/session_heartbeat", json={"session_id": "s-1"}, headers=headers
         )
     assert heartbeat.status_code == 410
+
+
+# tinker <= 0.33 sends the token in the body, 0.34+ in a header and with no session.
+@pytest.mark.parametrize(
+    ("body_token", "headers"),
+    [("tok", {}), (None, {"X-Tinker-Weights-Access-Token": "tok"})],
+    ids=["body", "header"],
+)
+@pytest.mark.asyncio
+async def test_copy_weights_passes_the_access_token(
+    tmp_path, monkeypatch, body_token, headers
+) -> None:
+    tokens = []
+    monkeypatch.setattr(weights_import, "fetch", lambda _src, token, *_: tokens.append(token))
+    app = _create_test_app(
+        AppConfig(checkpoint_dir=tmp_path, authorized_users={"test-key": "tester"})
+    )
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/copy_weights",
+            json={
+                "source_path": "hf://org/repo",
+                "destination_project_id": "p",
+                "weights_access_token": body_token,
+            },
+            headers={"X-API-Key": "test-key", **headers},
+        )
+    # The fake fetch writes no adapter, so the import stops at adapter_config.json.
+    assert response.status_code == 400
+    assert tokens == ["tok"]
 
 
 @pytest.mark.asyncio

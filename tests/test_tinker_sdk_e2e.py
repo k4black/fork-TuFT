@@ -453,7 +453,9 @@ def test_checkpoint_ttl_round_trip(sdk_server: str) -> None:
 @pytest.mark.skipif(
     not hasattr(ServiceClient, "copy_weights"), reason="copy_weights needs tinker 0.32+"
 )
-def test_copy_weights_then_resume(sdk_server: str) -> None:
+def test_copy_weights_then_resume(sdk_server: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # tinker 0.34+ copies into a project and raises client-side without one.
+    monkeypatch.setenv("TINKER_PROJECT_ID", "tuft")
     service_client = _service_client(sdk_server)
     try:
         training_client = service_client.create_lora_training_client(
@@ -552,6 +554,29 @@ def test_image_chunks_sample_but_do_not_train(sdk_server: str) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(not hasattr(ServiceClient, "close"), reason="close needs tinker 0.32+")
+def test_close_finishes_the_session(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    trainer = service_client.create_lora_training_client(base_model=BASE_MODEL, rank=8)
+    session_id = service_client.holder.get_session_id()
+    # close() also releases the client, so no holder.close() afterwards.
+    service_client.close("success").result(timeout=CPU_TEST_TIMEOUT)
+    heartbeat = httpx.post(
+        f"{sdk_server}/api/v1/session_heartbeat",
+        json={"session_id": session_id},
+        headers={"X-API-Key": API_KEY},
+    )
+    assert heartbeat.status_code == 410
+    unload = httpx.post(
+        f"{sdk_server}/api/v1/unload_model",
+        json={"model_id": trainer.model_id},
+        headers={"X-API-Key": API_KEY},
+    )
+    # The finished session already released the run; unloading it again is a no-op.
+    assert unload.status_code == 202
+
+
+@pytest.mark.integration
 def test_route_errors_surface_4xx(sdk_server: str) -> None:
     """Unknown checkpoint and base model give 404; an incompatible load_state gives 400."""
     service_client = _service_client(sdk_server)
@@ -562,6 +587,8 @@ def test_route_errors_surface_4xx(sdk_server: str) -> None:
             )
         with pytest.raises(tinker.NotFoundError):
             service_client.create_lora_training_client(base_model="nope/none", rank=8)
+        with pytest.raises(tinker.NotFoundError):
+            service_client.create_sampling_client(base_model="nope/none")
 
         rank8 = service_client.create_lora_training_client(base_model=BASE_MODEL, rank=8)
         path = rank8.save_state("rank8").result(timeout=CPU_TEST_TIMEOUT).path

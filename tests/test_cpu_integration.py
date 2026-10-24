@@ -57,6 +57,7 @@ def _rl_data(tok, advantage: float) -> list[types.Datum]:
 def test_sdk_flow(cpu_server_endpoint: str) -> None:
     service = ServiceClient(
         api_key="tml-test-key",  # pragma: allowlist secret
+        project_id="tuft",  # tinker 0.34+ copy_weights needs a project; the server ignores it
         base_url=cpu_server_endpoint,
         timeout=TIMEOUT,
     )
@@ -201,3 +202,12 @@ def test_trained_checkpoint_serves_openai_chat(cpu_server_endpoint: str) -> None
     assert body["usage"]["completion_tokens"] == 4
     # Checkpoints are private by default.
     assert chat("tml-test-key-2").status_code == 403  # pragma: allowlist secret
+
+    completion = httpx.post(
+        f"{cpu_server_endpoint}/oai/api/v1/completions",
+        json={"model": path, "prompt": "Hi", "max_tokens": 4, "temperature": 0, "ignore_eos": True},
+        headers={"Authorization": "Bearer tml-test-key"},  # pragma: allowlist secret
+        timeout=TIMEOUT,
+    )
+    assert completion.status_code == 200, completion.text
+    assert completion.json()["usage"]["completion_tokens"] == 4

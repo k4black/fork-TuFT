@@ -196,6 +196,13 @@ def test_training_and_sampling_round_trip(server_endpoint: str) -> None:
 
         all_checkpoints = rest_client.list_user_checkpoints().result(timeout=CPU_TEST_TIMEOUT)
         assert any(ckpt.public for ckpt in all_checkpoints.checkpoints)
+        rest_client.unpublish_checkpoint_from_tinker_path(save_response.path).result(
+            timeout=CPU_TEST_TIMEOUT
+        )
+        refreshed = rest_client.list_checkpoints(model_id).result(timeout=CPU_TEST_TIMEOUT)
+        assert [
+            c.public for c in refreshed.checkpoints if c.checkpoint_id == "checkpoint-test"
+        ] == [False]
     finally:
         service_client.holder.close()
 

@@ -77,7 +77,7 @@ jobs:
       - name: Install the cookbook
         run: |
           uv venv --python 3.12 /tmp/cb
-          VIRTUAL_ENV=/tmp/cb uv pip install --torch-backend cpu tinker==0.32.0 "tinker_cookbook[math-rl] @ $COOKBOOK"
+          VIRTUAL_ENV=/tmp/cb uv pip install --torch-backend cpu tinker==0.35.0 "tinker_cookbook[math-rl] @ $COOKBOOK"
 
       - name: Build the tiny model
         run: .venv/bin/python scripts/make_tiny_qwen3.py "$TUFT_TINY_MODEL"
@@ -125,7 +125,7 @@ jobs:
         run: tail -n 100 server.log
 
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
           name: cookbook-server-log
           path: server.log
