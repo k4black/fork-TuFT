@@ -57,6 +57,7 @@ def _rl_data(tok, advantage: float) -> list[types.Datum]:
 def test_sdk_flow(cpu_server_endpoint: str) -> None:
     service = ServiceClient(
         api_key="tml-test-key",  # pragma: allowlist secret
+        project_id="tuft",  # tinker 0.34+ copy_weights needs a project; the server ignores it
         base_url=cpu_server_endpoint,
         timeout=TIMEOUT,
     )
