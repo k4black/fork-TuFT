@@ -23,7 +23,6 @@ from ..exceptions import (
     InvalidRequestException,
     ServerException,
     ServiceUnavailableException,
-    TuFTException,
     UnknownModelException,
 )
 from ..state import ServerState
@@ -176,89 +175,86 @@ def create_oai_router() -> APIRouter:
         body = await request.json()
         model_field = body.get("model")
 
-        try:
-            if not model_field:
-                raise InvalidRequestException("Missing 'model' field in request body.")
+        if not model_field:
+            raise InvalidRequestException("Missing 'model' field in request body.")
 
-            with tracer.start_as_current_span("oai.proxy_inference") as span:
-                span.set_attribute("oai.endpoint", vllm_path)
-                span.set_attribute("oai.model", model_field)
-                span.set_attribute("oai.user_id", user.user_id)
+        with tracer.start_as_current_span("oai.proxy_inference") as span:
+            span.set_attribute("oai.endpoint", vllm_path)
+            span.set_attribute("oai.model", model_field)
+            span.set_attribute("oai.user_id", user.user_id)
 
-                # Resolve model
-                try:
-                    resolved = resolve_model(model_field, state.config, user.user_id)
-                except ValueError as exc:
-                    raise UnknownModelException(model_name=model_field) from exc
+            # Resolve model
+            try:
+                resolved = resolve_model(model_field, state.config, user.user_id)
+            except ValueError as exc:
+                raise UnknownModelException(model_name=model_field) from exc
 
-                span.set_attribute("oai.base_model", resolved.base_model)
-                if resolved.lora_id:
-                    span.set_attribute("oai.lora_id", resolved.lora_id)
+            span.set_attribute("oai.base_model", resolved.base_model)
+            if resolved.lora_id:
+                span.set_attribute("oai.lora_id", resolved.lora_id)
 
-                # A known model without the sampling capability gets the
-                # deterministic capability error, not a backend-lookup failure.
-                state.sampling.require_sampling_capability(resolved.base_model)
+            # A known model without the sampling capability gets the
+            # deterministic capability error, not a backend-lookup failure.
+            state.sampling.require_sampling_capability(resolved.base_model)
 
-                backend = state.sampling._base_backends.get(resolved.base_model)
-                if backend is None:
-                    raise UnknownModelException(model_name=resolved.base_model)
+            backend = state.sampling._base_backends.get(resolved.base_model)
+            if backend is None:
+                raise UnknownModelException(model_name=resolved.base_model)
 
-                # The replica counts this request until the response, or its stream, ends.
-                # Turn 2 of a chat extends this string, so it goes to the same prefix cache.
-                replica = backend.acquire(
-                    json.dumps(body.get("messages") or body.get("prompt"), sort_keys=True)
-                )
-                streaming = False
-                try:
-                    backend_url = replica.get_openai_api_url()
-                    if backend_url is None:
-                        raise ServiceUnavailableException(
-                            f"OpenAI API not available for model: {resolved.base_model}"
-                        )
+            # The replica counts this request until the response, or its stream, ends.
+            # Turn 2 of a chat extends this string, so it goes to the same prefix cache.
+            replica = backend.acquire(
+                json.dumps(body.get("messages") or body.get("prompt"), sort_keys=True)
+            )
+            streaming = False
+            try:
+                backend_url = replica.get_openai_api_url()
+                if backend_url is None:
+                    raise ServiceUnavailableException(
+                        f"OpenAI API not available for model: {resolved.base_model}"
+                    )
 
-                    # Load the LoRA on the chosen replica only, via its vLLM OpenAI API
-                    phases = state.sampling.phases  # colocate "sleep": vLLM must be awake
-                    if resolved.lora_adapter_path and resolved.lora_id:
-                        try:
-                            async with use_phase(phases, resolved.base_model, "sample"):
-                                await replica.ensure_oai_lora_loaded(
-                                    resolved.lora_id, resolved.lora_adapter_path
-                                )
-                        except Exception as exc:
-                            raise ServerException(f"Failed to load LoRA adapter: {exc}") from exc
+                # Load the LoRA on the chosen replica only, via its vLLM OpenAI API
+                phases = state.sampling.phases  # colocate "sleep": vLLM must be awake
+                if resolved.lora_adapter_path and resolved.lora_id:
+                    try:
+                        async with use_phase(phases, resolved.base_model, "sample"):
+                            await replica.ensure_oai_lora_loaded(
+                                resolved.lora_id, resolved.lora_adapter_path
+                            )
+                    except Exception as exc:
+                        raise ServerException(f"Failed to load LoRA adapter: {exc}") from exc
 
-                    # Replace model name with backend model name for vLLM
-                    user_model_name = body["model"]
-                    body["model"] = resolved.backend_model_name
-                    stream = body.get("stream", False)
+                # Replace model name with backend model name for vLLM
+                user_model_name = body["model"]
+                body["model"] = resolved.backend_model_name
+                stream = body.get("stream", False)
 
-                    # Build the response-id prefix.
-                    # Final id = "{session_part}:sample:{vllm_original_id}"
-                    # session_part is the sampling session id (from the
-                    # SamplingController) when a LoRA adapter is used, otherwise
-                    # the base model backend identifier.
-                    session_part = resolved.lora_id or "base"
-                    response_id_prefix = f"{session_part}:sample"
+                # Build the response-id prefix.
+                # Final id = "{session_part}:sample:{vllm_original_id}"
+                # session_part is the sampling session id (from the
+                # SamplingController) when a LoRA adapter is used, otherwise
+                # the base model backend identifier.
+                session_part = resolved.lora_id or "base"
+                response_id_prefix = f"{session_part}:sample"
 
-                    async with use_phase(phases, resolved.base_model, "sample"):
-                        response = await proxy_request(
-                            client=client,
-                            backend_url=backend_url,
-                            path=vllm_path,
-                            body=body,
-                            stream=stream,
-                            user_model_name=user_model_name,
-                            response_id_prefix=response_id_prefix,
-                            # shortcut: a stream that never starts (the client left
-                            # first) keeps its count; wrap the response if counts drift.
-                            on_close=lambda: backend.release(replica),
-                        )
-                    streaming = isinstance(response, StreamingResponse)
-                    return response
-                finally:
-                    if not streaming:  # a stream releases in on_close
-                        backend.release(replica)
-        except TuFTException as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+                async with use_phase(phases, resolved.base_model, "sample"):
+                    response = await proxy_request(
+                        client=client,
+                        backend_url=backend_url,
+                        path=vllm_path,
+                        body=body,
+                        stream=stream,
+                        user_model_name=user_model_name,
+                        response_id_prefix=response_id_prefix,
+                        # shortcut: a stream that never starts (the client left
+                        # first) keeps its count; wrap the response if counts drift.
+                        on_close=lambda: backend.release(replica),
+                    )
+                streaming = isinstance(response, StreamingResponse)
+                return response
+            finally:
+                if not streaming:  # a stream releases in on_close
+                    backend.release(replica)
 
     return router
