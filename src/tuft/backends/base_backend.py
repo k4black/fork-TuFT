@@ -3,7 +3,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from tinker import types
 
@@ -97,6 +97,8 @@ class BaseSamplingBackend(BaseBackend):
         topk_prompt_logprobs: int = 0,
         lora_id: Optional[str] = None,
         topk_sample_logprobs: int = 0,
+        target_prompt_logprobs: Any = None,
+        prompt_alt_tokens_k: int = 0,
     ) -> types.SampleResponse:
         """Abstract method for sampling."""
 

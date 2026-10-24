@@ -56,7 +56,7 @@ guess_number) run unchanged on the current SDK in the CPU integration workflow.
 - [x] **DPO and distillation recipes on CPU** — the CPU branch of the prompt-logprobs patch maps
   one request at a time onto vLLM's per-request LoRA logits kernel; both recipes run in the CPU
   workflow.
-- [ ] **Keep as 400/404** — Dimuon optimizer, `assign_session_project`, `export_session_trace`,
+- [x] **Keep as 400/404** — Dimuon optimizer, `assign_session_project`, `export_session_trace`,
   `get_audit_log`, `get_billing_usage`; noted in the compatibility table.
 
 ### Phase 7: The worker (P2)
@@ -110,10 +110,11 @@ Identity, quotas and routing belong to the control plane (Phase 9).
 - [ ] **Tensor, pipeline and expert parallelism** — a Megatron-style backend for models that do not
   fit FSDP well (large MoE); only with a target model (SkyRL and Twinkle have Megatron paths).
 - [ ] **Full fine-tuning** — optional; the Tinker API is LoRA-only.
-- [ ] **`target_prompt_logprobs` and `prompt_alt_tokens_k`** — score chosen ids and draw k
+- [x] **`target_prompt_logprobs` and `prompt_alt_tokens_k`** — score chosen ids and draw k
   alternatives at prompt positions inside the prompt-logprobs patch, including sparse CSR input.
-- [ ] **External export** — `save_weights_external` and `get_external_weights_urls` in the HF
-  adapter layout.
+  Up to 20 per row; the draws ignore top-k/top-p.
+- [x] **External export** — `save_weights_external` and `get_external_weights_urls` in the HF
+  adapter layout; signed per-file URLs on the existing checkpoint disk (no S3).
 - [x] **Reproducible adapter init** — `LoraConfig.seed` on both backends, including reused FSDP slots.
 - [ ] **Telemetry** — client exceptions are logged and step metrics go on OTEL spans; keeping
   other SDK events is open.
@@ -175,8 +176,8 @@ definition, schema) are decided in a design pass when the phase starts.
 | Archive download | signed | roadmap | unsigned redirect | checkpoint service | signed, expiring |
 | Checkpoint TTL and expiry | yes | roadmap | no | ? | yes |
 | Import external adapters | no | no | no | no | yes |
-| copy_weights, external export | yes | no | export only | ? | copy yes, export Phase 8 |
-| Top-k sample and target prompt logprobs | yes | no | top-k prompt only | ? | top-k yes, target Phase 8 |
+| copy_weights, external export | yes | no | export only | ? | yes (export: signed per-file URLs) |
+| Top-k sample and target prompt logprobs | yes | no | top-k prompt only | ? | yes |
 | Backend readiness probe | ? | API health only | API health only | ? | yes |
 | Compat matrix in CI | n/a | yes | no | no | yes, plus cookbook recipes on CPU |
 | User-free worker | ? | yes | yes | no (token-aware) | Phase 7 |

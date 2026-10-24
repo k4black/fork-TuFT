@@ -42,15 +42,20 @@ TRAINER_ONLY_ADAPTER_FILES = frozenset({"adapter.pt", "optimizer.pt"})
 STAGING_DIR = ".staging"
 
 
-def read_adapter_files(adapter_path: Path) -> dict[str, bytes]:
-    """Read a peft adapter directory into memory, ready to ship to another node."""
-    files = {
-        child.name: child.read_bytes()
+def adapter_files(adapter_path: Path) -> list[Path]:
+    """The peft adapter files (HF layout), without trainer-only state or partial writes."""
+    return [
+        child
         for child in adapter_path.iterdir()
         if child.is_file()
         and child.name not in TRAINER_ONLY_ADAPTER_FILES
         and not child.name.endswith(".tmp")
-    }
+    ]
+
+
+def read_adapter_files(adapter_path: Path) -> dict[str, bytes]:
+    """Read a peft adapter directory into memory, ready to ship to another node."""
+    files = {child.name: child.read_bytes() for child in adapter_files(adapter_path)}
     # vLLM treats a path without a config as a HF Hub repo id and downloads it.
     if "adapter_config.json" not in files:
         raise ValueError(f"LoRA adapter {adapter_path} has no adapter_config.json.")
@@ -217,7 +222,9 @@ class CheckpointRecord(BaseModel):
     @property
     def tinker_path(self) -> str:
         """Get the tinker style path for this checkpoint."""
-        folder = "weights" if self.checkpoint_type == "training" else "sampler_weights"
+        folder = {"training": "weights", "external": "external_weights"}.get(
+            self.checkpoint_type, "sampler_weights"
+        )
         return f"tinker://{self.training_run_id}/{folder}/{self.checkpoint_id}"
 
     @property

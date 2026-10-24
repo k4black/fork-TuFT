@@ -20,7 +20,7 @@ The route column names the main request. Methods that compose several requests l
 |---|---|---|---|
 | `ServiceClient.close` | supported | POST /api/v1/sessions/{session_id}/finish | Marks the session finished and releases its runs; later heartbeats get 410. |
 | `ServiceClient.copy_weights` | supported | POST /api/v1/copy_weights | `tinker://` copies hard-link the files and keep the kind. `hf://org/repo[@rev][/subdir]` (request token only) and `s3://` (under `import_s3_prefixes`) import safetensors adapters as sampler checkpoints. The adapter must match a configured model (`base_model_name_or_path`), a supported rank, the server alpha rule (PEFT's usual `lora_alpha == r` needs `lora_alpha_ratio: 1`) and the targets of some `train_attn/train_mlp/train_unembed` combination, so a `q_proj,v_proj`-only adapter is rejected. The copy lives in a new released run: load it into a new run to train. |
-| `ServiceClient.create_lora_training_client` | supported | POST /api/v1/create_model | |
+| `ServiceClient.create_lora_training_client` | supported | POST /api/v1/create_model | A non-Adam `optimizer_config` (e.g. Dimuon, 0.29.1+) returns 400 by decision. |
 | `ServiceClient.create_rest_client` | client-side | - | |
 | `ServiceClient.create_sampling_client` | supported | POST /api/v1/create_sampling_session | |
 | `ServiceClient.create_training_client_from_state` | supported | POST /api/v1/load_weights | Also calls `weights_info` and `create_model`. |
@@ -38,10 +38,10 @@ The route column names the main request. Methods that compose several requests l
 | `TrainingClient.get_tokenizer` | supported | POST /api/v1/get_info | Loads `tokenizer_id` from the HF Hub. Set `ModelConfig.tokenizer_id` when `model_name` is not a Hub id. |
 | `TrainingClient.load_state` | supported | POST /api/v1/load_weights | Saves the loaded weights as a checkpoint of this run, so a restart restores them. |
 | `TrainingClient.load_state_with_optimizer` | supported | POST /api/v1/load_weights | 400 for a sampler checkpoint: it holds no optimizer state. Saves the loaded state as a checkpoint of this run. |
-| `TrainingClient.optim_step` | supported | POST /api/v1/optim_step | |
+| `TrainingClient.optim_step` | supported | POST /api/v1/optim_step | Adam only: non-Adam `optim_params` (e.g. Dimuon, 0.29.1+) return 400 by decision. |
 | `TrainingClient.save_state` | supported | POST /api/v1/save_weights | Stores `ttl_seconds` and `user_metadata`. A save under an existing name replaces it; `overwrite` is ignored. |
 | `TrainingClient.save_weights_and_get_sampling_client` | supported | POST /api/v1/create_sampling_session | Calls `save_weights_for_sampler` first. The server keeps the newest `sampler_checkpoints_keep` unnamed saves per live run (none after release), plus older ones sampled within the model's `adapter_idle_ttl_minutes`; it deletes the rest, and their clients get 404. |
-| `TrainingClient.save_weights_external` | unsupported | POST /api/v1/save_weights_external | |
+| `TrainingClient.save_weights_external` | supported | POST /api/v1/save_weights_external | 0.32+. An adapter-only save in the HF peft layout (`adapter_config.json`, `adapter_model.safetensors`) at `tinker://<run>/external_weights/<name>`, on the same disk as other checkpoints. It shares the `<run>/<name>` namespace with them and honours `ttl_seconds`. |
 | `TrainingClient.save_weights_for_sampler` | supported | POST /api/v1/save_weights_for_sampler | Stores `ttl_seconds` and `user_metadata`. |
 | `SamplingClient.compute_logprobs` | supported | POST /api/v1/asample | Samples one token with prompt logprobs. |
 | `SamplingClient.create` | supported | POST /api/v1/create_sampling_session | |
@@ -49,19 +49,19 @@ The route column names the main request. Methods that compose several requests l
 | `SamplingClient.get_base_model` | supported | GET /api/v1/samplers/{sampler_id} | |
 | `SamplingClient.get_sampler_handle` | client-side | - | 0.32+; serialises the client without credentials. |
 | `SamplingClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |
-| `SamplingClient.get_tokenizer` | partial | GET /api/v1/samplers/{sampler_id} | Loads `base_model` from the HF Hub. TuFT sets it to the configured `model_name`. |
+| `SamplingClient.get_tokenizer` | partial | GET /api/v1/samplers/{sampler_id} | Loads `base_model` from the HF Hub. TuFT sets it to the configured `model_name`. The SDK reads no other field here, so `ModelConfig.tokenizer_id` does not apply; `get_base_model` needs `base_model` unchanged. |
 | `SamplingClient.on_queue_state_change` | client-side | - | |
-| `SamplingClient.sample` | supported | POST /api/v1/asample | `topk_sample_logprobs` up to 20 (vLLM's `max_logprobs`), processed logprobs like the sampled-token ones. `prompt_alt_tokens_k` and `target_prompt_logprobs` return 400. `ImageChunk` inputs work on vLLM vision-language models (e.g. Qwen3-VL) and need `expected_tokens`; a count that differs from vLLM's image expansion returns 400. |
-| `RestClient.assign_session_project` | unsupported | PUT /api/v1/sessions/{session_id}/project | |
+| `SamplingClient.sample` | supported | POST /api/v1/asample | `topk_sample_logprobs` up to 20 (vLLM's `max_logprobs`), processed logprobs like the sampled-token ones. `target_prompt_logprobs` (dense or CSR) takes up to 20 ids per row and answers in the request layout, scaled by temperature like prompt logprobs; an id past the vocab scores -inf. `prompt_alt_tokens_k` up to 20: draws with replacement at the request temperature (argmax at 0) and the request seed; top-k/top-p do not apply to the draws. `topk_prompt_logprobs` is the k most likely tokens, not draws, so the two are separate. `ImageChunk` inputs work on vLLM vision-language models (e.g. Qwen3-VL) and need `expected_tokens`; a count that differs from vLLM's image expansion returns 400. |
+| `RestClient.assign_session_project` | unsupported | PUT /api/v1/sessions/{session_id}/project | Kept as 404 by decision: the worker has no projects; a later control plane owns them. |
 | `RestClient.delete_checkpoint` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id} | |
 | `RestClient.delete_checkpoint_from_tinker_path` | supported | DELETE /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id} | |
-| `RestClient.export_session_trace` | unsupported | GET /api/v1/sessions/{session_id}/trace_export | |
-| `RestClient.get_audit_log` | unsupported | GET /api/v1/audit | |
-| `RestClient.get_billing_usage` | unsupported | GET /api/v1/billing/usage/events | |
+| `RestClient.export_session_trace` | unsupported | GET /api/v1/sessions/{session_id}/trace_export | Kept as 404 by decision: the worker has no trace store; a later control plane owns them. Traces go to OTEL. |
+| `RestClient.get_audit_log` | unsupported | GET /api/v1/audit | Kept as 404 by decision: the worker has no audit log; a later control plane owns them. |
+| `RestClient.get_billing_usage` | unsupported | GET /api/v1/billing/usage/events | Kept as 404 by decision: the worker has no billing; a later control plane owns them. |
 | `RestClient.get_current_checkpoint_storage_usage` | supported | GET /api/v1/billing/usage/checkpoints/current | 0.32+. One row for the caller: count and `size_bytes` of their checkpoints on disk. `project_id` is ignored; no cost fields. |
 | `RestClient.get_checkpoint_archive_url` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
 | `RestClient.get_checkpoint_archive_url_from_tinker_path` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/archive | |
-| `RestClient.get_external_weights_urls` | unsupported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/external_weights_urls | |
+| `RestClient.get_external_weights_urls` | supported | GET /api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id}/external_weights_urls | 0.32+. One signed URL per adapter file, valid for 15 minutes and until the server restarts, like the archive download; no API key on the download. |
 | `RestClient.get_sampler` | supported | GET /api/v1/samplers/{sampler_id} | |
 | `RestClient.get_session` | supported | GET /api/v1/sessions/{session_id} | Returns the session's `user_metadata` (read by 0.32+). |
 | `RestClient.get_telemetry` | partial | POST /api/v1/telemetry | The server logs client exceptions at WARNING and discards other events. Training step metrics go on OTEL spans as `tuft.metric.*`. |

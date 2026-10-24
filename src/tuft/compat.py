@@ -23,9 +23,12 @@ version-adaptive (see the module-level capability probes below):
 - 0.29.1 renamed ``OptimStepRequest.adam_params`` to ``optim_params``
   (``server.optim_step`` reads either).
 
-Not implemented, rejected with 400: non-Adam optimizers (0.29.1), and the
-sampling fields ``target_prompt_logprobs`` (0.30) and ``prompt_alt_tokens_k``
-(0.31). ``topk_sample_logprobs`` (0.29) is served up to k=20.
+- 0.30 added ``target_prompt_logprobs`` (request tensor, response tensor in the
+  same layout) and 0.31 ``prompt_alt_tokens_k``; both are served up to 20 per
+  prompt row.
+
+Not implemented, rejected with 400: non-Adam optimizers (0.29.1).
+``topk_sample_logprobs`` (0.29) is served up to k=20.
 """
 
 from __future__ import annotations
@@ -503,6 +506,20 @@ def _write_topk(msg: Any, entries: list[list[tuple[int, float]] | None]) -> None
     setattr(msg, _TOPK_LENGTH_FIELD, n)
 
 
+def _tensor_to_proto(tensor: types.TensorData) -> public_pb.Tensor:
+    """Encode a TensorData as a proto Tensor; a sparse CSR tensor stays sparse."""
+    msg = public_pb.Tensor(dtype=_TENSOR_DTYPE_TO_PROTO[tensor.dtype], shape=tensor.shape or [])
+    # ``data`` holds only the listed values of a CSR tensor; to_numpy() would densify it.
+    values = np.asarray(tensor.data, dtype=_TENSOR_DTYPE_TO_NUMPY[tensor.dtype]).tobytes()
+    if tensor.sparse_crow_indices is None:
+        msg.dense = values
+        return msg
+    msg.sparse_csr.values = values
+    msg.sparse_csr.crow_indices = np.asarray(tensor.sparse_crow_indices, np.int64).tobytes()
+    msg.sparse_csr.col_indices = np.asarray(tensor.sparse_col_indices, np.int64).tobytes()
+    return msg
+
+
 def serialize_sample_response_proto(response: SampleResponse) -> bytes:
     """Serialize a SampleResponse to protobuf wire format.
 
@@ -542,6 +559,14 @@ def serialize_sample_response_proto(response: SampleResponse) -> bytes:
     # Top-k prompt logprobs: dense N*K matrices
     if response.topk_prompt_logprobs is not None:
         _write_topk(proto.topk_prompt_logprobs, response.topk_prompt_logprobs)
+
+    target = getattr(response, "target_prompt_logprobs", None)
+    if target is not None:
+        proto.target_prompt_logprobs.CopyFrom(_tensor_to_proto(target))
+    alt = getattr(response, "prompt_alt_tokens", None)
+    if alt is not None:
+        proto.prompt_alt_tokens.tokens.CopyFrom(_tensor_to_proto(alt.tokens))
+        proto.prompt_alt_tokens.logprobs.CopyFrom(_tensor_to_proto(alt.logprobs))
 
     return proto.SerializeToString()
 

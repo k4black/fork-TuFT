@@ -56,6 +56,7 @@ OperationType = Literal[
     "optim_step",
     "save_weights",
     "save_weights_for_sampler",
+    "save_weights_external",
     "load_weights",
     "sample",
 ]
