@@ -47,8 +47,6 @@ class TestEmbeddedServer:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         mock_proc.pid = 12345
-        mock_proc.stderr = MagicMock()
-        mock_proc.stderr.read.return_value = b"some error"
         mock_popen.return_value = mock_proc
 
         server = EmbeddedServer(config_path=config, timeout=1)
