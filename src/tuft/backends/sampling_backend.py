@@ -180,6 +180,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             bundle_indices=bundle_indices,
             enable_sleep_mode=config.colocate == "sleep",
             speculative_config=config.speculative_config,
+            batch_invariant=config.vllm_batch_invariant,
         )
 
     def _create_colocated_engine(self, config: ModelConfig):

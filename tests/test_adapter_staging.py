@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import pickle
 import sys
 import time
@@ -16,7 +17,7 @@ from tinker import types
 from tuft.backends.sampling_backend import VLLMSamplingBackend, _build_sample_response
 from tuft.backends.vllm_engine import VLLMEngine, _plain_output
 from tuft.checkpoints import read_adapter_files
-from tuft.config import ModelConfig
+from tuft.config import ModelConfig, load_yaml_config
 
 
 # Carries both ':' and '/', as minted by oai.model_resolver.
@@ -366,3 +367,39 @@ async def test_speculative_config_reaches_vllm_engine_args(monkeypatch):
     await engine.prepare()
 
     assert engine_args["speculative_config"] == spec
+
+
+@pytest.mark.parametrize("flag", [True, False])
+def test_vllm_batch_invariant_sets_the_engine_env(tmp_path, monkeypatch, flag):
+    config_path = tmp_path / "tuft_config.yaml"
+    config_path.write_text(
+        "supported_models:\n"
+        "  - model_name: m\n"
+        "    model_path: /dummy/m\n"
+        "    max_model_len: 1024\n"
+        f"    vllm_batch_invariant: {str(flag).lower()}\n",
+        encoding="utf-8",
+    )
+    model = load_yaml_config(config_path).supported_models[0]
+    backend = VLLMSamplingBackend.__new__(VLLMSamplingBackend)
+    engine_config = backend._build_engine_config(
+        model, tensor_parallel_size=1, gpu_memory_utilization=0.5
+    )
+    # VLLMEngine.__init__ imports vllm: stub the names it reads, keep its env writes local.
+    from packaging.version import parse
+
+    fake_vllm = SimpleNamespace(SamplingParams=lambda **kw: kw)
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.sampling_params",
+        SimpleNamespace(RequestOutputKind=SimpleNamespace(FINAL_ONLY=1)),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tuft.backends.vllm_worker",
+        SimpleNamespace(get_vllm_version=lambda: parse("0.32.0")),
+    )
+    monkeypatch.setattr(os, "environ", {})
+    VLLMEngine(engine_config)
+    assert ("VLLM_BATCH_INVARIANT" in os.environ) is flag

@@ -87,6 +87,8 @@ class VLLMEngineConfig:
     enable_sleep_mode: bool = False
     # vLLM ``speculative_config`` (e.g. MTP); None disables speculative decoding.
     speculative_config: Optional[dict[str, Any]] = None
+    # VLLM_BATCH_INVARIANT=1: fixed-partials LoRA kernels instead of split-K atomics.
+    batch_invariant: bool = False
 
 
 IMAGE_DECODE_ERROR = "ImageChunk data is not a decodable image"
@@ -156,6 +158,8 @@ class VLLMEngine:
         # colocation work from within the Ray actor.
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         os.environ["VLLM_ALLREDUCE_USE_SYMM_MEM"] = "0"
+        if config.batch_invariant:
+            os.environ["VLLM_BATCH_INVARIANT"] = "1"
         if config.enable_runtime_lora_updating:
             os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "1"
 

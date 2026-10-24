@@ -453,6 +453,13 @@ docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v 
 distribution, but numerics and seeded outputs differ from plain decoding. This matters for RL
 train/sample mismatch.
 
+### Deterministic LoRA logprobs
+
+`vllm_batch_invariant: true` under a model sets `VLLM_BATCH_INVARIANT=1` in the vLLM engine. It is off by default.
+vLLM's LoRA kernels then add fixed partial sums instead of split-K atomics, so the sampler's LoRA logprobs repeat run to run.
+The cost is slower sampling.
+This switch is not verified on a GPU yet, and not on the hybrid Qwen3.5 architecture.
+
 ## Deployment
 
 Don't have a GPU? Run TuFT on **pay-as-you-go cloud compute** — rent a GPU on demand and fine-tune from your laptop (no local GPU). The [`deploy/`](deploy/) helpers wrap the standard `tuft launch` server for popular cloud backends and walk you through configuring the deployment, running an end-to-end "talk like Yoda" training example on `Qwen/Qwen3-0.6B`, and downloading the trained adapter.
