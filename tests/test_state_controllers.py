@@ -2034,9 +2034,8 @@ async def test_copy_weights_links_tinker_checkpoint(request, tmp_path) -> None:
     new_run_id = await _create_run(state, session_id)
     await state.load_checkpoint(new_run_id, "tester", copy.tinker_path, optimizer=True)
     with pytest.raises(CheckpointAccessDeniedException):
-        await state.copy_weights(
-            _create_session(state, "other"), "other", source.tinker_path, None, None
-        )
+        # No session, as tinker 0.34+ sends it.
+        await state.copy_weights(None, "other", source.tinker_path, None, None)
 
 
 @pytest.mark.asyncio

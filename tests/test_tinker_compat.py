@@ -292,15 +292,17 @@ async def test_malformed_request_bodies_are_rejected(
     assert response.status_code == status_code
 
 
+# gspo and stable_reinforce are tinker 0.34+/0.35+ loss names TuFT does not implement.
+@pytest.mark.parametrize("loss_fn", ["not_a_loss_fn", "gspo", "stable_reinforce"])
 @pytest.mark.asyncio
-async def test_unknown_loss_fn_is_rejected(compatibility_app) -> None:
+async def test_unknown_loss_fn_is_rejected(compatibility_app, loss_fn) -> None:
     app, _ = compatibility_app
     request = _proto_request(forward_only=False)
-    request.loss_fn = "not_a_loss_fn"
+    request.loss_fn = loss_fn
     async with _client(app) as client:
         response = await _post_proto(client, request.SerializeToString())
     assert response.status_code == 422
-    assert "not_a_loss_fn" in response.json()["detail"]
+    assert loss_fn in response.json()["detail"]
 
 
 @pytest.mark.skipif(
@@ -478,6 +480,29 @@ async def test_topk_sample_logprobs_out_of_range_is_rejected(compatibility_app, 
         )
     assert response.status_code == 400
     assert "topk_sample_logprobs" in response.json()["detail"]
+
+
+@pytest.mark.skipif(
+    "prompt_logprobs_last_n" not in types.SampleRequest.model_fields,
+    reason="prompt_logprobs_last_n only exists from tinker 0.33",
+)
+@pytest.mark.asyncio
+async def test_prompt_logprobs_last_n_is_rejected(compatibility_app) -> None:
+    app, _ = compatibility_app
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/asample",
+            json={
+                "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
+                "sampling_params": {"max_tokens": 1},
+                "base_model": "test-model",
+                "prompt_logprobs": True,
+                "prompt_logprobs_last_n": 1,
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+    assert response.status_code == 400
+    assert "prompt_logprobs_last_n" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

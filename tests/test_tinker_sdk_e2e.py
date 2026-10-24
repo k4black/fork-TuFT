@@ -453,7 +453,9 @@ def test_checkpoint_ttl_round_trip(sdk_server: str) -> None:
 @pytest.mark.skipif(
     not hasattr(ServiceClient, "copy_weights"), reason="copy_weights needs tinker 0.32+"
 )
-def test_copy_weights_then_resume(sdk_server: str) -> None:
+def test_copy_weights_then_resume(sdk_server: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # tinker 0.34+ copies into a project and raises client-side without one.
+    monkeypatch.setenv("TINKER_PROJECT_ID", "tuft")
     service_client = _service_client(sdk_server)
     try:
         training_client = service_client.create_lora_training_client(
