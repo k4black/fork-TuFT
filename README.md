@@ -434,6 +434,31 @@ docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v 
     --entrypoint tuft k4black/tuft:latest launch --port 10610 --config /data/tuft_config.yaml
 ```
 
+### Trainer kernels
+
+The image has `flash-attn` 2.8.3, `fla` (flash-linear-attention) and `causal-conv1d` 1.7.0. The
+trainers use `sdpa` by default; set `attn_implementation` to use flash-attn. transformers imports
+the kernels below optionally. Without them it runs a slow torch reference path. The `kernels` package (HF Hub
+kernels) is not installed, so `use_kernel_forward_from_hub` layers keep their plain forward.
+
+| Family | Trainer kernel | In image | Note |
+|---|---|---|---|
+| Qwen3.5, Qwen3.5-MoE, Qwen3-Next | `fla`, `causal_conv1d` | yes | In `MODULE_MAP`. `causal_conv1d` is built from source. |
+| Qwen3, Qwen3-MoE | none | n/a | In `MODULE_MAP`. MoE experts use torch `grouped_mm`. |
+| Llama 3 | none | n/a | In `MODULE_MAP`. |
+| Llama 4 | none | n/a | Not in `MODULE_MAP`. MoE experts in torch. |
+| Mistral, Mixtral | none | n/a | Not in `MODULE_MAP`. Mixtral experts use torch `grouped_mm`. |
+| Gemma 3, Gemma 3n | none | n/a | Not in `MODULE_MAP`. |
+| DeepSeek V2, V3 | none | n/a | Not in `MODULE_MAP`. MLA serving uses FlashMLA (in the vLLM wheel) and `flashinfer-python`. |
+| GPT-OSS | none | n/a | Not in `MODULE_MAP`. MegaBlocks MoE needs `kernels`. |
+| LFM2 | `causal_conv1d` | yes | Not in `MODULE_MAP`. |
+| Mamba, Mamba2, Nemotron-H, Falcon-H1 | `mamba_ssm`, `causal_conv1d` | `causal_conv1d` only | Not in `MODULE_MAP`. `mamba_ssm` uses the torch path. |
+
+`causal-conv1d` and `mamba-ssm` publish prebuilt wheels up to torch 2.10, and PyPI has only the
+sdist. The image builds `causal-conv1d` from source with the base image's `nvcc`. It does not build
+`mamba-ssm`, because no family in `MODULE_MAP` needs it. vLLM has its own conv and SSM ops, so
+sampling does not use these packages.
+
 ### Speculative decoding
 
 `speculative_config` under a model goes to vLLM as-is. For a checkpoint with MTP heads
