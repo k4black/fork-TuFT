@@ -1,6 +1,6 @@
 """Serialization helpers for the Tinker wire formats.
 
-TuFT targets tinker >= 0.25, < 0.33, where ``/forward_backward`` is protobuf-only
+TuFT targets tinker >= 0.25, < 0.36, where ``/forward_backward`` is protobuf-only
 in both directions. The response side is not merely an optimization: since tinker
 0.22 ``SampleResponse`` and ``ForwardBackwardOutput`` are plain dataclasses, and
 the SDK's ``deserialize_json_response`` only revives pydantic models, so a JSON
@@ -22,6 +22,8 @@ version-adaptive (see the module-level capability probes below):
   field to ``length`` (same field number, so the wire bytes are unchanged).
 - 0.29.1 renamed ``OptimStepRequest.adam_params`` to ``optim_params``
   (``server.optim_step`` reads either).
+- 0.34.0 sends ``copy_weights`` without a session and moves its access token
+  to a header (``server.copy_weights`` reads either).
 
 Not implemented, rejected with 400: non-Adam optimizers (0.29.1), and the
 sampling fields ``target_prompt_logprobs`` (0.30) and ``prompt_alt_tokens_k``
@@ -33,7 +35,7 @@ from __future__ import annotations
 import base64
 import io
 from dataclasses import dataclass, fields
-from typing import Any, cast, get_args
+from typing import Any, cast
 
 import numpy as np
 import zstandard as zstd
@@ -53,7 +55,9 @@ from .loss_fn import LOSS_FN
 #: Payload types the SDK decodes as protobuf. Anything else falls back to JSON.
 PROTO_PAYLOAD_TYPES: tuple[type, ...] = (SampleResponse, ForwardBackwardOutput)
 
-_LOSS_FN_NAMES = frozenset(get_args(types.LossFnType)) | LOSS_FN.keys()
+# Not the SDK's LossFnType: tinker 0.34+ lists gspo and stable_reinforce, which
+# TuFT does not implement, so they must fail at decode time.
+_LOSS_FN_NAMES = frozenset(LOSS_FN)
 
 # tinker >= 0.26.2 made these sampling-identity fields required; 0.25 has neither.
 _SAMPLED_SEQUENCE_HAS_SEQUENCE_ID = any(

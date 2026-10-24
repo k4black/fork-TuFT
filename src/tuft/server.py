@@ -78,7 +78,9 @@ class TtlBody(BaseModel):
 
 class CopyWeightsBody(BaseModel):
     # Local model: tinker 0.25 has no CopyWeightsRequest. model_seq_id is unused.
-    session_id: str
+    # tinker 0.34+ sends destination_project_id instead of a session; TuFT has no
+    # projects, so the field is ignored and the copy belongs to the caller.
+    session_id: str | None = None
     model_seq_id: int | None = None
     source_path: str
     ttl_seconds: int | None = None
@@ -661,6 +663,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
     @app.post("/api/v1/copy_weights")
     async def copy_weights(
         body: CopyWeightsBody,
+        raw_request: Request,
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> dict[str, str]:
@@ -669,7 +672,8 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
             user.user_id,
             body.source_path,
             body.ttl_seconds,
-            body.weights_access_token,
+            # tinker 0.34+ moved the token from the body to this header.
+            body.weights_access_token or raw_request.headers.get("X-Tinker-Weights-Access-Token"),
         )
         return {"tinker_path": checkpoint.tinker_path}
 
@@ -695,6 +699,12 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="topk_sample_logprobs must be between 0 and 20",
+            )
+        # tinker 0.33+; the SDK raises if a server ignores it, so reject it.
+        if getattr(request, "prompt_logprobs_last_n", None) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="prompt_logprobs_last_n is not supported",
             )
         # tinker >= 0.26.2 requires one sequence id per requested sample on the
         # promise; the ids are session-scoped and stable per (session, seq, i).
