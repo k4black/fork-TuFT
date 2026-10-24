@@ -23,9 +23,12 @@ version-adaptive (see the module-level capability probes below):
 - 0.29.1 renamed ``OptimStepRequest.adam_params`` to ``optim_params``
   (``server.optim_step`` reads either).
 
-Not implemented, rejected with 400: non-Adam optimizers (0.29.1), and the
-sampling fields ``target_prompt_logprobs`` (0.30) and ``prompt_alt_tokens_k``
-(0.31). ``topk_sample_logprobs`` (0.29) is served up to k=20.
+- 0.30 added ``target_prompt_logprobs`` (request tensor, response tensor in the
+  same layout) and 0.31 ``prompt_alt_tokens_k``; both are served up to 20 per
+  prompt row.
+
+Not implemented, rejected with 400: non-Adam optimizers (0.29.1).
+``topk_sample_logprobs`` (0.29) is served up to k=20.
 """
 
 from __future__ import annotations
@@ -48,6 +51,12 @@ from tinker.types.forward_backward_output import ForwardBackwardOutput
 from tinker.types.sample_response import SampleResponse
 
 from .loss_fn import LOSS_FN
+
+
+try:  # tinker >= 0.30; older SDKs never build a response that needs it.
+    from tinker.proto.request_conv import _tensor_data_to_proto
+except ImportError:
+    _tensor_data_to_proto = None
 
 
 #: Payload types the SDK decodes as protobuf. Anything else falls back to JSON.
@@ -542,6 +551,16 @@ def serialize_sample_response_proto(response: SampleResponse) -> bytes:
     # Top-k prompt logprobs: dense N*K matrices
     if response.topk_prompt_logprobs is not None:
         _write_topk(proto.topk_prompt_logprobs, response.topk_prompt_logprobs)
+
+    target = getattr(response, "target_prompt_logprobs", None)
+    if target is not None:
+        assert _tensor_data_to_proto is not None  # the field exists only from 0.30
+        proto.target_prompt_logprobs.CopyFrom(_tensor_data_to_proto(target))
+    alt = getattr(response, "prompt_alt_tokens", None)
+    if alt is not None:
+        assert _tensor_data_to_proto is not None  # the field exists only from 0.31
+        proto.prompt_alt_tokens.tokens.CopyFrom(_tensor_data_to_proto(alt.tokens))
+        proto.prompt_alt_tokens.logprobs.CopyFrom(_tensor_data_to_proto(alt.logprobs))
 
     return proto.SerializeToString()
 

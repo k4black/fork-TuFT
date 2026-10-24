@@ -18,6 +18,8 @@ WHY THIS PATCH EXISTS:
   ``GPUModelRunner._get_prompt_logprobs_dict`` with a copy of the upstream
   implementation plus the missing ``logits /= temperature`` step (the blocks
   marked ``PATCH START``/``PATCH END`` below are the only deltas).
+  The same patch scores ``target_prompt_logprobs`` ids and draws ``prompt_alt_tokens_k``
+  alternatives (``_score_prompt_rows``).
 
 This module is imported inside vLLM worker processes (via the
 ``worker_cls`` engine argument set in ``vllm_engine.py``), so it may import
@@ -42,6 +44,45 @@ def get_vllm_version():
         return parse_version(vllm.__version__)
     except InvalidVersion:
         return parse_version("0.19.1")
+
+
+def _score_prompt_rows(request: Any, logprobs: torch.Tensor, start: int) -> None:
+    """Fill rows ``start:start+len(logprobs)`` of ``request.tuft_scores`` from ``extra_args``.
+
+    Row i covers prompt position i + 1. Its columns, in order:
+    - ``tuft_target_ids`` (``[len(prompt) - 1, K]``, ``-1`` = none): the logprob of each id,
+      0.0 for ``-1``, -inf for an id past the vocab.
+    - ``tuft_alt_k`` draws from the tempered distribution: k ids (as floats, exact below
+      2**24), then their k logprobs.
+    The scores reach ``RequestOutput.prompt_token_id_logprobs`` (vLLM's V2-only channel,
+    which the V1 runner never fills) through the ``sample_tokens`` wrapper.
+    """
+    extra = request.sampling_params.extra_args or {}
+    target, alt_k = extra.get("tuft_target_ids"), extra.get("tuft_alt_k", 0)
+    if target is None and not alt_k:
+        return
+    rows = slice(start, start + logprobs.shape[0])
+    parts = []
+    if target is not None:
+        ids = torch.tensor(target[rows], device=logprobs.device)
+        vocab = logprobs.shape[-1]
+        picked = logprobs.gather(1, ids.clamp(0, vocab - 1))
+        parts.append(picked.masked_fill(ids >= vocab, float("-inf")).masked_fill(ids < 0, 0.0))
+    if alt_k:
+        params = request.sampling_params
+        if params.temperature < 1e-5:  # greedy: every draw is the argmax
+            draws = logprobs.argmax(-1, keepdim=True).expand(-1, alt_k)
+        else:
+            # shortcut: draws ignore top_k/top_p; mask the logits first if a caller needs them.
+            gen = None
+            if params.seed is not None:
+                gen = torch.Generator(logprobs.device).manual_seed(params.seed + start)
+            draws = torch.multinomial(logprobs.exp(), alt_k, replacement=True, generator=gen)
+        parts += [draws.float(), logprobs.gather(1, draws)]
+    scores = torch.cat(parts, 1).float().cpu()
+    if getattr(request, "tuft_scores", None) is None:
+        request.tuft_scores = scores.new_zeros(len(request.prompt_token_ids) - 1, scores.shape[1])
+    request.tuft_scores[rows] = scores
 
 
 def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
@@ -153,6 +194,8 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
 
             # Compute prompt logprobs.
             logprobs = self.sampler.compute_logprobs(logits)
+
+            _score_prompt_rows(request, logprobs, start_idx)  # PATCH: TuFT extra_args
             token_ids, logprobs, ranks, *_ = self.sampler.gather_logprobs(
                 logprobs, num_prompt_logprobs, tgt_token_ids
             )
@@ -168,6 +211,11 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
         for req_id in completed_prefill_reqs:
             del num_prompt_logprobs_dict[req_id]
             self.requests[req_id].in_progress_prompt_logprobs_cpu = None
+            # PATCH START: the sample_tokens wrapper below ships the finished scores.
+            scores = vars(self.requests[req_id]).pop("tuft_scores", None)
+            if scores is not None:
+                vars(self).setdefault("_tuft_scores", {})[req_id] = scores
+            # PATCH END
 
         # Must synchronize the non-blocking GPU->CPU transfers.
         if prompt_logprobs_dict:
@@ -209,6 +257,19 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
         )
 
     model_runner.propose_draft_token_ids = MethodType(_propose_draft_token_ids, model_runner)
+
+    # Ship the scores of requests that finished prefill this step (see _score_prompt_rows).
+    sample_tokens = model_runner.sample_tokens
+
+    def _sample_tokens(self, *args: Any, **kwargs: Any) -> Any:
+        output = sample_tokens(*args, **kwargs)
+        scores = vars(self).pop("_tuft_scores", None)
+        if scores:
+            # AsyncGPUModelRunnerOutput returns this object from get_output().
+            getattr(output, "_model_runner_output", output).prompt_token_id_logprobs_dict = scores
+        return output
+
+    model_runner.sample_tokens = MethodType(_sample_tokens, model_runner)  # type: ignore[method-assign]
 
 
 class TuFTGPUWorker(VLLMGPUWorker):

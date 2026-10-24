@@ -255,6 +255,63 @@ def test_topk_sample_logprobs_round_trip(sdk_server: str) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    "target_prompt_logprobs" not in types.SampleRequest.model_fields,
+    reason="target_prompt_logprobs only exists from tinker 0.30",
+)
+def test_target_prompt_logprobs_round_trip(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        sampling_client = service_client.create_sampling_client(base_model=BASE_MODEL)
+        # Two rows for a three-token prompt: row 0 scores 7 and 8, row 1 scores 9.
+        sparse = types.TensorData(
+            data=[7, 8, 9],
+            dtype="int64",
+            shape=[2, 4],
+            sparse_crow_indices=[0, 2, 3],
+            sparse_col_indices=[0, 1, 2],
+        )
+        dense = types.TensorData(data=[7, -1, -1, 9], dtype="int64", shape=[2, 2])
+        for target, values in ((sparse, [-0.1, -0.1, -0.1]), (dense, [-0.1, 0.0, 0.0, -0.1])):
+            result = sampling_client.sample(
+                prompt=types.ModelInput.from_ints([21, 22, 23]),
+                num_samples=1,
+                sampling_params=types.SamplingParams(max_tokens=1),
+                target_prompt_logprobs=target,
+            ).result(timeout=CPU_TEST_TIMEOUT)
+            out = result.target_prompt_logprobs
+            assert out is not None and out.shape == target.shape
+            assert out.sparse_crow_indices == target.sparse_crow_indices
+            assert out.data == pytest.approx(values)
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    "prompt_alt_tokens_k" not in types.SampleRequest.model_fields,
+    reason="prompt_alt_tokens_k only exists from tinker 0.31",
+)
+def test_prompt_alt_tokens_round_trip(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        sampling_client = service_client.create_sampling_client(base_model=BASE_MODEL)
+        result = sampling_client.sample(
+            prompt=types.ModelInput.from_ints([21, 22, 23]),
+            num_samples=1,
+            sampling_params=types.SamplingParams(max_tokens=1),
+            prompt_alt_tokens_k=2,
+        ).result(timeout=CPU_TEST_TIMEOUT)
+        alt = result.prompt_alt_tokens
+        assert alt is not None
+        # The dummy backend draws the prompt token itself at every row.
+        assert alt.tokens.to_numpy().tolist() == [[22, 22], [23, 23]]
+        assert alt.logprobs.data == pytest.approx([-0.1] * 4)
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
 def test_pipelined_futures_resolve_out_of_order(sdk_server: str) -> None:
     """Several in-flight training futures resolve correctly when retrieved reordered."""
     service_client = _service_client(sdk_server)
@@ -445,6 +502,36 @@ def test_checkpoint_ttl_round_trip(sdk_server: str) -> None:
         assert expires_at() is None
         rest_client.set_checkpoint_ttl_from_tinker_path(path, 3600).result(timeout=CPU_TEST_TIMEOUT)
         assert expires_at() is not None
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not hasattr(types, "ExternalWeightsUrlsResponse"),
+    reason="external weights need tinker 0.32+",
+)
+def test_save_weights_external_and_download(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        training_client = service_client.create_lora_training_client(
+            base_model=BASE_MODEL, rank=8, train_unembed=False
+        )
+        path = training_client.save_weights_external("ext-e2e").result(timeout=CPU_TEST_TIMEOUT)
+        assert path.path == f"tinker://{training_client.model_id}/external_weights/ext-e2e"
+        rest_client = service_client.create_rest_client()
+        [checkpoint] = (
+            rest_client.list_checkpoints(training_client.model_id)
+            .result(timeout=CPU_TEST_TIMEOUT)
+            .checkpoints
+        )
+        assert (checkpoint.checkpoint_type, checkpoint.tinker_path) == ("external", path.path)
+        response = rest_client.get_external_weights_urls(path.path).result(timeout=CPU_TEST_TIMEOUT)
+        assert "adapter_config.json" in response.urls
+        for url in response.urls.values():
+            assert httpx.get(url).status_code == 200  # no API key: the URL is signed
+        tampered = response.urls["adapter_config.json"].replace("sig=", "sig=0")
+        assert httpx.get(tampered).status_code == 403
     finally:
         service_client.holder.close()
 

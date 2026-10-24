@@ -129,6 +129,37 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
         for row in rows:
             assert row is not None and len(row) == 3
             assert [lp for _, lp in row] == sorted((lp for _, lp in row), reverse=True)
+        if "target_prompt_logprobs" in types.SampleRequest.model_fields:  # tinker >= 0.30
+            # Scoring the prompt's own next tokens reproduces its prompt logprobs.
+            ids = prompt.to_ints()
+            target = types.TensorData(data=ids[1:], dtype="int64", shape=[len(ids) - 1, 1])
+            scored = sampler.sample(
+                prompt,
+                1,
+                types.SamplingParams(max_tokens=1, temperature=1.0, seed=0),
+                target_prompt_logprobs=target,
+            ).result(timeout=TIMEOUT)
+            assert scored.target_prompt_logprobs is not None and res.prompt_logprobs is not None
+            assert scored.target_prompt_logprobs.data == pytest.approx(
+                res.prompt_logprobs[1:], abs=1e-4
+            )
+        if "prompt_alt_tokens_k" in types.SampleRequest.model_fields:  # tinker >= 0.31
+            # Greedy draws all equal the top-1 prompt token.
+            drawn = sampler.sample(
+                prompt,
+                1,
+                types.SamplingParams(max_tokens=1, temperature=0.0),
+                include_prompt_logprobs=True,
+                topk_prompt_logprobs=1,
+                prompt_alt_tokens_k=2,
+            ).result(timeout=TIMEOUT)
+            assert drawn.prompt_alt_tokens is not None and drawn.topk_prompt_logprobs is not None
+            top1 = [row[0] for row in drawn.topk_prompt_logprobs[1:] if row]
+            tokens = drawn.prompt_alt_tokens.tokens.to_numpy().tolist()
+            assert tokens == [[tid, tid] for tid, _ in top1]
+            assert drawn.prompt_alt_tokens.logprobs.data == pytest.approx(
+                [lp for _, lp in top1 for _ in range(2)], abs=1e-4
+            )
         assert trainer.get_info().model_data.arch == "qwen3"
 
         def greedy(stop: list[str] | list[int] | None = None) -> types.SampledSequence:
