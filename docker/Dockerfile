@@ -17,6 +17,7 @@ RUN pip3 list --format=freeze | grep -iE '^(torch|vllm|triton)==' \
         -r /opt/tuft/pyproject.toml --extra backend --extra persistence
 
 # flash-attn from a pinned prebuilt wheel; restore vLLM's nccl afterwards.
+# causal-conv1d and mamba-ssm have no torch 2.13 wheel yet (see README, Trainer kernels).
 # The cu129 base ships a CUDA 13 torchcodec that breaks `import vllm`; TuFT decodes no media.
 RUN set -eu; \
     nccl="$(pip3 list --format=freeze | grep -iE '^nvidia-nccl-cu[0-9]+==' || true)"; \
@@ -34,7 +35,7 @@ RUN set -eu; \
         "/tmp/$whl" "fla-core>=0.5.0" "flash-linear-attention>=0.4.2"; \
     [ -z "$nccl" ] || uv pip install --system --no-cache --no-deps "$nccl"; \
     rm "/tmp/$whl"; \
-    python3 -c "import flash_attn; print('flash_attn', flash_attn.__version__)"
+    python3 -c "import flash_attn, fla; print('flash_attn', flash_attn.__version__)"
 
 COPY ./scripts/verify_runtime_versions.py /opt/tuft/scripts/
 COPY ./LICENSE ./README.md /opt/tuft/
