@@ -17,7 +17,6 @@ _tracers: dict[str, Any] = {}
 # Re-export for convenience
 inject_context = inject
 extract_context = extract
-get_current_span = trace.get_current_span
 
 
 def get_tracer(name: str = "tuft"):
