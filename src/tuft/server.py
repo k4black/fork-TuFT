@@ -817,18 +817,6 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         cursor = _build_checkpoint_cursor(total, limit, offset)
         return types.CheckpointsListResponse(checkpoints=subset, cursor=cursor)
 
-    @app.delete(
-        "/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_path:path}",
-        status_code=status.HTTP_204_NO_CONTENT,
-    )
-    async def delete_checkpoint(
-        model_id: str,
-        checkpoint_path: str,
-        state: ServerState = Depends(_get_state),
-        user: User = Depends(_get_user),
-    ) -> None:
-        state.delete_checkpoint(model_id, user.user_id, _normalize_checkpoint_id(checkpoint_path))
-
     @app.post(
         "/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_path:path}/publish",
         status_code=status.HTTP_204_NO_CONTENT,
@@ -862,6 +850,19 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
             _normalize_checkpoint_id(checkpoint_path),
             public=False,
         )
+
+    # After the .../publish DELETE: this {checkpoint_path:path} would swallow it.
+    @app.delete(
+        "/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_path:path}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_checkpoint(
+        model_id: str,
+        checkpoint_path: str,
+        state: ServerState = Depends(_get_state),
+        user: User = Depends(_get_user),
+    ) -> None:
+        state.delete_checkpoint(model_id, user.user_id, _normalize_checkpoint_id(checkpoint_path))
 
     @app.put(
         "/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_path:path}/ttl",

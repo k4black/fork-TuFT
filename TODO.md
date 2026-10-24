@@ -213,6 +213,7 @@ definition, schema) are decided in a design pass when the phase starts.
   sampling fields return 400; CI runs both ends of the range.
 - [x] tinker SDK up to 0.35: session-less `copy_weights` (0.34) absorbed; `prompt_logprobs_last_n`,
   `gspo` and `stable_reinforce` rejected; CI runs 0.25, 0.32 and 0.35.
+- [x] `unpublish_checkpoint` reached the checkpoint DELETE route and returned 404; the route order is fixed.
 - [x] Tenant isolation (#21): one shared `require_access` for the tinker and OpenAI paths; missing
   adapter is 404, not base-model fallback; foreign `retrieve` no longer mutates a future.
 - [x] Resource release (#25): `POST /sessions/{id}/finish`; heartbeat-TTL sweep releases runs
