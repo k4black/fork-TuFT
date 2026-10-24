@@ -1,7 +1,7 @@
 """Auto-generate a minimal AppConfig from a model path.
 
 Used by the embedded mode to create a working configuration without user
-intervention. Detects GPU count/memory and infers reasonable defaults.
+intervention, with tensor_parallel_size 1 and max_model_len from the model config.
 """
 
 from __future__ import annotations
@@ -17,38 +17,6 @@ from ._constants import get_default_checkpoint_dir
 
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# GPU detection helpers
-# ---------------------------------------------------------------------------
-
-
-def _detect_gpu_count() -> int:
-    """Return the number of available NVIDIA GPUs, or 0 if none."""
-    try:
-        import pynvml
-
-        pynvml.nvmlInit()
-        count = pynvml.nvmlDeviceGetCount()
-        pynvml.nvmlShutdown()
-        return count
-    except Exception:
-        return 0
-
-
-def _detect_gpu_memory_gb() -> float:
-    """Return the memory (GB) of the first GPU, or 0.0 if unavailable."""
-    try:
-        import pynvml
-
-        pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        pynvml.nvmlShutdown()
-        return info.total / (1024**3)  # type: ignore[operator]
-    except Exception:
-        return 0.0
-
 
 # ---------------------------------------------------------------------------
 # Model metadata helpers
@@ -75,18 +43,6 @@ def _read_max_position_embeddings(model_path: Path) -> Optional[int]:
 # ---------------------------------------------------------------------------
 # Config generation
 # ---------------------------------------------------------------------------
-
-
-def _infer_tensor_parallel_size(gpu_count: int, gpu_memory_gb: float) -> int:
-    """Infer a reasonable tensor_parallel_size.
-
-    Heuristic: use all GPUs if model likely needs multiple (>40GB models),
-    otherwise default to 1.
-    """
-    if gpu_count <= 1:
-        return 1
-    # For now, default to 1 for simplicity; users can override via config
-    return 1
 
 
 def _infer_max_model_len(model_path: Path) -> int:
@@ -126,9 +82,6 @@ def generate_config_dict(
     model_path = Path(model_path)
     model_name = model_path.name  # Use directory name as model_name
 
-    gpu_count = _detect_gpu_count()
-    gpu_memory_gb = _detect_gpu_memory_gb()
-    tp_size = _infer_tensor_parallel_size(gpu_count, gpu_memory_gb)
     max_model_len = _infer_max_model_len(model_path)
 
     if checkpoint_dir is None:
@@ -145,18 +98,12 @@ def generate_config_dict(
                 "model_name": model_name,
                 "model_path": str(model_path),
                 "max_model_len": max_model_len,
-                "tensor_parallel_size": tp_size,
+                "tensor_parallel_size": 1,
             }
         ],
     }
 
-    logger.info(
-        "Generated minimal config: model=%s, tp_size=%d, max_model_len=%d, gpus_detected=%d",
-        model_name,
-        tp_size,
-        max_model_len,
-        gpu_count,
-    )
+    logger.info("Generated minimal config: model=%s, max_model_len=%d", model_name, max_model_len)
     return config
 
 

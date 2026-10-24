@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
 
 from tuft.runtime._config_gen import (
     _infer_max_model_len,
@@ -59,9 +58,7 @@ class TestGenerateApiKey:
 
 
 class TestGenerateConfigDict:
-    @patch("tuft.runtime._config_gen._detect_gpu_count", return_value=2)
-    @patch("tuft.runtime._config_gen._detect_gpu_memory_gb", return_value=80.0)
-    def test_basic_structure(self, mock_mem, mock_gpu, tmp_path):
+    def test_basic_structure(self, tmp_path):
         model_path = tmp_path / "Qwen2.5-0.5B-Instruct"
         model_path.mkdir()
         config_json = {"max_position_embeddings": 16384}
@@ -74,19 +71,9 @@ class TestGenerateConfigDict:
         assert result["supported_models"][0]["max_model_len"] == 16384
         assert result["authorized_users"] == {"test-key": "local"}  # pragma: allowlist secret
 
-    @patch("tuft.runtime._config_gen._detect_gpu_count", return_value=0)
-    @patch("tuft.runtime._config_gen._detect_gpu_memory_gb", return_value=0.0)
-    def test_no_gpu_still_generates(self, mock_mem, mock_gpu, tmp_path):
-        model_path = tmp_path / "my-model"
-        model_path.mkdir()
-        result = generate_config_dict(model_path)
-        assert result["supported_models"][0]["tensor_parallel_size"] == 1
-
 
 class TestGenerateConfigFile:
-    @patch("tuft.runtime._config_gen._detect_gpu_count", return_value=1)
-    @patch("tuft.runtime._config_gen._detect_gpu_memory_gb", return_value=24.0)
-    def test_creates_yaml_file(self, mock_mem, mock_gpu, tmp_path):
+    def test_creates_yaml_file(self, tmp_path):
         model_path = tmp_path / "test-model"
         model_path.mkdir()
 
