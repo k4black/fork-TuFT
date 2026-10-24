@@ -111,10 +111,6 @@ def make_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def finite_values(values: List[Optional[float]]) -> List[float]:
-    return [float(v) for v in values if v is not None and math.isfinite(float(v))]
-
-
 def stats(values: List[float]) -> Dict[str, float]:
     if not values:
         return {"count": 0, "mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "abs_mean": 0.0}

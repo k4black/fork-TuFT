@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from .persistence import PersistenceConfig
-
-
-def _default_checkpoint_dir() -> Path | None:
-    """Return None to let CLI set the default based on TUFT_HOME."""
-    return None
 
 
 # Roles a configured model can serve. Only the backends required by the
@@ -97,10 +92,6 @@ class ModelConfig(BaseModel):
     logprobs: int = 0
     seed: int = 42
     min_response_tokens: int = 0
-    # Default max_tokens for sampling when client does not specify one.
-    # Applies to both tinker SDK sample() and vLLM OpenAI API (max_response_tokens).
-    # If None, vLLM uses its own default (typically 16).
-    default_max_tokens: int | None = None
 
     # default lora setting
     max_lora_rank: int = 16  # maximum rank for LoRA adapters
@@ -355,7 +346,7 @@ class AppConfig(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     worker_venv_path: str | None = None  # Ray worker venv; empty = no venv; required when using Ray
-    checkpoint_dir: Path | None = Field(default_factory=_default_checkpoint_dir)
+    checkpoint_dir: Path | None = None  # None: the CLI sets it from TUFT_HOME
     supported_models: list[ModelConfig] = Field(default_factory=list)
     model_owner: str = "local-user"
     toy_backend_seed: int = 0
@@ -387,12 +378,6 @@ class AppConfig(BaseModel):
             raise ValueError(
                 "Colocate option is only allowed when there is a single supported model."
             )
-
-    def with_supported_models(self, models: Iterable[ModelConfig]) -> "AppConfig":
-        updated = list(models)
-        if updated:
-            self.supported_models = updated
-        return self
 
     def get_model_config(self, model_name: str) -> ModelConfig | None:
         """Return the configuration for a supported model, or None if unknown."""

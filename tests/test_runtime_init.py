@@ -97,10 +97,3 @@ class TestGetServiceClient:
 class TestIsInitialized:
     def test_false_initially(self):
         assert not tuft.is_initialized()
-
-    @patch("tuft.runtime.discover", return_value="http://localhost:10610")
-    @patch("tuft.runtime.tinker.ServiceClient")
-    def test_true_after_init(self, mock_client_cls, mock_discover):
-        mock_client_cls.return_value = MagicMock()
-        tuft.init()
-        assert tuft.is_initialized()

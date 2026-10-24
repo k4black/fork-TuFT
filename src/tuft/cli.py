@@ -210,7 +210,7 @@ def _init_telemetry(config: AppConfig, log_level: str) -> None:
 
     init_telemetry(config.telemetry)
     # Start resource metrics collection
-    ResourceMetricsCollector.start(str(config.checkpoint_dir))
+    ResourceMetricsCollector.start()
 
 
 @app.command()

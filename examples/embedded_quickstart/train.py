@@ -9,7 +9,7 @@ Usage:
     python train.py --model /path/to/Qwen2.5-0.5B-Instruct
 
 The script will:
-1. Auto-detect the model and GPU configuration
+1. Generate a minimal config for the model
 2. Start a TuFT server in the background
 3. Connect and run a minimal training loop
 4. Automatically shut down the server on exit
@@ -38,7 +38,7 @@ def main():
 
     # =========================================================================
     # Step 1: Initialize TuFT in embedded mode
-    # This will auto-detect GPUs, generate a minimal config, and start the server.
+    # This will generate a minimal config and start the server.
     # If a TuFT server is already running, it will connect to it instead.
     # =========================================================================
     print(f"[1/4] Initializing TuFT with model: {args.model}")

@@ -498,9 +498,7 @@ def test_http_trace_isolation(telemetry_server: str, span_exporter, setup_tracer
             for s in spans
             if s.attributes and "tuft.training_run_id" in s.attributes
         }
-        if len(run_ids) >= 2:
-            for rid in run_ids:
-                assert len(_get_spans_with_attr(spans, "tuft.training_run_id", rid)) >= 1
+        assert len(run_ids) == 2
     finally:
         client1.holder.close()
         client2.holder.close()

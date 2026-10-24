@@ -168,10 +168,7 @@ class ResourceMetricsCollector:
     _instance: "ResourceMetricsCollector | None" = None
     _lock = threading.Lock()
 
-    def __init__(self, checkpoint_dir: str | None = None):
-        self._checkpoint_dir = checkpoint_dir
-        self._running = False
-        self._thread: threading.Thread | None = None
+    def __init__(self):
         self._nvml_initialized = False
         self._gpu_available = self._check_and_init_gpu()
         self._setup_metrics()
@@ -317,12 +314,12 @@ class ResourceMetricsCollector:
         yield Observation(process.memory_info().rss)
 
     @classmethod
-    def start(cls, checkpoint_dir: str | None = None) -> "ResourceMetricsCollector":
+    def start(cls) -> "ResourceMetricsCollector":
         """Start the resource metrics collector."""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = cls(checkpoint_dir)
+                    cls._instance = cls()
         return cls._instance
 
     @classmethod

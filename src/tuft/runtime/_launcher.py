@@ -90,16 +90,10 @@ class EmbeddedServer:
 
         logger.info("Starting embedded TuFT server: %s", " ".join(cmd))
 
-        # When log level is DEBUG or server fails, show subprocess output directly.
-        # Otherwise pipe it for collection on failure.
-        # For now, always inherit stderr so users can see server startup progress.
-        inherit_io = True
-
+        # The child inherits stdout and stderr so users see server startup progress.
         self.process = subprocess.Popen(
             cmd,
             env=env,
-            stdout=None if inherit_io else subprocess.PIPE,
-            stderr=None if inherit_io else subprocess.PIPE,
             # Use a new process group so we can cleanly terminate
             preexec_fn=os.setsid if sys.platform != "win32" else None,
         )
@@ -107,18 +101,10 @@ class EmbeddedServer:
         # Wait for healthz
         self._address = f"http://{self.host}:{self.port}"
         if not self._wait_for_healthy():
-            # Collect stderr for debugging
-            stderr_output = ""
-            if self.process.stderr:
-                try:
-                    stderr_output = self.process.stderr.read().decode(errors="replace")[:2000]
-                except Exception:
-                    pass
             self._terminate()
             raise RuntimeError(
                 f"TuFT embedded server failed to start within {self.timeout}s. "
-                f"Config: {self.config_path}\n"
-                f"Stderr: {stderr_output}"
+                f"Config: {self.config_path}"
             )
 
         # Write address file
