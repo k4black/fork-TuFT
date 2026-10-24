@@ -42,7 +42,7 @@ RUN set -eu; \
       apt-get install -y --no-install-recommends --allow-change-held-packages $dev; fi; \
     CAUSAL_CONV1D_FORCE_BUILD=TRUE MAX_JOBS=2 uv pip install --system --no-cache \
         --no-build-isolation --constraints /tmp/base-pins.txt causal-conv1d==1.7.0; \
-    [ -z "$dev" ] || apt-get purge -y $dev; \
+    [ -z "$dev" ] || apt-get purge -y --autoremove $dev; \
     rm -rf /var/lib/apt/lists/* /root/.cache /tmp/pip-*; \
     [ -z "$nccl" ] || uv pip install --system --no-cache --no-deps "$nccl"; \
     rm "/tmp/$whl"; \
