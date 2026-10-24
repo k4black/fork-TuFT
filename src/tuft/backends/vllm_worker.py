@@ -269,7 +269,7 @@ def patch_vllm_prompt_logprobs(model_runner: GPUModelRunner):  # noqa: C901
             getattr(output, "_model_runner_output", output).prompt_token_id_logprobs_dict = scores
         return output
 
-    model_runner.sample_tokens = MethodType(_sample_tokens, model_runner)
+    model_runner.sample_tokens = MethodType(_sample_tokens, model_runner)  # type: ignore[method-assign]
 
 
 class TuFTGPUWorker(VLLMGPUWorker):

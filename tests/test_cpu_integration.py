@@ -139,7 +139,7 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
                 types.SamplingParams(max_tokens=1, temperature=1.0, seed=0),
                 target_prompt_logprobs=target,
             ).result(timeout=TIMEOUT)
-            assert scored.target_prompt_logprobs is not None
+            assert scored.target_prompt_logprobs is not None and res.prompt_logprobs is not None
             assert scored.target_prompt_logprobs.data == pytest.approx(
                 res.prompt_logprobs[1:], abs=1e-4
             )
