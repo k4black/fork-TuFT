@@ -20,6 +20,7 @@ from tinker.proto.response_conv import (
 )
 from tinker.types.try_again_response import TryAgainResponse
 
+from tuft import weights_import
 from tuft.auth import User
 from tuft.compat import (
     MAX_DECOMPRESSED_REQUEST_BYTES,
@@ -655,6 +656,36 @@ async def test_finish_session_is_idempotent_and_ends_heartbeats(compatibility_ap
             "/api/v1/session_heartbeat", json={"session_id": "s-1"}, headers=headers
         )
     assert heartbeat.status_code == 410
+
+
+# tinker <= 0.33 sends the token in the body, 0.34+ in a header and with no session.
+@pytest.mark.parametrize(
+    ("body_token", "headers"),
+    [("tok", {}), (None, {"X-Tinker-Weights-Access-Token": "tok"})],
+    ids=["body", "header"],
+)
+@pytest.mark.asyncio
+async def test_copy_weights_passes_the_access_token(
+    tmp_path, monkeypatch, body_token, headers
+) -> None:
+    tokens = []
+    monkeypatch.setattr(weights_import, "fetch", lambda _src, token, *_: tokens.append(token))
+    app = _create_test_app(
+        AppConfig(checkpoint_dir=tmp_path, authorized_users={"test-key": "tester"})
+    )
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/copy_weights",
+            json={
+                "source_path": "hf://org/repo",
+                "destination_project_id": "p",
+                "weights_access_token": body_token,
+            },
+            headers={"X-API-Key": "test-key", **headers},
+        )
+    # The fake fetch writes no adapter, so the import stops at adapter_config.json.
+    assert response.status_code == 400
+    assert tokens == ["tok"]
 
 
 @pytest.mark.asyncio

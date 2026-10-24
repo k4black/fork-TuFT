@@ -443,9 +443,17 @@ def test_get_server_capabilities_reports_capabilities(api_client) -> None:
     response = api_client.get("/api/v1/get_server_capabilities")
     assert response.status_code == 200
     by_name = {m["model_name"]: m for m in response.json()["supported_models"]}
-    assert by_name[TRAIN_ONLY]["capabilities"] == ["training"]
-    assert by_name[SAMPLE_ONLY]["capabilities"] == ["sampling"]
-    assert by_name[BOTH]["capabilities"] == ["training", "sampling"]
+    assert set(by_name) == {TRAIN_ONLY, SAMPLE_ONLY, BOTH}
+    assert by_name[BOTH] == {
+        "model_name": "qwen-both",
+        "max_context_length": 2048,
+        "trainable": True,
+        "sampleable": True,
+        "capabilities": ["training", "sampling"],
+        "lora_ranks": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        "lora_alpha": None,
+        "lora_alpha_ratio": 2.0,
+    }
 
 
 def test_oai_models_lists_only_sampling_capable(api_client) -> None:
