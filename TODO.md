@@ -109,6 +109,9 @@ Identity, quotas and routing belong to the control plane (Phase 9).
   full (embeddings, unembed, norms), beyond the Tinker `train_unembed` flag (Twinkle has it natively).
 - [ ] **Tensor, pipeline and expert parallelism** — a Megatron-style backend for models that do not
   fit FSDP well (large MoE); only with a target model (SkyRL and Twinkle have Megatron paths).
+- [ ] **`causal-conv1d` in the image** — the Qwen3.5 Gated DeltaNet conv runs the torch path in
+  the HF and FSDP trainers. Add the wheel when `Dao-AILab/causal-conv1d` ships one for torch 2.13,
+  or install `kernels` and use the `kernels-community/causal-conv1d` Hub kernel once it has torch 2.13.
 - [ ] **Full fine-tuning** — optional; the Tinker API is LoRA-only.
 - [ ] **`target_prompt_logprobs` and `prompt_alt_tokens_k`** — score chosen ids and draw k
   alternatives at prompt positions inside the prompt-logprobs patch, including sparse CSR input.

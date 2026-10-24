@@ -434,6 +434,31 @@ docker run --gpus all --shm-size=32g --ulimit memlock=-1 --rm -p 10610:10610 -v 
     --entrypoint tuft k4black/tuft:latest launch --port 10610 --config /data/tuft_config.yaml
 ```
 
+### Trainer kernels
+
+The image has `flash-attn` 2.8.3 and `fla` (flash-linear-attention). The trainers use `sdpa` by
+default; set `attn_implementation` to use flash-attn. transformers imports the other kernels
+below optionally. Without them it runs a slow torch reference path. The `kernels` package (HF Hub
+kernels) is not installed, so `use_kernel_forward_from_hub` layers keep their plain forward.
+
+| Family | Trainer kernel | In image | Note |
+|---|---|---|---|
+| Qwen3.5, Qwen3.5-MoE, Qwen3-Next | `fla`, `causal_conv1d` | `fla` yes, `causal_conv1d` no | In `MODULE_MAP`. Gated DeltaNet conv uses the torch path. |
+| Qwen3, Qwen3-MoE | none | n/a | In `MODULE_MAP`. MoE experts use torch `grouped_mm`. |
+| Llama 3 | none | n/a | In `MODULE_MAP`. |
+| Llama 4 | none | n/a | Not in `MODULE_MAP`. MoE experts in torch. |
+| Mistral, Mixtral | none | n/a | Not in `MODULE_MAP`. Mixtral experts use torch `grouped_mm`. |
+| Gemma 3, Gemma 3n | none | n/a | Not in `MODULE_MAP`. |
+| DeepSeek V2, V3 | none | n/a | Not in `MODULE_MAP`. MLA serving uses FlashMLA (in the vLLM wheel) and `flashinfer-python`. |
+| GPT-OSS | none | n/a | Not in `MODULE_MAP`. MegaBlocks MoE needs `kernels`. |
+| LFM2 | `causal_conv1d` | no | Not in `MODULE_MAP`. ShortConv uses the torch path. |
+| Mamba, Mamba2, Nemotron-H, Falcon-H1 | `mamba_ssm`, `causal_conv1d` | no | Not in `MODULE_MAP`. |
+
+`causal-conv1d` (1.7.0) and `mamba-ssm` (2.3.2) publish prebuilt wheels up to torch 2.10, and
+PyPI has only the sdist. The image does not build them from source. The Hub kernels
+(`kernels-community/causal-conv1d`, `kernels-community/mamba-ssm`) stop at torch 2.12. vLLM has its
+own conv and SSM ops, so sampling is not affected.
+
 ### Speculative decoding
 
 `speculative_config` under a model goes to vLLM as-is. For a checkpoint with MTP heads
