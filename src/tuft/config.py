@@ -92,10 +92,6 @@ class ModelConfig(BaseModel):
     logprobs: int = 0
     seed: int = 42
     min_response_tokens: int = 0
-    # Default max_tokens for sampling when client does not specify one.
-    # Applies to both tinker SDK sample() and vLLM OpenAI API (max_response_tokens).
-    # If None, vLLM uses its own default (typically 16).
-    default_max_tokens: int | None = None
 
     # default lora setting
     max_lora_rank: int = 16  # maximum rank for LoRA adapters
