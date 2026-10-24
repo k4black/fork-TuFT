@@ -615,6 +615,9 @@ class VLLMSamplingBackend(BaseSamplingBackend):
                 pass
             self.lora_adapters.clear()
 
+    async def metrics_text(self) -> str:
+        return await self.engine.metrics_text.remote()  # type: ignore[attr-defined]
+
     async def ping(self) -> None:
         import httpx
 

@@ -394,3 +394,32 @@ def test_telemetry_logs_client_exceptions(tmp_path: Path, caplog) -> None:
     (record,) = [r for r in caplog.records if r.name == "tuft.server"]
     assert "sess-1" in record.getMessage() and "ValueError: boom" in record.getMessage()
     assert "secret frames" not in record.getMessage() and len(record.getMessage()) < 1200
+
+
+def test_stats_and_metrics(tmp_path: Path) -> None:
+    config = AppConfig(checkpoint_dir=tmp_path)
+    config.supported_models = [
+        ModelConfig(model_name="m", model_path=Path("/dummy/m"), max_model_len=4096)
+    ]
+    config.authorized_users = {"tml-k": "default"}
+    app = create_root_app(config)
+    client = TestClient(app)
+    (replica,) = app.state.server_state.sampling._base_backends["m"]._replicas
+    replica.state, replica.requests, replica.lora_adapters = "serving", 2, {"a": Path("/a")}
+
+    async def engine_metrics() -> str:
+        return '# TYPE vllm:num_requests_running gauge\nvllm:num_requests_running{engine="0"} 3\n'
+
+    replica.metrics_text = engine_metrics  # type: ignore[method-assign]
+
+    assert client.get("/stats").json() == {
+        "models": {
+            "m": {
+                "sampling": [{"replica": 0, "state": "serving", "in_flight": 2, "adapters": ["a"]}],
+                "training": {"slots_used": {}, "slots_free": None},
+            }
+        }
+    }
+    text = client.get("/metrics").text
+    assert 'tuft_sampling_in_flight{model="m",replica="0",state="serving"} 2.0' in text
+    assert 'vllm:num_requests_running{engine="0",model="m",replica="0"} 3.0' in text

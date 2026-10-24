@@ -71,6 +71,10 @@ Identity, quotas and routing belong to the control plane (Phase 9).
 - [ ] **`/stats` and `/metrics`** — JSON `/stats` for the control plane: base model, loaded
   adapters, slots used and free, queue depth and wait, per-adapter GPU-seconds held and tokens
   trained and sampled, drain state. The same as Prometheus series on `/metrics`.
+  - [x] `/stats`: per-replica state, in-flight requests and loaded adapters; training slots used
+    and free per rank. `/metrics`: the same as gauges plus each vLLM replica's metrics.
+  - [ ] Queue depth and wait, per-adapter GPU-seconds, tokens trained and sampled: no counters
+    exist yet.
 - [ ] **Drain** — `POST /admin/drain`: refuse new runs, finish the in-flight step, `save_state`
   every live run, release adapters, report done, exit.
 - [ ] **Bounded admission and request dedup** — per-adapter queues with bounded turns; durable
