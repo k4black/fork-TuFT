@@ -1494,10 +1494,10 @@ class TrainingController:
                 checkpoint_record=latest_ckpt,
                 optimizer=(latest_ckpt.checkpoint_type == "training"),
             )
-        except Exception as exc:  # pylint: disable=broad-except
-            # load_state failed – try create_adapter + load_state as fallback
-            logger.warning(
-                "load_state failed for %s (%s), trying create_adapter fallback", model_id, exc
+        except Exception as first_exc:  # pylint: disable=broad-except
+            # Expected on FSDP: its load_state needs the adapter slot that create_adapter makes.
+            logger.debug(
+                "load_state failed for %s (%s), trying create_adapter fallback", model_id, first_exc
             )
             adapter_recreated = False
             try:
@@ -1526,10 +1526,12 @@ class TrainingController:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, self._save_training_run, model_id)
                 logger.warning(
-                    "Checkpoint load failed for %s, marking the run corrupted: %s; "
+                    "Checkpoint load failed for %s, marking the run corrupted: %s "
+                    "(first attempt: %s); "
                     "returning checkpoint with future_id=%d for future cleanup",
                     model_id,
                     exc,
+                    first_exc,
                     latest_ckpt.future_id,
                 )
                 return latest_ckpt
