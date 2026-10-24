@@ -97,6 +97,32 @@ def _normalize_checkpoint_id(raw: str) -> str:
     return remainder
 
 
+def _target_prompt_logprobs_error(target: Any, prompt_length: int) -> str | None:
+    """Why ``target_prompt_logprobs`` cannot be scored, or None. Untrusted input."""
+    shape = target.shape or []
+    if target.dtype != "int64" or len(shape) != 2:
+        return "target_prompt_logprobs must be a 2-D int64 tensor"
+    if shape[0] != prompt_length - 1:
+        return f"target_prompt_logprobs needs len(prompt) - 1 = {prompt_length - 1} rows"
+    crow = target.sparse_crow_indices
+    if crow is None:
+        widths, size = [shape[1]], shape[0] * shape[1]
+    else:
+        widths, size = [b - a for a, b in zip(crow, crow[1:], strict=False)], crow[-1]
+        if len(crow) != shape[0] + 1 or crow[0] != 0 or min(widths) < 0:
+            return "target_prompt_logprobs has invalid sparse_crow_indices"
+        if len(target.sparse_col_indices or []) != size:
+            return "target_prompt_logprobs has invalid sparse_col_indices"
+    if len(target.data) != size:
+        return "target_prompt_logprobs data does not match its shape"
+    # vLLM's default max_logprobs bounds the scored width like a top-k width.
+    if max(widths) > 20:
+        return "target_prompt_logprobs takes at most 20 ids per row"
+    if max(target.data, default=-1) < 0:
+        return "target_prompt_logprobs names no token id"
+    return None
+
+
 def _archive_signature(key: bytes, model_id: str, checkpoint_id: str, exp: int) -> str:
     return hmac.new(key, f"{model_id}/{checkpoint_id}/{exp}".encode(), "sha256").hexdigest()
 
@@ -683,13 +709,17 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         state: ServerState = Depends(_get_state),
         user: User = Depends(_get_user),
     ) -> types.UntypedAPIFuture:
-        # tinker 0.30-0.31 sampling features this server does not implement.
-        for field in ("prompt_alt_tokens_k", "target_prompt_logprobs"):
-            if getattr(request, field, None):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"{field} is not supported",
-                )
+        # tinker 0.31 sampling feature this server does not implement.
+        if getattr(request, "prompt_alt_tokens_k", None):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="prompt_alt_tokens_k is not supported",
+            )
+        target = getattr(request, "target_prompt_logprobs", None)
+        if target is not None and (
+            error := _target_prompt_logprobs_error(target, request.prompt.length)
+        ):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
         # vLLM's default max_logprobs.
         if not 0 <= (getattr(request, "topk_sample_logprobs", 0) or 0) <= 20:
             raise HTTPException(

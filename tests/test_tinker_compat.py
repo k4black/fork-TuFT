@@ -428,6 +428,79 @@ def test_topk_sampled_logprobs_round_trip_through_protobuf() -> None:
     assert decoded.sequences[0].topk_logprobs == [[(5, -0.5), (9, -99999.0)], [(6, -0.25)]]
 
 
+_TARGET_SKIP = pytest.mark.skipif(
+    "target_prompt_logprobs" not in types.SampleRequest.model_fields,
+    reason="target_prompt_logprobs only exists from tinker 0.30",
+)
+
+
+@_TARGET_SKIP
+@pytest.mark.parametrize(
+    ("crow", "col"),
+    [(None, None), ([0, 2, 2, 3], [0, 3, 1])],
+    ids=["dense", "csr"],
+)
+def test_target_prompt_logprobs_round_trip_through_protobuf(crow, col) -> None:
+    from tinker.types._pydantic_types.tensor_data import TensorData as RequestTensor
+
+    from tuft.backends.sampling_backend import _target_response, _target_rows
+
+    # Three prompt rows; dense rows hold 4 ids (-1 = none), CSR rows list their cells.
+    data = [5, -1, 7, -1, 1, 2, 3, 4, -1, -1, 9, -1] if crow is None else [5, 7, 9]
+    target = RequestTensor(
+        data=data, dtype="int64", shape=[3, 4], sparse_crow_indices=crow, sparse_col_indices=col
+    )
+    rows = _target_rows(target)
+    # The worker scores each id; -1 cells score 0.0.
+    scores = [[-float(i) if i >= 0 else 0.0 for i in row] for row in rows]
+    response = types.SampleResponse(
+        sequences=[], target_prompt_logprobs=_target_response(target, scores)
+    )
+    decoded = deserialize_sample_response(serialize_sample_response_proto(response))
+    out = decoded.target_prompt_logprobs
+    assert out is not None and out.shape == [3, 4]
+    if crow is None:
+        assert rows == [[5, -1, 7, -1], [1, 2, 3, 4], [-1, -1, 9, -1]]
+        assert out.sparse_crow_indices is None
+        assert out.to_numpy().ravel().tolist() == [-5, 0, -7, 0, -1, -2, -3, -4, 0, 0, -9, 0]
+    else:
+        assert rows == [[5, 7], [-1, -1], [9, -1]]
+        assert (out.sparse_crow_indices, out.sparse_col_indices) == (crow, col)
+        assert out.data == [-5, -7, -9]
+
+
+@_TARGET_SKIP
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "detail"),
+    [
+        ({"data": [1, 2], "dtype": "int64", "shape": [2, 1]}, "needs len(prompt) - 1 = 1 rows"),
+        ({"data": [-1], "dtype": "int64", "shape": [1, 1]}, "names no token id"),
+        ({"data": [1.0], "dtype": "float32", "shape": [1, 1]}, "2-D int64"),
+        ({"data": list(range(21)), "dtype": "int64", "shape": [1, 21]}, "at most 20"),
+        (
+            {"data": [1], "dtype": "int64", "shape": [1, 4], "sparse_crow_indices": [0, 1]},
+            "sparse_col_indices",
+        ),
+    ],
+)
+async def test_bad_target_prompt_logprobs_is_rejected(compatibility_app, target, detail) -> None:
+    app, _ = compatibility_app
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/asample",
+            json={
+                "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
+                "sampling_params": {"max_tokens": 1},
+                "base_model": "test-model",
+                "target_prompt_logprobs": target,
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+    assert response.status_code == 400
+    assert detail in response.json()["detail"]
+
+
 @pytest.mark.skipif(
     "optim_params" not in types.OptimStepRequest.model_fields,
     reason="optimizer families only exist from tinker 0.29.1",

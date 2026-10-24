@@ -440,6 +440,7 @@ class SamplingController:
                         topk_prompt_logprobs=topk_prompt_logprobs,
                         lora_id=lora_id,
                         topk_sample_logprobs=getattr(request, "topk_sample_logprobs", 0) or 0,
+                        target_prompt_logprobs=getattr(request, "target_prompt_logprobs", None),
                     )
             finally:
                 if held:

@@ -176,7 +176,7 @@ definition, schema) are decided in a design pass when the phase starts.
 | Checkpoint TTL and expiry | yes | roadmap | no | ? | yes |
 | Import external adapters | no | no | no | no | yes |
 | copy_weights, external export | yes | no | export only | ? | copy yes, export Phase 8 |
-| Top-k sample and target prompt logprobs | yes | no | top-k prompt only | ? | top-k yes, target Phase 8 |
+| Top-k sample and target prompt logprobs | yes | no | top-k prompt only | ? | yes |
 | Backend readiness probe | ? | API health only | API health only | ? | yes |
 | Compat matrix in CI | n/a | yes | no | no | yes, plus cookbook recipes on CPU |
 | User-free worker | ? | yes | yes | no (token-aware) | Phase 7 |

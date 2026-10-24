@@ -114,6 +114,8 @@ def _plain_output(output: Any) -> SimpleNamespace:
     return SimpleNamespace(
         prompt_token_ids=list(output.prompt_token_ids or []),
         prompt_logprobs=logprobs(output.prompt_logprobs),
+        # Filled by the TuFT worker patch for target_prompt_logprobs (numpy, or None).
+        prompt_token_id_logprobs=getattr(output, "prompt_token_id_logprobs", None),
         outputs=[
             SimpleNamespace(
                 token_ids=list(seq.token_ids),

@@ -255,6 +255,39 @@ def test_topk_sample_logprobs_round_trip(sdk_server: str) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    "target_prompt_logprobs" not in types.SampleRequest.model_fields,
+    reason="target_prompt_logprobs only exists from tinker 0.30",
+)
+def test_target_prompt_logprobs_round_trip(sdk_server: str) -> None:
+    service_client = _service_client(sdk_server)
+    try:
+        sampling_client = service_client.create_sampling_client(base_model=BASE_MODEL)
+        # Two rows for a three-token prompt: row 0 scores 7 and 8, row 1 scores 9.
+        sparse = types.TensorData(
+            data=[7, 8, 9],
+            dtype="int64",
+            shape=[2, 4],
+            sparse_crow_indices=[0, 2, 3],
+            sparse_col_indices=[0, 1, 2],
+        )
+        dense = types.TensorData(data=[7, -1, -1, 9], dtype="int64", shape=[2, 2])
+        for target, values in ((sparse, [-0.1, -0.1, -0.1]), (dense, [-0.1, 0.0, 0.0, -0.1])):
+            result = sampling_client.sample(
+                prompt=types.ModelInput.from_ints([21, 22, 23]),
+                num_samples=1,
+                sampling_params=types.SamplingParams(max_tokens=1),
+                target_prompt_logprobs=target,
+            ).result(timeout=CPU_TEST_TIMEOUT)
+            out = result.target_prompt_logprobs
+            assert out is not None and out.shape == target.shape
+            assert out.sparse_crow_indices == target.sparse_crow_indices
+            assert out.data == pytest.approx(values)
+    finally:
+        service_client.holder.close()
+
+
+@pytest.mark.integration
 def test_pipelined_futures_resolve_out_of_order(sdk_server: str) -> None:
     """Several in-flight training futures resolve correctly when retrieved reordered."""
     service_client = _service_client(sdk_server)
