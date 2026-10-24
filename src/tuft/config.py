@@ -196,6 +196,9 @@ class ModelConfig(BaseModel):
     # "num_speculative_tokens": 1} for checkpoints with MTP heads. Off by default:
     # speculative decoding changes sampling numerics slightly.
     speculative_config: dict[str, Any] | None = None
+    # Sets VLLM_BATCH_INVARIANT=1: deterministic LoRA logprobs on the sampler, slower kernels.
+    # shortcut: not verified on a GPU yet; check run-to-run LoRA prompt logprobs first.
+    vllm_batch_invariant: bool = False
 
     # OpenAI-compatible vLLM API: tool calling (required for qwenpaw ReAct agents).
     enable_auto_tool_choice: bool = False

@@ -87,6 +87,8 @@ class VLLMEngineConfig:
     enable_sleep_mode: bool = False
     # vLLM ``speculative_config`` (e.g. MTP); None disables speculative decoding.
     speculative_config: Optional[dict[str, Any]] = None
+    # VLLM_BATCH_INVARIANT=1: fixed-partials LoRA kernels instead of split-K atomics.
+    batch_invariant: bool = False
 
 
 IMAGE_DECODE_ERROR = "ImageChunk data is not a decodable image"
@@ -156,6 +158,8 @@ class VLLMEngine:
         # colocation work from within the Ray actor.
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         os.environ["VLLM_ALLREDUCE_USE_SYMM_MEM"] = "0"
+        if config.batch_invariant:
+            os.environ["VLLM_BATCH_INVARIANT"] = "1"
         if config.enable_runtime_lora_updating:
             os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "1"
 
@@ -218,7 +222,7 @@ class VLLMEngine:
                 enforce_eager=self.config.enforce_eager,
                 override_generation_config=override_generation_config,
                 reasoning_parser=self.config.reasoning_parser,  # type: ignore[arg-type]
-                disable_log_stats=True,
+                disable_log_stats=False,  # registers vLLM's Prometheus stat logger
                 enable_log_requests=self.config.enable_log_requests,
                 enable_lora=self.config.enable_lora,
                 max_lora_rank=self.config.max_lora_rank,  # type: ignore[arg-type]
@@ -291,6 +295,12 @@ class VLLMEngine:
         if self.api_server_host is None or self.api_server_port is None:
             return None
         return f"http://{self.api_server_host}:{self.api_server_port}"
+
+    def metrics_text(self) -> str:
+        """vLLM's Prometheus metrics: its stat logger writes to this process's registry."""
+        from prometheus_client import REGISTRY, generate_latest
+
+        return generate_latest(REGISTRY).decode()
 
     @staticmethod
     def _lora_request(lora: Any) -> Any:

@@ -9,10 +9,12 @@ import logging
 import secrets
 import tarfile
 import time
+from collections import Counter
 from contextlib import asynccontextmanager
 from email.utils import formatdate
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import httpx
@@ -120,6 +122,36 @@ def _get_state(request: Request) -> ServerState:
     return state
 
 
+def _stats(state: ServerState) -> dict[str, Any]:
+    """Per base model: sampling replicas and training slots, from the controllers' own state."""
+    models: dict[str, Any] = {}
+    for config in state.config.supported_models:
+        name = config.model_name
+        dp = state.sampling._base_backends.get(name)
+        sampling = [
+            {
+                "replica": i,
+                "state": r.state,
+                "in_flight": r.requests,
+                "adapters": sorted(r.lora_adapters),
+            }
+            for i, r in enumerate(dp._replicas if dp else [])
+        ]
+        training = None
+        if backend := state.training.training_backends.get(name):
+            used = Counter(
+                str(r.lora_rank)
+                for r in state.training.training_runs.values()
+                if r.base_model == name and r.backend is not None and not r.released
+            )
+            # Only the FSDP slot pool has a cap; HF adds adapters until memory runs out.
+            pool = getattr(getattr(backend, "_slot_config", None), "rank_slots", None)
+            free = {str(k): n - used[str(k)] for k, n in pool.items()} if pool else None
+            training = {"slots_used": dict(used), "slots_free": free}
+        models[name] = {"sampling": sampling, "training": training}
+    return {"models": models}
+
+
 def _instrument_fastapi(app: FastAPI) -> None:
     """Instrument FastAPI app with OpenTelemetry."""
     FastAPIInstrumentor.instrument_app(app)
@@ -209,6 +241,61 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         if failed:
             return JSONResponse({"status": "not_ready", "failed": failed}, status_code=503)
         return JSONResponse({"status": "ready"})
+
+    @app.get("/stats")
+    async def stats(state: ServerState = Depends(_get_state)) -> dict[str, Any]:
+        return _stats(state)
+
+    @app.get("/metrics")
+    async def metrics(state: ServerState = Depends(_get_state)) -> Response:
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+        from prometheus_client.core import GaugeMetricFamily, Metric
+        from prometheus_client.parser import text_string_to_metric_families
+
+        labels = ["model", "replica", "state"]
+        in_flight = GaugeMetricFamily("tuft_sampling_in_flight", "Sampling requests", labels=labels)
+        adapters = GaugeMetricFamily(
+            "tuft_sampling_adapters", "Loaded LoRA adapters", labels=labels
+        )
+        slots = ["model", "rank"]
+        used = GaugeMetricFamily("tuft_training_slots_used", "Live training runs", labels=slots)
+        free = GaugeMetricFamily("tuft_training_slots_free", "Free FSDP slots", labels=slots)
+        families: dict[str, Metric] = {f.name: f for f in (in_flight, adapters, used, free)}
+        stats = _stats(state)
+        for model, info in stats["models"].items():
+            for r in info["sampling"]:
+                key = [model, str(r["replica"]), r["state"]]
+                in_flight.add_metric(key, r["in_flight"])
+                adapters.add_metric(key, len(r["adapters"]))
+            if training := info["training"]:
+                for rank, n in training["slots_used"].items():
+                    used.add_metric([model, rank], n)
+                for rank, n in (training["slots_free"] or {}).items():
+                    free.add_metric([model, rank], n)
+        # Each replica's engine metrics, merged per family and labelled by model and replica.
+        replicas = [
+            (model, i, r)
+            for model, dp in state.sampling._base_backends.items()
+            for i, r in enumerate(dp._replicas)
+        ]
+        texts = await asyncio.gather(
+            *[asyncio.wait_for(r.metrics_text(), 5) for _, _, r in replicas],
+            return_exceptions=True,
+        )
+        for (model, i, _), text in zip(replicas, texts, strict=True):
+            if isinstance(text, BaseException):
+                logger.debug("No metrics from %s replica %d: %r", model, i, text)
+                continue
+            for fam in text_string_to_metric_families(text):
+                extra = {"model": model, "replica": str(i)}
+                samples = [s._replace(labels={**s.labels, **extra}) for s in fam.samples]
+                if fam.name in families:
+                    families[fam.name].samples += samples
+                else:
+                    fam.samples = samples
+                    families[fam.name] = fam
+        body = generate_latest(SimpleNamespace(collect=families.values))  # type: ignore[arg-type]
+        return Response(body, media_type=CONTENT_TYPE_LATEST)
 
     @app.get(
         "/api/v1/get_server_capabilities",
@@ -1059,7 +1146,7 @@ def create_root_app(config: AppConfig | None = None) -> FastAPI:
         path = getattr(route, "path", None) or ""
         # Skip probes, OAI routes (own auth via _get_user_oai) and signed archive URLs
         if (
-            path in ("/api/v1/healthz", "/api/v1/readyz")
+            path in ("/api/v1/healthz", "/api/v1/readyz", "/stats", "/metrics")
             or path.startswith("/oai/")
             or path.startswith("/api/v1/archives/")
         ):

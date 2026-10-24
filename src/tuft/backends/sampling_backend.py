@@ -180,6 +180,7 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             bundle_indices=bundle_indices,
             enable_sleep_mode=config.colocate == "sleep",
             speculative_config=config.speculative_config,
+            batch_invariant=config.vllm_batch_invariant,
         )
 
     def _create_colocated_engine(self, config: ModelConfig):
@@ -614,6 +615,9 @@ class VLLMSamplingBackend(BaseSamplingBackend):
             except Exception:
                 pass
             self.lora_adapters.clear()
+
+    async def metrics_text(self) -> str:
+        return await self.engine.metrics_text.remote()  # type: ignore[attr-defined]
 
     async def ping(self) -> None:
         import httpx

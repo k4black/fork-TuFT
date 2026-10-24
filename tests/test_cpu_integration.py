@@ -101,6 +101,9 @@ def test_sdk_flow(cpu_server_endpoint: str) -> None:
         assert len(res.prompt_logprobs) == prompt.length
         # The TuFTCPUWorker patch scales prompt logprobs by temperature.
         assert sample(0.5).prompt_logprobs != res.prompt_logprobs
+        metrics = httpx.get(f"{cpu_server_endpoint}/metrics", timeout=30).text.splitlines()
+        generated = [m for m in metrics if m.startswith("vllm:generation_tokens_total{")]
+        assert any(float(m.rsplit(" ", 1)[1]) > 0 for m in generated), generated
 
         # A second adapter with max_loras=1 makes vLLM evict the first and re-add it.
         other = service.create_lora_training_client(base_model="Qwen/Qwen3-0.6B", rank=8)

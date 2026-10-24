@@ -39,6 +39,8 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.41b0",
     "opentelemetry-instrumentation-logging>=0.41b0",
     "psutil>=5.9.0",
+    # /metrics; vLLM pulls it in too, but the server also runs without vLLM.
+    "prometheus-client>=0.18.0",
     "nvidia-ml-py>=13.0.0",
     # Ray workers install only main dependencies when packing; training and sampling need these.
     # vLLM CUDA extensions are built against this exact PyTorch ABI.
