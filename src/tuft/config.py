@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from .persistence import PersistenceConfig
-
-
-def _default_checkpoint_dir() -> Path | None:
-    """Return None to let CLI set the default based on TUFT_HOME."""
-    return None
 
 
 # Roles a configured model can serve. Only the backends required by the
@@ -355,7 +350,7 @@ class AppConfig(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     worker_venv_path: str | None = None  # Ray worker venv; empty = no venv; required when using Ray
-    checkpoint_dir: Path | None = Field(default_factory=_default_checkpoint_dir)
+    checkpoint_dir: Path | None = None  # None: the CLI sets it from TUFT_HOME
     supported_models: list[ModelConfig] = Field(default_factory=list)
     model_owner: str = "local-user"
     toy_backend_seed: int = 0
@@ -387,12 +382,6 @@ class AppConfig(BaseModel):
             raise ValueError(
                 "Colocate option is only allowed when there is a single supported model."
             )
-
-    def with_supported_models(self, models: Iterable[ModelConfig]) -> "AppConfig":
-        updated = list(models)
-        if updated:
-            self.supported_models = updated
-        return self
 
     def get_model_config(self, model_name: str) -> ModelConfig | None:
         """Return the configuration for a supported model, or None if unknown."""
